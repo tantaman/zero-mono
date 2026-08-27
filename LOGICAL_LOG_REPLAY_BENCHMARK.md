@@ -15,12 +15,12 @@ that gap is the JS↔native boundary. See [§6](#6-the-absolute-ceiling).
 
 ## 1. What was built
 
-| File | Purpose |
-| --- | --- |
-| `packages/zero-cache/src/services/replicator/logical-log-fixture.ts` | Deterministic CDC stream generator + table/index specs. Shared, so every benchmark replays byte-identical input. |
-| `.../logical-log-apply.bench.ts` | What the **current** apply path costs. Sweeps workload × coalescing × pragma profile × replica size. |
-| `.../logical-log-applier-headroom.bench.ts` | How much of that cost is **recoverable**. Compares the current path against a prototype applier and a binary log format. |
-| `packages/zero-cache/bench/logical-log-ceiling/` | The **absolute ceiling**: a C harness with a zero-parse `mmap`'d log and permanently prepared statements. See [§6](#6-the-absolute-ceiling). |
+| File                                                                 | Purpose                                                                                                                                      |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/zero-cache/src/services/replicator/logical-log-fixture.ts` | Deterministic CDC stream generator + table/index specs. Shared, so every benchmark replays byte-identical input.                             |
+| `.../logical-log-apply.bench.ts`                                     | What the **current** apply path costs. Sweeps workload × coalescing × pragma profile × replica size.                                         |
+| `.../logical-log-applier-headroom.bench.ts`                          | How much of that cost is **recoverable**. Compares the current path against a prototype applier and a binary log format.                     |
+| `packages/zero-cache/bench/logical-log-ceiling/`                     | The **absolute ceiling**: a C harness with a zero-parse `mmap`'d log and permanently prepared statements. See [§6](#6-the-absolute-ceiling). |
 
 Log entries are the canonical downstream wire form — exactly what
 `serializeChangeStreamData()` produces and what the change-streamer already
@@ -39,8 +39,8 @@ stores and fans out:
 1. **Row-key lookups must be indexed.** `create-table` alone produces a replica
    table with no primary key index — the PK arrives as a separate
    `create-index` message (`<table>_pkey`). Without it every update and delete
-   is a full table scan; the benchmark read 4 MB/s and got *slower as the
-   replica grew*, which is exactly the shape legitimate cache pressure makes.
+   is a full table scan; the benchmark read 4 MB/s and got _slower as the
+   replica grew_, which is exactly the shape legitimate cache pressure makes.
    Setup now runs `EXPLAIN QUERY PLAN` and throws unless the lookup uses an
    index.
 2. **Every replay is verified.** `ChangeProcessor` reports failures through its
@@ -69,35 +69,35 @@ stores and fans out:
 
 Against a **977 MB replica** (2M rows), mixed workload, replay pragmas:
 
-| | value |
-| --- | --- |
-| Replay throughput, current path | **9.2 MB/s** |
-| Replay throughput, prototype applier | **14.3 MB/s** |
-| Replay throughput, prototype applier + binary format | 15.4 MB/s |
-| Replay throughput, **C harness** (absolute ceiling) | **30.9 MB/s** |
-| 1 GB of log, current path | 2:06 |
-| 1 GB of log, prototype applier | **~1:12** |
-| 1 GB of log, C harness | **~0:33** |
-| 1 GB of log, stored in S3 | **72 MB** (gzip -1, 14.4×) |
+|                                                      | value                      |
+| ---------------------------------------------------- | -------------------------- |
+| Replay throughput, current path                      | **9.2 MB/s**               |
+| Replay throughput, prototype applier                 | **14.3 MB/s**              |
+| Replay throughput, prototype applier + binary format | 15.4 MB/s                  |
+| Replay throughput, **C harness** (absolute ceiling)  | **30.9 MB/s**              |
+| 1 GB of log, current path                            | 2:06                       |
+| 1 GB of log, prototype applier                       | **~1:12**                  |
+| 1 GB of log, C harness                               | **~0:33**                  |
+| 1 GB of log, stored in S3                            | **72 MB** (gzip -1, 14.4×) |
 
 Storage and transfer are not the constraint. CPU is.
 
 ### Throughput falls with replica size
 
 | Replica | Inherited pragmas | Replay pragmas |
-| --- | --- | --- |
-| 9 MB | 19.1 MB/s | 18.1 MB/s |
-| 254 MB | 8.7 MB/s | 10.2 MB/s |
-| 977 MB | 4.0 MB/s | 8.1 MB/s |
+| ------- | ----------------- | -------------- |
+| 9 MB    | 19.1 MB/s         | 18.1 MB/s      |
+| 254 MB  | 8.7 MB/s          | 10.2 MB/s      |
+| 977 MB  | 4.0 MB/s          | 8.1 MB/s       |
 
 This is SQLite, not the benchmark. It reproduces with no Zero code in the path —
 a bare table, a prepared `UPDATE … WHERE id = ?`, 30k random keys:
 
-| Table | File | PK + secondary index | PK index only |
-| --- | --- | --- | --- |
-| 50k rows | 35 MB | 82,974 upd/s | 109,626 upd/s |
-| 500k rows | 348 MB | 36,650 upd/s | 40,018 upd/s |
-| 2M rows | 1394 MB | 10,043 upd/s | 13,296 upd/s |
+| Table     | File    | PK + secondary index | PK index only |
+| --------- | ------- | -------------------- | ------------- |
+| 50k rows  | 35 MB   | 82,974 upd/s         | 109,626 upd/s |
+| 500k rows | 348 MB  | 36,650 upd/s         | 40,018 upd/s  |
+| 2M rows   | 1394 MB | 10,043 upd/s         | 13,296 upd/s  |
 
 The same 8× appears with no secondary index, so it is not index churn. Ruled
 out: page-cache sizing (flat from 64 MB to 4 GB), disk (file is in OS cache
@@ -114,13 +114,13 @@ recovers ~6%). What is left is the B-tree — deeper descents and more distinct
 Every pragma the replication manager sets exists to protect a reader or a crash.
 Replay has neither. At a 977 MB replica:
 
-| Profile | Settings | MB/s | WAL left |
-| --- | --- | --- | --- |
-| `rep-manager` | WAL, `synchronous=NORMAL`, `wal_autocheckpoint=0` | 3.7 | 368 MB |
-| `wal-ckpt` | WAL, `synchronous=OFF`, checkpointing on | 8.4 | 31 MB |
-| `no-journal` | `journal_mode=OFF`, `synchronous=OFF` | 7.8 | none |
-| `excl` | + `locking_mode=EXCLUSIVE` | **8.4** | none |
-| `excl+cache` | + `cache_size=512MB` | 9.4 | none |
+| Profile       | Settings                                          | MB/s    | WAL left |
+| ------------- | ------------------------------------------------- | ------- | -------- |
+| `rep-manager` | WAL, `synchronous=NORMAL`, `wal_autocheckpoint=0` | 3.7     | 368 MB   |
+| `wal-ckpt`    | WAL, `synchronous=OFF`, checkpointing on          | 8.4     | 31 MB    |
+| `no-journal`  | `journal_mode=OFF`, `synchronous=OFF`             | 7.8     | none     |
+| `excl`        | + `locking_mode=EXCLUSIVE`                        | **8.4** | none     |
+| `excl+cache`  | + `cache_size=512MB`                              | 9.4     | none     |
 
 - **Nearly the whole win is not inheriting `wal_autocheckpoint = 0`**, which
   exists so litestream can own checkpointing. Everything after is ~10%.
@@ -129,7 +129,7 @@ Replay has neither. At a 977 MB replica:
   file ceasing to exist: no second file, no checkpoint step, no disk headroom.
 - `cache_size` does nothing at moderate batch sizes (64 MB → 4 GB measures
   flat); one pass over a log touches each page about once, leaving no reuse for
-  a cache to capture. It matters *only* as the counterpart to very large
+  a cache to capture. It matters _only_ as the counterpart to very large
   transactions.
 
 ### 4.2 Coalescing — real, but saturates fast
@@ -137,12 +137,12 @@ Replay has neither. At a 977 MB replica:
 Logical transactions per SQLite commit, 977 MB replica, mixed:
 
 | Txns/commit | Commits | Inherited | WAL left | Replay pragmas |
-| --- | --- | --- | --- | --- |
-| 1 | 3,831 | 3.4 MB/s | 522 MB | 7.2 MB/s |
-| 16 | 240 | 4.1 | 445 MB | **8.2** |
-| 256 | 15 | 6.2 | 368 MB | **8.3** |
-| 1,024 | 4 | — | — | 8.1 |
-| whole chunk | 1 | 7.6 | 170 MB | 7.9 |
+| ----------- | ------- | --------- | -------- | -------------- |
+| 1           | 3,831   | 3.4 MB/s  | 522 MB   | 7.2 MB/s       |
+| 16          | 240     | 4.1       | 445 MB   | **8.2**        |
+| 256         | 15      | 6.2       | 368 MB   | **8.3**        |
+| 1,024       | 4       | —         | —        | 8.1            |
+| whole chunk | 1       | 7.6       | 170 MB   | 7.9            |
 
 - Under the old pragmas coalescing looks like a 2.2× lever, but that is page
   rewrites into a never-checkpointing WAL going away — it is standing in for
@@ -163,12 +163,12 @@ Logical transactions per SQLite commit, 977 MB replica, mixed:
 All non-baseline variants run the replay pragmas (`journal_mode=OFF`,
 `synchronous=OFF`, `locking_mode=EXCLUSIVE`) and hold prepared statements.
 
-| Variant | 977 MB replica | 12 MB replica |
-| --- | --- | --- |
+| Variant                                           | 977 MB replica   | 12 MB replica     |
+| ------------------------------------------------- | ---------------- | ----------------- |
 | baseline (`ChangeProcessor` + `BigIntJSON.parse`) | 9.1 MB/s (1.00×) | 17.2 MB/s (1.00×) |
-| `FastApplier` + native `JSON.parse` | 13.8 (1.51×) | 38.5 (2.23×) |
-| **`DirectApplier` + native `JSON.parse`** | **14.3 (1.57×)** | 40.3 (2.34×) |
-| `DirectApplier` + binary format | **15.4 (1.69×)** | 51.4 (2.98×) |
+| `FastApplier` + native `JSON.parse`               | 13.8 (1.51×)     | 38.5 (2.23×)      |
+| **`DirectApplier` + native `JSON.parse`**         | **14.3 (1.57×)** | 40.3 (2.34×)      |
+| `DirectApplier` + binary format                   | **15.4 (1.69×)** | 51.4 (2.98×)      |
 
 `FastApplier` caches a prepared statement per (op, table, column-set), keyed by
 a string it builds per row, and spreads a values array into `run()`.
@@ -178,7 +178,7 @@ binds from a caller-owned array reused across rows. In steady state a row costs
 a length check, a few string compares, and the bind.
 
 That last refinement is worth only **~4%** (13.8 → 14.3). Most of the applier
-win is simply *having* cached statements and native `JSON.parse` — the residual
+win is simply _having_ cached statements and native `JSON.parse` — the residual
 per-row string building was ~1.5 µs of a ~41 µs budget, matching the
 micro-benchmark in §5.
 
@@ -189,7 +189,7 @@ below 1.57×.
 
 #### Correction: the binary format does win on throughput
 
-An earlier run of this benchmark reported the binary format as *slower* than
+An earlier run of this benchmark reported the binary format as _slower_ than
 native `JSON.parse`. That comparison was noise — the pair flipped order between
 runs at 3 samples. At 8 samples, with both formats driving the **same**
 applier so only the encoding differs, binary is consistently ahead: **+8% at
@@ -213,12 +213,12 @@ the checksum matches with and without, and the planner uses the rebuilt indexes.
 
 Against the 977 MB / 2M-row replica:
 
-| Log | Keep indexes | Defer (apply only) | Defer + rebuild | Winner |
-| --- | --- | --- | --- | --- |
-| 12 MB | 384 ms | 206 ms | 1,851 ms | keep, by 4.8× |
-| 24 MB | 796 ms | 436 ms | 2,092 ms | keep, by 2.6× |
-| 96 MB | 2,987 ms | 1,684 ms | 3,487 ms | keep, by 1.17× |
-| 240 MB | 8,007 ms | 4,703 ms | **6,648 ms** | **defer, by 1.20×** |
+| Log    | Keep indexes | Defer (apply only) | Defer + rebuild | Winner              |
+| ------ | ------------ | ------------------ | --------------- | ------------------- |
+| 12 MB  | 384 ms       | 206 ms             | 1,851 ms        | keep, by 4.8×       |
+| 24 MB  | 796 ms       | 436 ms             | 2,092 ms        | keep, by 2.6×       |
+| 96 MB  | 2,987 ms     | 1,684 ms           | 3,487 ms        | keep, by 1.17×      |
+| 240 MB | 8,007 ms     | 4,703 ms           | **6,648 ms**    | **defer, by 1.20×** |
 
 Replay itself gets **1.85× faster** (17.9 → 9.6 µs/change) in every case. What
 decides it is the rebuild: ~1.7 s for these two indexes over 2M rows, and that
@@ -235,7 +235,7 @@ eats most of what replay saved. It is worth having as a switch for large
 catch-ups, not as a default.
 
 **The stronger version of this idea.** The replication manager's replica is
-never queried, so it need not carry the secondary indexes *at all* — a restoring
+never queried, so it need not carry the secondary indexes _at all_ — a restoring
 ViewSyncer could build them once after download. That turns a per-change cost
 paid continuously into a one-time cost paid per restore, which is the better
 side of the trade given the replication manager applies changes constantly and
@@ -251,7 +251,7 @@ its indexes are built. A real trade, but the arithmetic favours it.
 
 `ChangeProcessor` → `StatementRunner.run(sql, args)` → `StatementCache.use(sql)`,
 which prepares once and reuses the `Statement` thereafter. The statement is
-genuinely cached. What is *not* cached is everything in front of it: the SQL text
+genuinely cached. What is _not_ cached is everything in front of it: the SQL text
 is rebuilt from `Object.keys(row)` for every row, and the cache then
 re-normalizes that text with a `replaceAll(/\s+/g, ' ')` and churns four Map
 operations to check it out and back in.
@@ -259,28 +259,26 @@ operations to check it out and back in.
 Measured against a small table, so SQLite's own work is near-constant and what
 varies is the JS in front of it:
 
-| Path | µs/row |
-| --- | --- |
+| Path                                                     | µs/row   |
+| -------------------------------------------------------- | -------- |
 | `StatementRunner`, SQL rebuilt per row (what runs today) | **9.05** |
-| `StatementRunner`, SQL string hoisted | 4.99 |
-| Prepared `Statement` held directly | **2.97** |
+| `StatementRunner`, SQL string hoisted                    | 4.99     |
+| Prepared `Statement` held directly                       | **2.97** |
 
 Rebuilding the SQL costs 4.1 µs/row; the cache lookup costs another 2.0. We
 spend **6.1 µs getting to a statement that takes 3.0 µs to run.** That is the
 ~20% JS share below, and it is what the prototype applier removes by keying a
 held `Statement` on (op, table, column-set).
 
-
-
 CPU profile of the apply loop alone (generation and base restore excluded),
 977 MB replica, ~68 µs/change:
 
-| Share | Where |
-| --- | --- |
-| ~41% | Native SQLite — B-tree descent, page updates, index maintenance, commit |
-| ~27% | `BigIntJSON.parse` |
-| ~20% | Per-change JS on the way to SQLite |
-| rest | GC, profiler overhead |
+| Share | Where                                                                   |
+| ----- | ----------------------------------------------------------------------- |
+| ~41%  | Native SQLite — B-tree descent, page updates, index maintenance, commit |
+| ~27%  | `BigIntJSON.parse`                                                      |
+| ~20%  | Per-change JS on the way to SQLite                                      |
+| rest  | GC, profiler overhead                                                   |
 
 Only the SQLite share grows with the replica; the other two are fixed per change,
 so they dominate on a small replica and fade on a large one.
@@ -310,10 +308,10 @@ match exactly**, so the two paths provably did the same work.
 Applying a 24 MB log (42,890 changes, mixed, 256 txns/commit) with
 `journal_mode=OFF`, `synchronous=OFF`, `locking_mode=EXCLUSIVE`:
 
-| Replica | C harness | Best TypeScript applier | Current path |
-| --- | --- | --- | --- |
-| 12 MB | **6.2 µs/change** (90 MB/s) | 13.3 µs (43 MB/s) | 32.4 µs (17.2 MB/s) |
-| 977 MB | **18.1 µs/change** (31 MB/s) | 38.0 µs (14.7 MB/s) | 61.4 µs (9.1 MB/s) |
+| Replica | C harness                    | Best TypeScript applier | Current path        |
+| ------- | ---------------------------- | ----------------------- | ------------------- |
+| 12 MB   | **6.2 µs/change** (90 MB/s)  | 13.3 µs (43 MB/s)       | 32.4 µs (17.2 MB/s) |
+| 977 MB  | **18.1 µs/change** (31 MB/s) | 38.0 µs (14.7 MB/s)     | 61.4 µs (9.1 MB/s)  |
 
 Three things fall out of that:
 
@@ -330,13 +328,13 @@ Three things fall out of that:
 
 Instrumenting the C harness per operation, against the 977 MB replica:
 
-| Workload | µs/change | MB/s | insert | update | delete |
-| --- | --- | --- | --- | --- | --- |
-| insert-heavy | 9.8 | 60 | 6.8 µs | 32.9 µs | 23.2 µs |
-| mixed | 19.8 | 28 | 7.3 µs | 30.4 µs | 20.6 µs |
-| update-heavy | 27.7 | 21 | 8.9 µs | 29.7 µs | 20.1 µs |
+| Workload     | µs/change | MB/s | insert | update  | delete  |
+| ------------ | --------- | ---- | ------ | ------- | ------- |
+| insert-heavy | 9.8       | 60   | 6.8 µs | 32.9 µs | 23.2 µs |
+| mixed        | 19.8      | 28   | 7.3 µs | 30.4 µs | 20.6 µs |
+| update-heavy | 27.7      | 21   | 8.9 µs | 29.7 µs | 20.1 µs |
 
-Per-operation cost barely moves across workloads; only the *mix* does. Two
+Per-operation cost barely moves across workloads; only the _mix_ does. Two
 things follow.
 
 **It is not I/O.** `/proc/self/io` over the measured region reports **0 MB
@@ -355,12 +353,12 @@ mixed number is just the weighted average.
 
 ### The secondary indexes cost about half of everything
 
-| | with `issue_modified_idx` + `comment_issue_idx` | primary keys only |
-| --- | --- | --- |
-| overall | 19.1 µs/change | **9.9 µs/change** |
-| insert | 7.7 µs | **2.5 µs** (3.1×) |
-| update | 28.7 µs | **15.8 µs** (1.8×) |
-| delete | 18.9 µs | **11.2 µs** (1.7×) |
+|         | with `issue_modified_idx` + `comment_issue_idx` | primary keys only  |
+| ------- | ----------------------------------------------- | ------------------ |
+| overall | 19.1 µs/change                                  | **9.9 µs/change**  |
+| insert  | 7.7 µs                                          | **2.5 µs** (3.1×)  |
+| update  | 28.7 µs                                         | **15.8 µs** (1.8×) |
+| delete  | 18.9 µs                                         | **11.2 µs** (1.7×) |
 
 Every update in this workload changes `modified`, which is indexed, so each one
 does a delete-plus-insert at a random position in a ~900k-entry index. At
@@ -382,7 +380,7 @@ schema.
 ### Correction: the profile over-attributed cost to SQLite
 
 §5 reports a CPU profile splitting the baseline ~41% "native SQLite". The C
-harness does the *entire* job in 18.1 µs where that profile implied SQLite alone
+harness does the _entire_ job in 18.1 µs where that profile implied SQLite alone
 was ~25 µs of the 61.4. The profile's `run` frame was charging
 better-sqlite3's napi marshalling — converting and copying every bound value
 across the JS/C++ boundary — to SQLite. Real SQLite work is ≤18.1 µs; the rest
@@ -393,26 +391,26 @@ of that frame is boundary cost, which is exactly what the C harness removes.
 ## 7. Why it slows down: key scheme and table structure
 
 Two candidate explanations for the size-dependence, both about how rows are
-*keyed* rather than how much data there is. `bench/logical-log-ceiling/keys.c`
+_keyed_ rather than how much data there is. `bench/logical-log-ceiling/keys.c`
 tests them crossed, in C, with the same row payload throughout.
 
 **Inserts** (rows/s, into a table growing to N):
 
-| N | random (uuid4) | time-ordered (v7) | seqnum |
-| --- | --- | --- | --- |
-| 250k | 197,637 | **475,610** | 446,676 |
-| 1M | 101,801 | **420,887** | 326,934 |
-| 2M | 84,095 | **310,416** | 290,739 |
-| 4M | 77,637 | **240,507** | 234,634 |
+| N    | random (uuid4) | time-ordered (v7) | seqnum  |
+| ---- | -------------- | ----------------- | ------- |
+| 250k | 197,637        | **475,610**       | 446,676 |
+| 1M   | 101,801        | **420,887**       | 326,934 |
+| 2M   | 84,095         | **310,416**       | 290,739 |
+| 4M   | 77,637         | **240,507**       | 234,634 |
 
 **Random point updates** (rows/s, 50k by key):
 
-| N | random (uuid4) | time-ordered (v7) | seqnum |
-| --- | --- | --- | --- |
-| 250k | 122,052 | 121,027 | 120,019 |
-| 1M | 104,578 | 100,957 | 104,274 |
-| 2M | 93,276 | 89,140 | 92,904 |
-| 4M | 86,359 | 76,964 | 75,086 |
+| N    | random (uuid4) | time-ordered (v7) | seqnum  |
+| ---- | -------------- | ----------------- | ------- |
+| 250k | 122,052        | 121,027           | 120,019 |
+| 1M   | 104,578        | 100,957           | 104,274 |
+| 2M   | 93,276         | 89,140            | 92,904  |
+| 4M   | 86,359         | 76,964            | 75,086  |
 
 ### Is it the missing primary key? No — a real one is worse
 
@@ -421,10 +419,10 @@ index, so a lookup by id is two B-tree descents. Making `id` a real
 `PRIMARY KEY` in a `WITHOUT ROWID` table collapses that to one — and measured
 **slower on both axes**, at 2M rows:
 
-| Structure | insert rows/s | update rows/s |
-| --- | --- | --- |
-| rowid + unique index (today) | **84,095** | **93,276** |
-| `WITHOUT ROWID`, `PRIMARY KEY(id)` | 41,797 | 69,827 |
+| Structure                          | insert rows/s | update rows/s |
+| ---------------------------------- | ------------- | ------------- |
+| rowid + unique index (today)       | **84,095**    | **93,276**    |
+| `WITHOUT ROWID`, `PRIMARY KEY(id)` | 41,797        | 69,827        |
 
 `WITHOUT ROWID` stores the whole row inside the key-ordered B-tree. Our rows are
 ~600 bytes, so interior pages hold far fewer keys, the tree is deeper, and every
@@ -445,11 +443,11 @@ descent no matter how the tree was built.
 ### Neither flattens the curve
 
 Random inserts degrade 2.5× from 250k to 4M rows; ordered inserts degrade 2.0×;
-updates degrade ~1.4×. Ordered keys shift the whole curve *up*, they do not make
+updates degrade ~1.4×. Ordered keys shift the whole curve _up_, they do not make
 it flat. The size-dependence in §3 is real B-tree behaviour and survives both
 changes.
 
-> **Scope.** The key scheme is the *application's* choice — zbugs and friends
+> **Scope.** The key scheme is the _application's_ choice — zbugs and friends
 > mint nanoid-style random ids — not something the replicator picks. So this is
 > schema guidance for app authors, and it is worth the most where the workload
 > is insert-dominated: initial sync, backfills, and append-heavy tables. It does
@@ -466,22 +464,22 @@ changes.
 
 Recorded so they are not re-tried blind. All at 977 MB, mixed, replay pragmas.
 
-| Lever | Result |
-| --- | --- |
-| `page_size` 8K / 16K | **Worse**: 5.6 → 4.7 → 4.0 MB/s. Random single-row updates pay for the whole page they touch; a shallower B-tree does not make it back. |
-| `journal_mode = wal2` | **Slower** than wal (6.5 vs 7.4). wal2 keeps readers from starving a checkpoint; replay has no readers. |
-| `mmap_size = 2 GB` | ~15%, inside this machine's run-to-run noise. |
-| `BEGIN CONCURRENT`, 2–4 writers | **Worse.** See below. |
+| Lever                           | Result                                                                                                                                  |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `page_size` 8K / 16K            | **Worse**: 5.6 → 4.7 → 4.0 MB/s. Random single-row updates pay for the whole page they touch; a shallower B-tree does not make it back. |
+| `journal_mode = wal2`           | **Slower** than wal (6.5 vs 7.4). wal2 keeps readers from starving a checkpoint; replay has no readers.                                 |
+| `mmap_size = 2 GB`              | ~15%, inside this machine's run-to-run noise.                                                                                           |
+| `BEGIN CONCURRENT`, 2–4 writers | **Worse.** See below.                                                                                                                   |
 
 ### Concurrency, in detail
 
-The build *does* support `BEGIN CONCURRENT` (SQLite 3.54.0, begin-concurrent
+The build _does_ support `BEGIN CONCURRENT` (SQLite 3.54.0, begin-concurrent
 branch), so this was testable rather than impossible.
 
-| Partitioning | 1 writer | 2 writers | 4 writers | Retries |
-| --- | --- | --- | --- | --- |
-| by PK hash | 13.6 MB/s | 8.7 | 8.6 | 76 → 356 |
-| **by table** | 13.2 MB/s | **9.3** | — | **0** |
+| Partitioning | 1 writer  | 2 writers | 4 writers | Retries  |
+| ------------ | --------- | --------- | --------- | -------- |
+| by PK hash   | 13.6 MB/s | 8.7       | 8.6       | 76 → 356 |
+| **by table** | 13.2 MB/s | **9.3**   | —         | **0**    |
 
 Partitioned by table, two writers share no B-tree at all and get **zero**
 retries — and it is still 30% slower than one writer. That rules out conflicts.
@@ -507,25 +505,25 @@ sharded replica is the version of this idea that could work. What that costs is
 **The prize, measured.** Partitioning by table across separate files, 24 MB log,
 977 MB base:
 
-| Partitioning | 1 writer | 2 writers | 4 writers |
-| --- | --- | --- | --- |
-| **by table** (the actual proposal) | 13.2 MB/s | **22.7 (1.72×)** | — |
-| by PK hash (perfectly balanced, for contrast) | 13.2 | 24.2 (1.83×) | 39.7 (3.0×) |
+| Partitioning                                  | 1 writer  | 2 writers        | 4 writers   |
+| --------------------------------------------- | --------- | ---------------- | ----------- |
+| **by table** (the actual proposal)            | 13.2 MB/s | **22.7 (1.72×)** | —           |
+| by PK hash (perfectly balanced, for contrast) | 13.2      | 24.2 (1.83×)     | 39.7 (3.0×) |
 
-Per-table sharding captures most of the available parallelism *when tables are
-balanced* — the fixture splits writes 45/55. It is bounded by
+Per-table sharding captures most of the available parallelism _when tables are
+balanced_ — the fixture splits writes 45/55. It is bounded by
 `1 / (largest table's share of writes)`, so a schema where one table takes 90%
 of the writes would get ~1.1×, not 1.7×. **Measure the real distribution before
 counting on this.**
 
 **Where the coupling actually is: snapshots, not joins.** `Snapshotter`
 (`services/view-syncer/snapshotter.ts`) holds a `BEGIN CONCURRENT` snapshot of
-*the* database and, at that snapshot, reads `_zero.changeLog2` for the diff
+_the_ database and, at that snapshot, reads `_zero.changeLog2` for the diff
 since the last version, then applies those changes to an older snapshot for IVM
 and rolls back. Three things in that model assume one file:
 
 1. **Cross-table snapshot atomicity.** A pipeline joining `issue × comment` in
-   IVM still needs both read at the *same* version. With N files the replicator
+   IVM still needs both read at the _same_ version. With N files the replicator
    could have advanced one to `W+1` while another sits at `W`, so a ViewSyncer
    would have to open all N snapshots and retry until their `stateVersion`s
    agree — a miniature distributed-snapshot problem.
@@ -538,11 +536,11 @@ and rolls back. Three things in that model assume one file:
    it is N commits, and a crash leaves them at different versions.
 
 **The asymmetry that makes this worth considering.** (3) is a real problem for
-the *serving* replica and a non-problem for the *backup* one: the replication
+the _serving_ replica and a non-problem for the _backup_ one: the replication
 manager's replica serves no queries and holds no snapshots, and files landing at
 different watermarks is exactly the situation the S3-log design already recovers
 from — replay each file from its own watermark. So the hard part lives entirely
-on the serving side. The catch is that the serving replica is restored *from*
+on the serving side. The catch is that the serving replica is restored _from_
 the backup, so either both shard or the restore merges N files into one.
 
 ### Is it a global lock? No — measured
@@ -562,10 +560,10 @@ shared at the SQLite level; anything still limiting throughput has to be
 process-global.
 
 | Writers | One shared file (`BEGIN CONCURRENT`) | Separate files (`BEGIN IMMEDIATE`) |
-| --- | --- | --- |
-| 1 | 10.7 MB/s | 12.3 MB/s |
-| 2 | 6.4 MB/s (0.60×) | **22.6 MB/s (1.84×)** |
-| 4 | 8.6 MB/s | **30.6 MB/s (2.49×)** |
+| ------- | ------------------------------------ | ---------------------------------- |
+| 1       | 10.7 MB/s                            | 12.3 MB/s                          |
+| 2       | 6.4 MB/s (0.60×)                     | **22.6 MB/s (1.84×)**              |
+| 4       | 8.6 MB/s                             | **30.6 MB/s (2.49×)**              |
 
 Separate files scale near-linearly to 2 writers and 2.49× on 4 (on 4 vCPUs, with
 the main thread also live). A global allocator mutex would throttle those

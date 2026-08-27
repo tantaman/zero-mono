@@ -1,6 +1,6 @@
 # Logical log replay: the absolute ceiling
 
-A C harness that answers one question: with *everything* removable removed, how
+A C harness that answers one question: with _everything_ removable removed, how
 fast can a logical log be applied to a SQLite replica? It exists to bound the
 optimization work — to say whether the TypeScript apply path is 2× or 100× off
 what the machine can do.
@@ -51,7 +51,7 @@ To drive the pieces individually, see `run.sh` — it is short, and each step is
 
 **Every variant prints a checksum over the resulting replica and the runner
 fails loudly if they disagree.** That guard is not decoration: it has already
-caught the reference applier silently replaying a *different* log than the C
+caught the reference applier silently replaying a _different_ log than the C
 harness because it regenerated one from its own defaults.
 
 ## Is it just a slow disk?
@@ -76,7 +76,7 @@ CEILING_DIR=/Volumes/RAM/zllc pnpm --filter zero-cache run bench:ceiling
 ```
 
 If the numbers barely move, the workload is CPU-bound on your machine too. What
-*will* differ is single-core speed — these numbers come from a shared 2.80 GHz
+_will_ differ is single-core speed — these numbers come from a shared 2.80 GHz
 cloud vCPU, and a modern laptop or desktop core should be materially faster.
 The ratios between variants are what travel.
 
@@ -86,10 +86,10 @@ Applying a 24 MB log (42,890 changes, `mixed` workload, 256 logical
 transactions per commit) with `journal_mode=OFF`, `synchronous=OFF`,
 `locking_mode=EXCLUSIVE`:
 
-| Replica | C harness | Best TypeScript applier | Current path |
-| --- | --- | --- | --- |
-| 12 MB | **6.2 µs/change** (90 MB/s) | 13.3 µs (43 MB/s) | 32.4 µs |
-| 977 MB | **18.1 µs/change** (31 MB/s) | 38.0 µs (14.7 MB/s) | 61.4 µs |
+| Replica | C harness                    | Best TypeScript applier | Current path |
+| ------- | ---------------------------- | ----------------------- | ------------ |
+| 12 MB   | **6.2 µs/change** (90 MB/s)  | 13.3 µs (43 MB/s)       | 32.4 µs      |
+| 977 MB  | **18.1 µs/change** (31 MB/s) | 38.0 µs (14.7 MB/s)     | 61.4 µs      |
 
 Read from that:
 
@@ -114,7 +114,7 @@ make keys
 
 Headline: time-ordered keys insert **2.4×–4.1× faster** at every table size and
 make **no difference to updates**; a real `WITHOUT ROWID` primary key is
-*slower* on both, because ~600-byte rows make for a deep key-ordered tree.
+_slower_ on both, because ~600-byte rows make for a deep key-ordered tree.
 Neither flattens the size curve.
 
 See `LOGICAL_LOG_REPLAY_BENCHMARK.md` at the repo root for the full picture.
