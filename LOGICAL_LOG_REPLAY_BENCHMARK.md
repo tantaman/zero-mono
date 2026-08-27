@@ -6,7 +6,7 @@ stream and a component that applies it to SQLite. The number that decides it is:
 how fast can a stored logical log be replayed into a SQLite replica?
 
 **Status.** Measured. The approach is viable; the ceiling is roughly 14 MB/s of
-uncompressed log against a 1 GB replica, which is ~1:20 to catch up on 1 GB of
+uncompressed log against a 1 GB replica, which is ~1:12 to catch up on 1 GB of
 log. Whether that is good enough is a product decision about snapshot frequency,
 not an engineering one — see [Open questions](#open-questions).
 
@@ -71,8 +71,9 @@ Against a **977 MB replica** (2M rows), mixed workload, replay pragmas:
 | --- | --- |
 | Replay throughput, current path | **9.2 MB/s** |
 | Replay throughput, prototype applier | **14.3 MB/s** |
+| Replay throughput, prototype applier + binary format | 15.4 MB/s |
 | 1 GB of log, current path | 2:06 |
-| 1 GB of log, prototype applier | ~1:20 |
+| 1 GB of log, prototype applier | **~1:12** |
 | 1 GB of log, stored in S3 | **72 MB** (gzip -1, 14.4×) |
 
 Storage and transfer are not the constraint. CPU is.
@@ -153,26 +154,50 @@ Logical transactions per SQLite commit, 977 MB replica, mixed:
   Versions only move forward so nothing is lost, but the window is the batch
   size — another reason to keep it modest.
 
-### 4.3 A custom applier — 1.56×
+### 4.3 A custom applier — 1.57×
+
+All non-baseline variants run the replay pragmas (`journal_mode=OFF`,
+`synchronous=OFF`, `locking_mode=EXCLUSIVE`) and hold prepared statements.
 
 | Variant | 977 MB replica | 12 MB replica |
 | --- | --- | --- |
-| baseline (`ChangeProcessor` + `BigIntJSON.parse`) | 9.2 MB/s (1.00×) | 16.8 MB/s (1.00×) |
-| prototype applier + native `JSON.parse` | **14.3 MB/s (1.56×)** | 37.4 MB/s (2.23×) |
-| prototype applier + binary format | 12.5 MB/s (1.36×) | 45.4 MB/s (2.71×) |
+| baseline (`ChangeProcessor` + `BigIntJSON.parse`) | 9.1 MB/s (1.00×) | 17.2 MB/s (1.00×) |
+| `FastApplier` + native `JSON.parse` | 13.8 (1.51×) | 38.5 (2.23×) |
+| **`DirectApplier` + native `JSON.parse`** | **14.3 (1.57×)** | 40.3 (2.34×) |
+| `DirectApplier` + binary format | **15.4 (1.69×)** | 51.4 (2.98×) |
 
-The prototype caches a prepared statement per (op, table, column-set) and binds
-positionally, instead of rebuilding the SQL text from `Object.keys(row)` per row
-and re-normalizing its whitespace on every cache lookup. It handles only
-insert/update/delete/begin/commit — no schema changes, backfill, truncate, JSON
-columns or oversized integers. Those omissions are what make it a clean upper
-bound, and why the real thing lands somewhat below 1.56×.
+`FastApplier` caches a prepared statement per (op, table, column-set), keyed by
+a string it builds per row, and spreads a values array into `run()`.
+`DirectApplier` removes both: it keeps resolved statements on a per-table shape
+list, recognises the steady-state shape by comparing column names in place, and
+binds from a caller-owned array reused across rows. In steady state a row costs
+a length check, a few string compares, and the bind.
 
-**A binary log format lost.** It is *slower* than V8's native `JSON.parse` at
-realistic replica size, and its storage win is 1.12× after gzip rather than the
-1.49× raw — a compact encoding and a general-purpose compressor chase the same
-redundancy, and the encoding gets there first (10.8× compression vs 14.4×). It
-only leads on a 12 MB replica, the regime that matters least.
+That last refinement is worth only **~4%** (13.8 → 14.3). Most of the applier
+win is simply *having* cached statements and native `JSON.parse` — the residual
+per-row string building was ~1.5 µs of a ~41 µs budget, matching the
+micro-benchmark in §5.
+
+Both appliers handle only insert/update/delete/begin/commit — no schema
+changes, backfill, truncate, JSON columns or oversized integers. Those omissions
+are what make this a clean upper bound, and why the real thing lands somewhat
+below 1.57×.
+
+#### Correction: the binary format does win on throughput
+
+An earlier run of this benchmark reported the binary format as *slower* than
+native `JSON.parse`. That comparison was noise — the pair flipped order between
+runs at 3 samples. At 8 samples, with both formats driving the **same**
+applier so only the encoding differs, binary is consistently ahead: **+8% at
+977 MB, +28% at 12 MB.**
+
+The storage conclusion is unchanged, and is still the reason not to reach for
+it first: binary is 1.49× smaller raw but only **1.12×** smaller after gzip -1,
+and it compresses worse (10.8× vs 14.4×) because a compact encoding and a
+general-purpose compressor chase the same redundancy. So the case for a binary
+format rests on ~8% of replay throughput at realistic replica sizes, against
+the cost of owning a schema-versioned wire format. The applier is the clear win;
+the format is a judgement call.
 
 ---
 

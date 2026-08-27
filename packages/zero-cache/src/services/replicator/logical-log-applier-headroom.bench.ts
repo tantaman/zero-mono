@@ -12,7 +12,11 @@
 //
 //   baseline    ChangeProcessor + BigIntJSON.parse -- what runs today.
 //   json-fast   FastApplier + native JSON.parse.
-//   binary      FastApplier + a compact binary log format.
+//   direct      DirectApplier + native JSON.parse. Same idea as FastApplier
+//               with the last per-row allocations removed, so a row costs a
+//               shape check and a bind into a reused array.
+//   binary      DirectApplier + a compact binary log format. Shares the
+//               applier with 'direct', so the only difference is the format.
 //
 // ## The FastApplier is a spike, not a proposal
 //
@@ -241,6 +245,133 @@ class FastApplier {
   }
 }
 
+/**
+ * The same idea as `FastApplier`, with the last per-row allocations removed.
+ *
+ * `FastApplier` still builds a cache-key string (`\`i|${table}|${cols.join()}\``)
+ * and spreads a values array on every single row -- the same class of per-row
+ * work as rebuilding the SQL text, just cheaper. This one keeps the resolved
+ * `Statement` on a per-table shape list, recognises the steady-state shape by
+ * comparing column names in place, and binds from a caller-owned array that is
+ * reused across rows. In steady state a row costs a length check, a few string
+ * compares, and the bind.
+ */
+type Shape = {
+  readonly cols: readonly string[];
+  readonly insert: Statement;
+  readonly update: Statement;
+};
+
+function sameShape(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+class DirectApplier {
+  readonly #db: Database;
+  /** Per table, most-recently-used first; steady state hits index 0. */
+  readonly #shapes = new Map<string, Shape[]>();
+  readonly #deletes = new Map<string, Statement>();
+  readonly #begin: Statement;
+  readonly #commit: Statement;
+  readonly #setVersion: Statement;
+  #version = '';
+
+  constructor(db: Database) {
+    this.#db = db;
+    this.#begin = db.prepare('BEGIN IMMEDIATE');
+    this.#commit = db.prepare('COMMIT');
+    this.#setVersion = db.prepare(
+      `UPDATE "_zero.replicationState" SET stateVersion = ?`,
+    );
+  }
+
+  begin(watermark: string) {
+    this.#version = watermark;
+    this.#begin.run();
+  }
+
+  commit(watermark: string) {
+    this.#setVersion.run(watermark);
+    this.#commit.run();
+  }
+
+  #shapeFor(table: string, cols: readonly string[]): Shape {
+    let list = this.#shapes.get(table);
+    if (list === undefined) {
+      list = [];
+      this.#shapes.set(table, list);
+    }
+    for (let i = 0; i < list.length; i++) {
+      const shape = list[i]!;
+      if (sameShape(shape.cols, cols)) {
+        if (i !== 0) {
+          list.splice(i, 1);
+          list.unshift(shape);
+        }
+        return shape;
+      }
+    }
+    const owned = [...cols];
+    const names = [...owned, ZERO_VERSION].map(c => `"${c}"`).join(',');
+    const slots = Array.from({length: owned.length + 1})
+      .fill('?')
+      .join(',');
+    const sets = [...owned, ZERO_VERSION].map(c => `"${c}"=?`).join(',');
+    const shape: Shape = {
+      cols: owned,
+      insert: this.#db.prepare(
+        `INSERT OR REPLACE INTO "${table}" (${names}) VALUES (${slots})`,
+      ),
+      update: this.#db.prepare(`UPDATE "${table}" SET ${sets} WHERE "id"=?`),
+    };
+    list.unshift(shape);
+    return shape;
+  }
+
+  /**
+   * `values` is the caller's reused array and is mutated: the watermark (and,
+   * for an update, the row key) are appended before binding. The caller resets
+   * its length each row, so no allocation happens per row.
+   */
+  insert(table: string, cols: readonly string[], values: unknown[]) {
+    const shape = this.#shapeFor(table, cols);
+    values.push(this.#version);
+    shape.insert.run(values);
+  }
+
+  update(
+    table: string,
+    cols: readonly string[],
+    values: unknown[],
+    keyValue: unknown,
+  ) {
+    const shape = this.#shapeFor(table, cols);
+    values.push(this.#version, keyValue);
+    const {changes} = shape.update.run(values);
+    if (changes === 0) {
+      values.length -= 2;
+      this.insert(table, cols, values);
+    }
+  }
+
+  delete(table: string, keyValue: unknown) {
+    let stmt = this.#deletes.get(table);
+    if (stmt === undefined) {
+      stmt = this.#db.prepare(`DELETE FROM "${table}" WHERE "id"=?`);
+      this.#deletes.set(table, stmt);
+    }
+    stmt.run(keyValue);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Binary log format
 // ---------------------------------------------------------------------------
@@ -405,7 +536,54 @@ function applyJsonFast(
   return performance.now() - start;
 }
 
-function applyBinary(applier: FastApplier, buf: Buffer): number {
+/** json-fast, minus the per-row key building and array spread. */
+function applyDirect(
+  applier: DirectApplier,
+  entries: readonly string[],
+): number {
+  const start = performance.now();
+  const cols: string[] = [];
+  const vals: unknown[] = [];
+  for (const json of entries) {
+    const msg = JSON.parse(json) as ChangeStreamData;
+    const [type] = msg;
+    if (type === 'begin') {
+      applier.begin(msg[2].commitWatermark);
+      continue;
+    }
+    if (type === 'commit') {
+      applier.commit(msg[2].watermark);
+      continue;
+    }
+    const change = msg[1] as {
+      tag: string;
+      relation: {name: string};
+      new?: Record<string, unknown>;
+      key?: Record<string, unknown>;
+    };
+    const table = change.relation.name;
+    if (change.tag === 'delete') {
+      applier.delete(table, must(change.key).id);
+      continue;
+    }
+    const row = must(change.new);
+    cols.length = 0;
+    vals.length = 0;
+    for (const k in row) {
+      const v = row[k];
+      cols.push(k);
+      vals.push(typeof v === 'boolean' ? (v ? 1 : 0) : (v as unknown));
+    }
+    if (change.tag === 'insert') {
+      applier.insert(table, cols, vals);
+    } else {
+      applier.update(table, cols, vals, row.id);
+    }
+  }
+  return performance.now() - start;
+}
+
+function applyBinary(applier: DirectApplier, buf: Buffer): number {
   const start = performance.now();
   const cols: string[] = [];
   const vals: unknown[] = [];
@@ -454,7 +632,7 @@ function applyBinary(applier: FastApplier, buf: Buffer): number {
     const table = TABLE_IDS[tableId]!;
     const columns = TABLE_COLUMNS[tableId]!;
     if (op === OP_DELETE) {
-      applier.delete(table, 'id', readValue());
+      applier.delete(table, readValue());
       continue;
     }
     const n = buf[p++]!;
@@ -473,7 +651,7 @@ function applyBinary(applier: FastApplier, buf: Buffer): number {
     if (op === OP_INSERT) {
       applier.insert(table, cols, vals);
     } else {
-      applier.update(table, cols, vals, 'id', id);
+      applier.update(table, cols, vals, id);
     }
   }
   return performance.now() - start;
@@ -598,7 +776,7 @@ function checksum(db: Database): string {
 // Bench
 // ---------------------------------------------------------------------------
 
-type Variant = 'baseline' | 'json-fast' | 'binary';
+type Variant = 'baseline' | 'json-fast' | 'direct' | 'binary';
 
 type VariantResult = {
   readonly variant: Variant;
@@ -644,7 +822,12 @@ describe('replicator/logical-log applier headroom', () => {
       const results = new Map<Variant, VariantResult>();
       let expected: string | undefined;
 
-      for (const variant of ['baseline', 'json-fast', 'binary'] as const) {
+      for (const variant of [
+        'baseline',
+        'json-fast',
+        'direct',
+        'binary',
+      ] as const) {
         const mbPerSecond: number[] = [];
         const changesPerSecond: number[] = [];
         const usPerChange: number[] = [];
@@ -657,7 +840,9 @@ describe('replicator/logical-log applier headroom', () => {
                 ? applyBaseline(newProcessor(db), entries)
                 : variant === 'json-fast'
                   ? applyJsonFast(new FastApplier(db), entries)
-                  : applyBinary(new FastApplier(db), binary);
+                  : variant === 'direct'
+                    ? applyDirect(new DirectApplier(db), entries)
+                    : applyBinary(new DirectApplier(db), binary);
 
             const actual = checksum(db);
             if (variant === 'baseline') {
@@ -722,7 +907,12 @@ function report(
   ].join(' ');
   console.log(header);
   console.log('-'.repeat(header.length));
-  for (const variant of ['baseline', 'json-fast', 'binary'] as const) {
+  for (const variant of [
+    'baseline',
+    'json-fast',
+    'direct',
+    'binary',
+  ] as const) {
     const r = must(results.get(variant));
     const mb = median(r.mbPerSecond);
     console.log(
