@@ -38,7 +38,11 @@
 // Three stages are timed so the cost can be attributed:
 //
 //   parse        BigIntJSON.parse of each entry. Unavoidable when the log
-//                comes from bytes rather than an in-process stream.
+//                comes from bytes rather than an in-process stream -- but the
+//                implementation is not: `BigIntJSON` hand-rolls a parser so
+//                int8 values past 2^53 survive, and that costs ~3x against the
+//                engine's own `JSON.parse` (67 vs 196 MB/s here). The bench
+//                reports both.
 //   validate     valita validation of the parsed entry, which the live
 //                subscription path pays in `streamInStringified`. A log we
 //                wrote ourselves arguably does not need it -- this measures
@@ -126,6 +130,14 @@
 // measurement. `WAL MB` is the WAL left on disk after replaying the log --
 // under the replication-manager's `wal_autocheckpoint = 0` this is the write
 // amplification a replay would inflict on the file litestream is shipping.
+//
+// A CPU profile of the apply loop alone, at a 977 MB replica, splits roughly:
+// 41% inside SQLite, 27% in BigIntJSON.parse, and ~20% in per-change JS on the
+// way there -- rebuilding the INSERT/UPDATE text for every row, re-normalizing
+// its whitespace in the statement cache, quoting identifiers, and converting
+// the row. Only the first of those grows with the replica; the other two are
+// fixed per change, so they dominate on a small replica and fade on a large
+// one. It is not disk: moving the replica to tmpfs buys ~10%.
 //
 // Throughput falls as the replica grows, and that is SQLite, not this bench:
 // random-key updates against a bare table with no Zero code in the path go
@@ -857,6 +869,26 @@ function parseOnly(entries: readonly string[]): number {
   return elapsed;
 }
 
+/**
+ * Native `JSON.parse` over the same entries. `BigIntJSON` exists to carry
+ * int8 values past 2^53 without losing precision, and it pays for that with a
+ * hand-written parser; this measures what that costs against the engine's own.
+ * A replay path that knows its log has no oversized integers -- or that can
+ * fall back on detecting one -- gets the difference back.
+ */
+function nativeParseOnly(entries: readonly string[]): number {
+  const start = performance.now();
+  let sink = 0;
+  for (const json of entries) {
+    sink += (JSON.parse(json) as unknown[]).length;
+  }
+  const elapsed = performance.now() - start;
+  if (sink < 0) {
+    throw new Error('unreachable');
+  }
+  return elapsed;
+}
+
 /** Parse + valita validation, i.e. what the live subscription path pays. */
 function parseAndValidate(entries: readonly string[]): number {
   const start = performance.now();
@@ -935,6 +967,7 @@ type CaseResult = {
   readonly applyMBPerSecond: readonly number[];
   readonly parseMBPerSecond: readonly number[];
   readonly validateMBPerSecond: readonly number[];
+  readonly nativeParseMBPerSecond: readonly number[];
   readonly changesPerSecond: readonly number[];
   readonly replicaMB: number;
   readonly walMB: number;
@@ -1044,15 +1077,18 @@ function printResults(title: string, results: readonly CaseResult[]) {
     );
   }
   console.log('');
-  console.log(
-    'Validation cost (valita, as paid by the live subscription path):',
-  );
+  console.log('Deserialization cost, over the same entries:');
   for (const r of results) {
     const parse = median(r.parseMBPerSecond);
     const validate = median(r.validateMBPerSecond);
+    const native = median(r.nativeParseMBPerSecond);
     console.log(
-      `  ${r.name}: parse ${fmt(parse)} MB/s -> parse+validate ` +
-        `${fmt(validate)} MB/s`,
+      `  ${r.name}:\n` +
+        `      native JSON.parse   ${fmt(native)} MB/s\n` +
+        `      BigIntJSON.parse    ${fmt(parse)} MB/s ` +
+        `(${fmt(native / parse, 2)}x slower)\n` +
+        `      + valita validation ${fmt(validate)} MB/s ` +
+        `(as paid by the live subscription path)`,
     );
   }
   console.log('');
@@ -1193,6 +1229,7 @@ function runCase(
   const changesPerSecond: number[] = [];
   const parseMBPerSecond: number[] = [];
   const validateMBPerSecond: number[] = [];
+  const nativeParseMBPerSecond: number[] = [];
   const commitCount = Math.ceil(log.txs.length / coalesce);
   let replicaMB = 0;
   let walMB = 0;
@@ -1202,6 +1239,7 @@ function runCase(
     // the restore.
     parseMBPerSecond.push((logMB * 1000) / parseOnly(entries));
     validateMBPerSecond.push((logMB * 1000) / parseAndValidate(entries));
+    nativeParseMBPerSecond.push((logMB * 1000) / nativeParseOnly(entries));
 
     const replica = openRestoredReplica(
       fixture.basePath,
@@ -1235,6 +1273,7 @@ function runCase(
     applyMBPerSecond,
     parseMBPerSecond,
     validateMBPerSecond,
+    nativeParseMBPerSecond,
     changesPerSecond,
     replicaMB,
     walMB,
