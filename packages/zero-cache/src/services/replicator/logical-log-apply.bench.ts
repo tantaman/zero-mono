@@ -534,10 +534,18 @@ function pickRecent(rand: () => number, length: number): number {
  * Flattens a log into the entries a replayer actually feeds the processor.
  *
  * With `coalesce > 1`, intermediate begin/commit framing is dropped and the
- * group commits once at the final watermark. Every row in the group then
- * lands at that watermark, which is fine for a replication-manager replica --
- * it serves no queries, and the watermark only has to be monotonic and
- * accurate at the point replay stops.
+ * group commits once at the final watermark. Nothing reads a replica while it
+ * is catching up, so the intermediate commits are not observable and only the
+ * watermark replay stops at has to be exact.
+ *
+ * The trade is real but small, and it is not zero: every row touched inside a
+ * group gets that group's final `_0_version` rather than the version of the
+ * transaction that actually changed it. Versions only ever move forward, so
+ * this cannot lose a change -- but a ViewSyncer that later restores this
+ * replica will see rows as having changed more recently than they did, and
+ * re-send some rows to clients that did not need them. The window is bounded
+ * by the coalescing factor, so this is a knob to turn deliberately, not one to
+ * max out.
  */
 function replayEntries(log: GeneratedLog, coalesce: number): string[] {
   const entries: string[] = [];
