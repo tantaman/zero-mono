@@ -297,7 +297,79 @@ of that frame is boundary cost, which is exactly what the C harness removes.
 
 ---
 
-## 7. Levers that were measured and failed
+## 7. Why it slows down: key scheme and table structure
+
+Two candidate explanations for the size-dependence, both about how rows are
+*keyed* rather than how much data there is. `bench/logical-log-ceiling/keys.c`
+tests them crossed, in C, with the same row payload throughout.
+
+**Inserts** (rows/s, into a table growing to N):
+
+| N | random (uuid4) | time-ordered (v7) | seqnum |
+| --- | --- | --- | --- |
+| 250k | 197,637 | **475,610** | 446,676 |
+| 1M | 101,801 | **420,887** | 326,934 |
+| 2M | 84,095 | **310,416** | 290,739 |
+| 4M | 77,637 | **240,507** | 234,634 |
+
+**Random point updates** (rows/s, 50k by key):
+
+| N | random (uuid4) | time-ordered (v7) | seqnum |
+| --- | --- | --- | --- |
+| 250k | 122,052 | 121,027 | 120,019 |
+| 1M | 104,578 | 100,957 | 104,274 |
+| 2M | 93,276 | 89,140 | 92,904 |
+| 4M | 86,359 | 76,964 | 75,086 |
+
+### Is it the missing primary key? No — a real one is worse
+
+The replica ends up as a plain rowid table with the key in a separate UNIQUE
+index, so a lookup by id is two B-tree descents. Making `id` a real
+`PRIMARY KEY` in a `WITHOUT ROWID` table collapses that to one — and measured
+**slower on both axes**, at 2M rows:
+
+| Structure | insert rows/s | update rows/s |
+| --- | --- | --- |
+| rowid + unique index (today) | **84,095** | **93,276** |
+| `WITHOUT ROWID`, `PRIMARY KEY(id)` | 41,797 | 69,827 |
+
+`WITHOUT ROWID` stores the whole row inside the key-ordered B-tree. Our rows are
+~600 bytes, so interior pages hold far fewer keys, the tree is deeper, and every
+split moves more bytes. SQLite's own guidance is that `WITHOUT ROWID` suits
+small rows; these are not small rows. **Leave the schema as it is.**
+
+### Is it random keys? Yes — but only for inserts
+
+Time-ordered keys are **2.4×–4.1× faster to insert** at every table size, and
+the advantage does not fade: 310k vs 84k rows/s at 2M. Random keys scatter each
+insert to an unpredictable index page, dirtying a fresh page nearly every time;
+an ordered key appends at the right edge, where the page is already hot.
+
+For **updates the key scheme makes no difference at all** — every scheme lands
+within noise of the others at every size. A random point update is a random
+descent no matter how the tree was built.
+
+### Neither flattens the curve
+
+Random inserts degrade 2.5× from 250k to 4M rows; ordered inserts degrade 2.0×;
+updates degrade ~1.4×. Ordered keys shift the whole curve *up*, they do not make
+it flat. The size-dependence in §3 is real B-tree behaviour and survives both
+changes.
+
+> **Scope.** The key scheme is the *application's* choice — zbugs and friends
+> mint nanoid-style random ids — not something the replicator picks. So this is
+> schema guidance for app authors, and it is worth the most where the workload
+> is insert-dominated: initial sync, backfills, and append-heavy tables. It does
+> nothing for an update-heavy replay.
+>
+> These are controlled comparisons of key scheme and table structure with a
+> deliberately simplified row (fixed-length text, four updated columns), so the
+> absolute rates run well above the replay numbers elsewhere in this document.
+> Read the ratios, not the magnitudes.
+
+---
+
+## 8. Levers that were measured and failed
 
 Recorded so they are not re-tried blind. All at 977 MB, mixed, replay pragmas.
 
@@ -362,7 +434,7 @@ it is a pessimization unless it is actually buying parallelism.
 
 ---
 
-## 8. Open questions
+## 9. Open questions
 
 1. **`SQLITE_ENABLE_STMT_SCANSTATUS` is on**, adding per-VDBE-step accounting to
    every row. It is the one compile flag still worth questioning —
@@ -383,7 +455,7 @@ it is a pessimization unless it is actually buying parallelism.
 
 ---
 
-## 9. Running it
+## 10. Running it
 
 ```bash
 pnpm --filter zero-cache run bench logical-log-apply

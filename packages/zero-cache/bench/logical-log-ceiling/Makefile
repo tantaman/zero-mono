@@ -5,9 +5,14 @@ SQLITE_DIR := $(shell node -e "console.log(require.resolve('@rocicorp/zero-sqlit
 DEFINES_GYPI := $(SQLITE_DIR)/../defines.gypi
 DEFS := $(shell grep -o "'SQLITE_[A-Z0-9_]*\(=[0-9x]*\)\?'" $(DEFINES_GYPI) | tr -d "'" | sort -u | sed 's/^/-D/')
 
+all: apply keys
+
 apply: apply.c
 	cc -O3 -DNDEBUG $(DEFS) -I$(SQLITE_DIR) -o $@ apply.c $(SQLITE_DIR)/sqlite3.c -lpthread -lm -ldl
 
+keys: keys.c
+	cc -O3 -DNDEBUG $(DEFS) -I$(SQLITE_DIR) -o $@ keys.c $(SQLITE_DIR)/sqlite3.c -lpthread -lm -ldl
+
 clean:
-	rm -f apply
-.PHONY: clean
+	rm -f apply keys
+.PHONY: all clean

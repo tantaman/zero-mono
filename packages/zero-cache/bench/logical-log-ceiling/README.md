@@ -62,4 +62,20 @@ Read from that:
   6.2 fixed cost at 12 MB) — the irreducible part, and the reason replica size
   dominates everything else.
 
+## `keys.c` — why replay slows down as the replica grows
+
+A second harness in this directory, crossing key scheme (random uuid4 /
+time-ordered uuidv7 / decimal suffix) against table structure (rowid + unique
+index, as the replica has today, vs `WITHOUT ROWID` with a real primary key).
+
+```bash
+make keys
+./keys 2000000 50000     # rows, then random updates
+```
+
+Headline: time-ordered keys insert **2.4×–4.1× faster** at every table size and
+make **no difference to updates**; a real `WITHOUT ROWID` primary key is
+*slower* on both, because ~600-byte rows make for a deep key-ordered tree.
+Neither flattens the size curve.
+
 See `LOGICAL_LOG_REPLAY_BENCHMARK.md` at the repo root for the full picture.
