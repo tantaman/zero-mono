@@ -5,10 +5,11 @@ in S3 + logical log segments in S3" instead of litestream? We already have a CDC
 stream and a component that applies it to SQLite. The number that decides it is:
 how fast can a stored logical log be replayed into a SQLite replica?
 
-**Status.** Measured. The approach is viable; the ceiling is roughly 14 MB/s of
-uncompressed log against a 1 GB replica, which is ~1:12 to catch up on 1 GB of
-log. Whether that is good enough is a product decision about snapshot frequency,
-not an engineering one — see [Open questions](#open-questions).
+**Status.** Measured, including the absolute ceiling. Against a 1 GB replica the
+current path does 9.1 MB/s; a prototype TypeScript applier does 14.3; a C
+harness with a zero-parse log and permanently prepared statements does **30.9**
+(1 GB of log in ~33 s). **We are 3.4× off the machine, not 100×** — and 2.1× of
+that gap is the JS↔native boundary. See [§6](#6-the-absolute-ceiling).
 
 ---
 
@@ -19,6 +20,7 @@ not an engineering one — see [Open questions](#open-questions).
 | `packages/zero-cache/src/services/replicator/logical-log-fixture.ts` | Deterministic CDC stream generator + table/index specs. Shared, so every benchmark replays byte-identical input. |
 | `.../logical-log-apply.bench.ts` | What the **current** apply path costs. Sweeps workload × coalescing × pragma profile × replica size. |
 | `.../logical-log-applier-headroom.bench.ts` | How much of that cost is **recoverable**. Compares the current path against a prototype applier and a binary log format. |
+| `packages/zero-cache/bench/logical-log-ceiling/` | The **absolute ceiling**: a C harness with a zero-parse `mmap`'d log and permanently prepared statements. See [§6](#6-the-absolute-ceiling). |
 
 Log entries are the canonical downstream wire form — exactly what
 `serializeChangeStreamData()` produces and what the change-streamer already
@@ -72,8 +74,10 @@ Against a **977 MB replica** (2M rows), mixed workload, replay pragmas:
 | Replay throughput, current path | **9.2 MB/s** |
 | Replay throughput, prototype applier | **14.3 MB/s** |
 | Replay throughput, prototype applier + binary format | 15.4 MB/s |
+| Replay throughput, **C harness** (absolute ceiling) | **30.9 MB/s** |
 | 1 GB of log, current path | 2:06 |
 | 1 GB of log, prototype applier | **~1:12** |
+| 1 GB of log, C harness | **~0:33** |
 | 1 GB of log, stored in S3 | **72 MB** (gzip -1, 14.4×) |
 
 Storage and transfer are not the constraint. CPU is.
@@ -250,7 +254,50 @@ this replica size, so even a free decode lands near 2.4×.
 
 ---
 
-## 6. Levers that were measured and failed
+## 6. The absolute ceiling
+
+`packages/zero-cache/bench/logical-log-ceiling/` is a C harness built to bound
+the optimization work. Everything removable is removed: the log is `mmap`'d and
+walked by pointer arithmetic over fixed-stride records (no parsing), strings are
+bound `SQLITE_STATIC` straight out of the mapping (no copying), nothing is
+allocated per change, and every statement is prepared once and only reset and
+rebound. It compiles against the same amalgamation and the same defines as
+`@rocicorp/zero-sqlite3`, so it is not measuring a different SQLite.
+
+Both harnesses print the same checksum over the resulting replica and **they
+match exactly**, so the two paths provably did the same work.
+
+Applying a 24 MB log (42,890 changes, mixed, 256 txns/commit) with
+`journal_mode=OFF`, `synchronous=OFF`, `locking_mode=EXCLUSIVE`:
+
+| Replica | C harness | Best TypeScript applier | Current path |
+| --- | --- | --- | --- |
+| 12 MB | **6.2 µs/change** (90 MB/s) | 13.3 µs (43 MB/s) | 32.4 µs (17.2 MB/s) |
+| 977 MB | **18.1 µs/change** (31 MB/s) | 38.0 µs (14.7 MB/s) | 61.4 µs (9.1 MB/s) |
+
+Three things fall out of that:
+
+- **The gap from today is 3.4×, not 100×.** 1 GB of log lands in ~33 s rather
+  than ~2:06. The approach is not fighting an order of magnitude.
+- **~2.1× of the gap is the JS↔native boundary**, and it is remarkably stable —
+  2.15× at 12 MB, 2.10× at 977 MB. No amount of TypeScript tuning reaches it;
+  the prototype applier already captured what is reachable from that side.
+- **SQLite's size-dependent work is ~12 µs/change** (18.1 at 977 MB minus the
+  6.2 µs fixed cost at 12 MB). That is the irreducible part, and it is why
+  replica size dominates every other lever.
+
+### Correction: the profile over-attributed cost to SQLite
+
+§5 reports a CPU profile splitting the baseline ~41% "native SQLite". The C
+harness does the *entire* job in 18.1 µs where that profile implied SQLite alone
+was ~25 µs of the 61.4. The profile's `run` frame was charging
+better-sqlite3's napi marshalling — converting and copying every bound value
+across the JS/C++ boundary — to SQLite. Real SQLite work is ≤18.1 µs; the rest
+of that frame is boundary cost, which is exactly what the C harness removes.
+
+---
+
+## 7. Levers that were measured and failed
 
 Recorded so they are not re-tried blind. All at 977 MB, mixed, replay pragmas.
 
@@ -284,9 +331,15 @@ every cross-table read.
 
 ### Is it a global lock? No — measured
 
-The obvious suspect was process-global contention: `PRAGMA compile_options`
-shows `THREADSAFE=2` and `SYSTEM_MALLOC` with `SQLITE_DEFAULT_MEMSTATUS` **not**
-disabled, so every `malloc`/`free` takes a global mutex to update statistics.
+The obvious suspect was process-global contention — a global allocator mutex
+serializing every `malloc`/`free`.
+
+> **Correction.** An earlier version of this document claimed
+> `SQLITE_DEFAULT_MEMSTATUS` was left enabled. It is not: `defines.gypi` sets
+> `SQLITE_DEFAULT_MEMSTATUS=0`, and `PRAGMA compile_options` does report
+> `DEFAULT_MEMSTATUS=0` at runtime. The earlier reading came from a truncated
+> dump that cut off the alphabetically-first options. So the global-mutex
+> concern never applied — which the experiment below independently confirms.
 
 That is separable. Give each writer its **own database file** and nothing is
 shared at the SQLite level; anything still limiting throughput has to be
@@ -309,34 +362,36 @@ it is a pessimization unless it is actually buying parallelism.
 
 ---
 
-## 7. Open questions
+## 8. Open questions
 
-1. **Compile flags — worth a few percent single-threaded, but not the
-   concurrency story** (that is settled above). `THREADSAFE=2` is already the
-   right choice and `SQLITE_ENABLE_MEMORY_MANAGEMENT` is already off. Two are
-   suboptimal and **untested**, since changing them needs a SQLite rebuild:
-   - `SQLITE_DEFAULT_MEMSTATUS` is not disabled, so every allocation takes a
-     global mutex to maintain statistics nothing reads.
-   - `SQLITE_ENABLE_STMT_SCANSTATUS` is **on**, adding per-VDBE-step accounting
-     to every row.
-
-   Both are bounded by SQLite's ~41% share of per-change cost, so the ceiling on
-   this is small — but it is free throughput if a rebuild is cheap.
-2. **Snapshot frequency.** The real knob. At 14 MB/s, a 60-second recovery
+1. **`SQLITE_ENABLE_STMT_SCANSTATUS` is on**, adding per-VDBE-step accounting to
+   every row. It is the one compile flag still worth questioning —
+   `THREADSAFE=2` is right, `SQLITE_DEFAULT_MEMSTATUS=0` is already set, and
+   `SQLITE_ENABLE_MEMORY_MANAGEMENT` is already off. Untested, since the C
+   harness inherits the same defines by design; measuring it means building both
+   ways.
+2. **A native applier.** The ceiling says 2.1× sits on the far side of the
+   JS↔native boundary. Whether that is worth a native component — and whether it
+   could reuse the C harness's zero-parse format — is the real open design
+   question.
+3. **Snapshot frequency.** The real knob. At 14 MB/s, a 60-second recovery
    budget means keeping the log under ~800 MB.
-3. **Log compaction** — last write per key before replaying. On a 240 MB log:
+4. **Log compaction** — last write per key before replaying. On a 240 MB log:
    1.06× insert-heavy, 1.28× mixed, **1.46× update-heavy**, and the ratio grows
    with log size. Heavily workload-dependent; measure on a real log.
-4. **Replicas past 1 GB**, where the trend says the answer gets materially worse.
+5. **Replicas past 1 GB**, where the trend says the answer gets materially worse.
 
 ---
 
-## 8. Running it
+## 9. Running it
 
 ```bash
 pnpm --filter zero-cache run bench logical-log-apply
 pnpm --filter zero-cache run bench logical-log-applier-headroom
 ```
+
+For the C ceiling harness, see its own
+[README](packages/zero-cache/bench/logical-log-ceiling/README.md).
 
 Knobs (all optional) are documented in each file's header. The most useful:
 
