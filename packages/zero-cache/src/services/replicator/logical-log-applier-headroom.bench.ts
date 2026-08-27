@@ -53,6 +53,35 @@
 // ~41% of the baseline's per-change cost at this replica size, so even a free
 // decode lands somewhere near 2.4x.
 //
+// ## Levers that were measured and did not work
+//
+// Recorded here so they are not re-tried blind. All against a 977 MB replica,
+// mixed workload, replay pragmas.
+//
+//   page_size 8K / 16K      worse, 5.6 -> 4.7 -> 4.0 MB/s. Random single-row
+//                           updates pay for the whole page they touch, and a
+//                           shallower B-tree does not make that back.
+//   journal_mode = wal2     slower than wal (6.5 vs 7.4 MB/s). wal2 exists so
+//                           readers cannot starve a checkpoint; replay has no
+//                           readers, so it is overhead with no upside.
+//   mmap_size = 2 GB        ~15%, inside this machine's run-to-run noise.
+//   BEGIN CONCURRENT        worse, and decisively. This SQLite build (3.54.0)
+//     across 2-4 writers     does support it, so the idea is testable rather
+//                           than impossible. Partitioned by primary-key hash:
+//                           13.6 -> 8.7 -> 8.6 MB/s with retries climbing
+//                           76 -> 356. Partitioned by table, so two writers
+//                           share no B-tree at all: 13.2 -> 9.3 MB/s with
+//                           *zero* retries, which rules out conflicts as the
+//                           explanation. What is left is shared by every
+//                           writer regardless of what they touch: the WAL
+//                           append, the commit's snapshot validation, and a
+//                           page cache that fragments per connection.
+//
+// The conclusion those share: SQLite writes do not parallelize within one
+// database file. They would across separate files -- separate files mean
+// separate write locks -- so a replica sharded per table is the version of
+// this idea that could work, at the cost of every cross-table read.
+//
 //   pnpm --filter zero-cache run bench logical-log-applier-headroom
 //
 // Knobs:
