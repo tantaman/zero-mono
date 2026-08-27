@@ -265,7 +265,8 @@ def issue_text(rng, templates, components, text_entropy):
     return body
 
 
-def gen_zbugs(db, target_bytes, root, rng, versions, text_entropy):
+def gen_zbugs(db, target_bytes, root, rng, versions, text_entropy,
+              issues_per_user=50):
     titles, descs, comments, labels, components, projnames = load_templates(root)
     for stmt in ZBUGS_DDL:
         db.execute(stmt)
@@ -304,7 +305,7 @@ def gen_zbugs(db, target_bytes, root, rng, versions, text_entropy):
     while True:
         # users for this batch
         new_users = []
-        for _ in range(max(1, batch // 50)):
+        for _ in range(max(1, batch // issues_per_user)):
             # login and githubID both carry UNIQUE indexes upstream. Draw them
             # from a counter rather than at random: at a few tens of thousands
             # of users, random draws collide by the birthday bound.
@@ -582,6 +583,11 @@ def main():
     ap.add_argument("--version-mode", choices=["constant", "mixed", "random"],
                     default="mixed",
                     help="cardinality of the _0_version column")
+    ap.add_argument("--issues-per-user", type=int, default=50,
+                    help="issues per user. Lowering it raises the number of "
+                         "distinct entities the id-reference columns point at, "
+                         "without changing the file size -- which is how you "
+                         "separate 'bigger file' from 'more entities'.")
     ap.add_argument("--text-entropy", choices=["template", "high"], default="template",
                     help="template = the gigabugs seed corpus verbatim (very "
                          "repetitive); high = adds per-row unique traces/ids")
@@ -595,7 +601,8 @@ def main():
     db.execute("PRAGMA page_size=%d" % args.page_size)
 
     if args.schema == "zbugs":
-        gen_zbugs(db, target, args.root, rng, versions, args.text_entropy)
+        gen_zbugs(db, target, args.root, rng, versions, args.text_entropy,
+                  args.issues_per_user)
         indexes = ZBUGS_INDEXES
     else:
         gen_chinook(db, target, rng, versions)
@@ -616,6 +623,7 @@ def main():
     print(json.dumps({
         "schema": args.schema, "path": args.out,
         "version_mode": args.version_mode, "text_entropy": args.text_entropy,
+        "issues_per_user": args.issues_per_user,
         "bytes": os.path.getsize(args.out),
         "heap_bytes": heap,
         "page_size": args.page_size,

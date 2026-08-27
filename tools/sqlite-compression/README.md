@@ -57,6 +57,31 @@ python3 model.py --results matrix.jsonl --target-gb 100
   verbatim, which is far more repetitive than real issue prose. `high` adds
   per-row unique traces and ids. Real data sits between them.
 
+## Results
+
+`results/` holds the raw measurements from the sweep this harness was written
+for: 28 databases across two schemas at 1/2/4/10GB, 11 codec configurations,
+on 4 vCPU. `report.txt` is `model.py` run over `matrix.jsonl`.
+
+Headline: a 100GB replica lands at 35-45GB uploaded with zstd-3 -- roughly
+2.3-2.8x, not the 5-10x usually assumed. 41-44% of the file is index B-tree,
+and in a nanoid-keyed schema those pages are near-random bytes.
+
+Three findings worth knowing before you tune anything:
+
+* **The ratio tracks entity count, not file size.** Holding the file at exactly
+  1GB and varying only how many users the issues point at moves zstd-3 from
+  36.42% (549 users) to 41.81% (53,651 users). That accounts for nearly all of
+  the +2.44pp-per-decade drift seen when the file itself grows. Integer-keyed
+  chinook is immune -- SQLite varint-encodes its foreign keys, so they grow in
+  the raw file at the same rate as their entropy.
+* **A logical dump is half the size of a page image** (20.3% vs 39.2% for
+  zbugs) because it carries no index data, but restore goes from 7.4s to 44.4s
+  at 2GB and litestream cannot consume it.
+* **VACUUM buys nothing** (39.20% -> 39.19%) and **raising the page size hurts**
+  (39.20% at 4K, 40.63% at 64K). `--long` does not help either; it costs 30% of
+  throughput for a fractionally worse ratio.
+
 ## Caveat
 
 Generated data cannot settle the ratio for a real deployment — text entropy is

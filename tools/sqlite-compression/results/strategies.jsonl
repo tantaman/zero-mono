@@ -1,0 +1,12 @@
+{"strategy": "page-image", "schema": "zbugs", "gb": "2", "page_size": "4096", "raw": "1979068416", "comp": "775696805"}
+{"strategy": "vacuumed-page-image", "schema": "zbugs", "gb": "2", "page_size": "4096", "raw": "1979068416", "comp": "775618568", "vacuum_secs": "9.4"}
+{"strategy": "logical-dump", "schema": "zbugs", "gb": "2", "page_size": "4096", "raw": "1979068416", "comp": "401719800", "dump_secs": "109.1", "restore_secs": "44.4", "restored_bytes": "1979068416"}
+{"strategy": "page-image-restore", "schema": "zbugs", "gb": "2", "page_size": "4096", "raw": "1979068416", "comp": "775696805", "restore_secs": "7.4"}
+{"strategy": "page-image", "schema": "zbugs", "gb": "2", "page_size": "16384", "raw": "1995325440", "comp": "795328198"}
+{"strategy": "page-image", "schema": "zbugs", "gb": "2", "page_size": "65536", "raw": "2000945152", "comp": "813035097"}
+{"strategy": "page-image", "schema": "chinook", "gb": "2", "page_size": "4096", "raw": "2013704192", "comp": "737408332"}
+{"strategy": "vacuumed-page-image", "schema": "chinook", "gb": "2", "page_size": "4096", "raw": "2013704192", "comp": "738701661", "vacuum_secs": "12.7"}
+{"strategy": "logical-dump", "schema": "chinook", "gb": "2", "page_size": "4096", "raw": "2013704192", "comp": "388390967", "dump_secs": "208.5", "restore_secs": "85.2", "restored_bytes": "2013704192"}
+{"strategy": "page-image-restore", "schema": "chinook", "gb": "2", "page_size": "4096", "raw": "2013704192", "comp": "737408332", "restore_secs": "6.8"}
+{"strategy": "page-image", "schema": "chinook", "gb": "2", "page_size": "16384", "raw": "2018557952", "comp": "741528992"}
+{"strategy": "page-image", "schema": "chinook", "gb": "2", "page_size": "65536", "raw": "2019819520", "comp": "744132067"}

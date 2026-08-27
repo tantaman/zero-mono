@@ -213,35 +213,59 @@ def main():
             print("    PUT requests: %d parts = $%.4f;  storage @ %.0fd retention:"
                   " $%.4f/base" % (parts, put_cost, args.retention_days, store))
 
-    # ---- 5. how many bases per day ---------------------------------------
+    # ---- 5. what cadence is affordable -----------------------------------
     print("\n" + "=" * 78)
-    print("BASES PER DAY")
+    print("BASE CADENCE: WHAT IS AFFORDABLE")
     print("=" * 78)
+    print("  Each base is a full copy. Cost is storage x retention plus one PUT")
+    print("  per %d MiB part; transfer into S3 is free. Wall time assumes the"
+          % (LITESTREAM_PART_BYTES // 2**20))
+    print("  compressor and the uploader are streamed together, so the slower of")
+    print("  the two sets the pace.\n")
+
     for schema in schemas:
-        labels = by.get((schema, "zstd-3"))
-        if not labels:
-            continue
-        biggest = max(labels.values(), key=lambda r: r["raw_bytes"])
-        gb = project(labels, args.target_gb)
-        comp_secs = args.target_gb * 1000 / biggest["mb_per_s"]
-        print("\n  %s, zstd-3, %.1f GB per base" % (schema, gb))
-        print("    %-12s %12s %14s %16s %16s"
-              % ("link", "wall/base", "max bases/day", "$/mo storage*", "$/mo PUTs"))
-        for gbps in args.bandwidth_gbps:
-            up = gb * 8 / gbps
-            wall = max(comp_secs, up)
-            per_day = 86400 / wall
-            # steady state: retention_days worth of bases resident at once
-            resident = gb * (24 / max(wall / 3600, 1e-9)) * args.retention_days
+        # Use the fastest measured variant of each codec family: nobody
+        # compresses 100GB single-threaded when -T is available.
+        best = {}
+        for codec in codecs:
+            labels = by.get((schema, codec))
+            if not labels:
+                continue
+            fam = codec.split("-T")[0]
+            biggest = max(labels.values(), key=lambda r: r["raw_bytes"])
+            gb = project(labels, args.target_gb)
+            cand = (gb, biggest["mb_per_s"], codec)
+            if fam not in best or cand[1] > best[fam][1]:
+                best[fam] = cand
+
+        for fam in ("zstd-3", "zstd-9", "lz4"):
+            if fam not in best:
+                continue
+            gb, mbps, codec = best[fam]
+            comp_secs = args.target_gb * 1000 / mbps
             parts = int(gb * 1e9 / LITESTREAM_PART_BYTES) + 1
-            print("    %-12s %12s %14.0f %16s %16s"
-                  % ("%.1f Gbps" % gbps, fmt_time(wall), per_day,
-                     "$%.2f" % (resident * STORAGE_PER_GB_MONTH),
-                     "$%.2f" % (parts / 1000 * PUT_PER_1K * per_day * 30)))
-        print("    * storage if you mint at the max rate and hold %.0f day(s)."
-              % args.retention_days)
-        print("      One base/day held 1 day = $%.2f/mo."
-              % (gb * STORAGE_PER_GB_MONTH * 1 / 30 * 30))
+            put_each = parts / 1000 * PUT_PER_1K
+            print("  %s / %s -- %.1f GB per base, compress %s (%.0f MB/s)"
+                  % (schema, codec, gb, fmt_time(comp_secs), mbps))
+            print("    %-14s %11s %11s %10s %11s %11s"
+                  % ("cadence", "wall/base", "duty cycle", "resident",
+                     "$/mo store", "$/mo PUT"))
+            for per_day, name in ((1, "daily"), (6, "every 4h"), (24, "hourly")):
+                # retention: hold each base for retention_days
+                resident_gb = gb * per_day * args.retention_days
+                store_mo = resident_gb * STORAGE_PER_GB_MONTH
+                put_mo = put_each * per_day * 30
+                # wall time at the most constrained link we were asked about
+                slowest = min(args.bandwidth_gbps)
+                up = gb * 8 / slowest
+                wall = max(comp_secs, up)
+                duty = 100 * wall * per_day / 86400
+                print("    %-14s %11s %10.1f%% %8.0f GB %11s %11s"
+                      % (name, fmt_time(wall), duty, resident_gb,
+                         "$%.2f" % store_mo, "$%.2f" % put_mo))
+            print("    (duty cycle at %.1f Gbps, the slowest link modelled;"
+                  " retention %.0f day(s))\n" % (min(args.bandwidth_gbps),
+                                                 args.retention_days))
 
 
 if __name__ == "__main__":

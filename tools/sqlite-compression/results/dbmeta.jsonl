@@ -1,0 +1,16 @@
+{"schema": "zbugs", "path": "/tmp/claude-0/-home-user-zero-mono/f0f83565-b8f0-5787-8e7b-38e13c75494a/scratchpad/bench.db", "version_mode": "mixed", "text_entropy": "template", "bytes": 992747520, "heap_bytes": 587063296, "page_size": 4096, "gen_seconds": 40.1}
+{"composition": true, "variant": "zbugs", "gb": 1.0, "index": 405671936, "table": 587063296}
+{"schema": "chinook", "path": "/tmp/claude-0/-home-user-zero-mono/f0f83565-b8f0-5787-8e7b-38e13c75494a/scratchpad/bench.db", "version_mode": "mixed", "text_entropy": "template", "bytes": 1006407680, "heap_bytes": 575057920, "page_size": 4096, "gen_seconds": 62.2}
+{"composition": true, "variant": "chinook", "gb": 1.0, "index": 431337472, "table": 575057920}
+{"schema": "chinook", "path": "/tmp/claude-0/-home-user-zero-mono/f0f83565-b8f0-5787-8e7b-38e13c75494a/scratchpad/bench.db", "version_mode": "mixed", "text_entropy": "template", "bytes": 4069531648, "heap_bytes": 2292391936, "page_size": 4096, "gen_seconds": 236.9}
+{"composition": true, "variant": "chinook", "gb": 4.0, "index": 1777127424, "table": 2292387840}
+{"schema": "zbugs", "path": "/tmp/claude-0/-home-user-zero-mono/f0f83565-b8f0-5787-8e7b-38e13c75494a/scratchpad/bench.db", "version_mode": "mixed", "text_entropy": "template", "bytes": 9856167936, "heap_bytes": 5851029504, "page_size": 4096, "gen_seconds": 381.2}
+{"composition": true, "variant": "zbugs", "gb": 10.0, "index": 4005126144, "table": 5851025408}
+{"schema": "chinook", "path": "/tmp/claude-0/-home-user-zero-mono/f0f83565-b8f0-5787-8e7b-38e13c75494a/scratchpad/bench.db", "version_mode": "mixed", "text_entropy": "template", "bytes": 10310209536, "heap_bytes": 5731164160, "page_size": 4096, "gen_seconds": 588.7}
+{"composition": true, "variant": "chinook", "gb": 10.0, "index": 4579033088, "table": 5731160064}
+{"schema": "zbugs", "path": "/tmp/claude-0/-home-user-zero-mono/f0f83565-b8f0-5787-8e7b-38e13c75494a/scratchpad/bench.db", "version_mode": "mixed", "text_entropy": "high", "bytes": 802627584, "heap_bytes": 585076736, "page_size": 4096, "gen_seconds": 36.5}
+{"composition": true, "variant": "zbugs-highentropy", "gb": 1.0, "index": 217538560, "table": 585076736}
+{"schema": "zbugs", "path": "/tmp/claude-0/-home-user-zero-mono/f0f83565-b8f0-5787-8e7b-38e13c75494a/scratchpad/bench.db", "version_mode": "mixed", "text_entropy": "high", "bytes": 3204366336, "heap_bytes": 2343260160, "page_size": 4096, "gen_seconds": 170.7}
+{"composition": true, "variant": "zbugs-highentropy", "gb": 4.0, "index": 861093888, "table": 2343256064}
+{"schema": "zbugs", "path": "/tmp/claude-0/-home-user-zero-mono/f0f83565-b8f0-5787-8e7b-38e13c75494a/scratchpad/makeup.db", "version_mode": "mixed", "text_entropy": "template", "issues_per_user": 50, "bytes": 3947180032, "heap_bytes": 2340937728, "page_size": 4096, "gen_seconds": 137.3}
+{"measurement": "disk-read", "bytes": 3947180032, "seconds": 0.69, "mb_per_s": 5749.4}

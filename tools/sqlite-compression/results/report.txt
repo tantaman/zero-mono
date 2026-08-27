@@ -1,0 +1,320 @@
+==============================================================================
+COMPRESSED SIZE AS % OF RAW, BY DB SIZE  (target 100GB)
+==============================================================================
+
+chinook
+  codec                   1GB      4GB     10GB       drift
+  lz4                  46.76%   46.94%   46.21%    -0.55 pp
+  zstd-1               38.73%   39.23%   38.88%    +0.15 pp
+  zstd-3               36.82%   36.86%   36.54%    -0.28 pp
+  zstd-9               32.72%   32.97%   32.44%    -0.28 pp
+  zstd-3-T4            36.82%   36.86%   36.54%    -0.28 pp
+  zstd-9-T4            32.72%   32.97%   32.44%    -0.28 pp
+  gzip-6               35.92%   35.99%   35.19%    -0.73 pp
+  zstd-12              32.13%        -        -            
+  zstd-19-long27       27.05%        -        -            
+  zstd-19-T4-long27    27.05%        -        -            
+  xz-6                 19.64%        -        -            
+
+zbugs
+  codec                   1GB      4GB     10GB       drift
+  lz4                  53.74%   53.59%   53.75%    +0.01 pp
+  zstd-1               44.32%   44.25%   44.56%    +0.24 pp
+  zstd-3               38.27%   39.78%   40.71%    +2.44 pp
+  zstd-9               33.52%   34.55%   35.69%    +2.17 pp
+  zstd-3-T4            38.27%   39.78%   40.71%    +2.44 pp
+  zstd-9-T4            33.52%   34.55%   35.69%    +2.17 pp
+  gzip-6               46.05%   45.62%   45.82%    -0.23 pp
+  zstd-12              32.85%        -        -            
+  zstd-19-long27       23.74%        -        -            
+  zstd-19-T4-long27    23.74%        -        -            
+  xz-6                 29.00%        -        -            
+  lz4-real                  -   61.11%        -            
+  lz4-9-real                -   53.10%        -            
+
+zbugs-highentropy
+  codec                   1GB      4GB     10GB       drift
+  lz4                  53.89%   54.01%        -    +0.12 pp
+  zstd-1               45.16%   45.15%        -    -0.01 pp
+  zstd-3               40.05%   40.98%        -    +0.93 pp
+  zstd-9               35.76%   36.75%        -    +0.99 pp
+  zstd-3-T4            40.05%   40.98%        -    +0.93 pp
+  zstd-9-T4            35.76%   36.75%        -    +0.99 pp
+  gzip-6               45.56%   45.35%        -    -0.21 pp
+  zstd-12              34.99%        -        -            
+  zstd-19-long27       26.73%        -        -            
+  zstd-19-T4-long27    26.73%        -        -            
+  xz-6                 29.87%        -        -            
+
+==============================================================================
+COMPRESSION THROUGHPUT (largest measured DB, 4 vCPU)
+==============================================================================
+  codec              schema             MB/s   % of raw 100GB compress
+  lz4                chinook            89.5     46.21%       18.6 min
+  lz4                zbugs              70.1     53.75%       23.8 min
+  lz4                zbugs-highentropy       63.7     54.01%       26.2 min
+  zstd-1             chinook           322.2     38.88%        5.2 min
+  zstd-1             zbugs             329.0     44.56%        5.1 min
+  zstd-1             zbugs-highentropy      312.9     45.15%        5.3 min
+  zstd-3             chinook           197.4     36.54%        8.4 min
+  zstd-3             zbugs             187.0     40.71%        8.9 min
+  zstd-3             zbugs-highentropy      177.5     40.98%        9.4 min
+  zstd-9             chinook            38.5     32.44%       43.3 min
+  zstd-9             zbugs              50.3     35.69%       33.1 min
+  zstd-9             zbugs-highentropy       44.3     36.75%       37.6 min
+  zstd-3-T4          chinook           622.1     36.54%        2.7 min
+  zstd-3-T4          zbugs             658.4     40.71%        2.5 min
+  zstd-3-T4          zbugs-highentropy      552.8     40.98%        3.0 min
+  zstd-9-T4          chinook           152.1     32.44%       11.0 min
+  zstd-9-T4          zbugs             203.1     35.69%        8.2 min
+  zstd-9-T4          zbugs-highentropy      167.8     36.75%        9.9 min
+  gzip-6             chinook            19.9     35.19%       83.8 min
+  gzip-6             zbugs              29.8     45.82%       55.9 min
+  gzip-6             zbugs-highentropy       29.5     45.35%       56.5 min
+  zstd-12            chinook            13.4     32.13%         2.1 hr
+  zstd-12            zbugs              23.7     32.85%       70.3 min
+  zstd-12            zbugs-highentropy       18.1     34.99%         1.5 hr
+  zstd-19-long27     chinook             1.5     27.05%        18.5 hr
+  zstd-19-long27     zbugs               1.8     23.74%        15.4 hr
+  zstd-19-long27     zbugs-highentropy        1.1     26.73%        25.3 hr
+  zstd-19-T4-long27  chinook             5.4     27.05%         5.1 hr
+  zstd-19-T4-long27  zbugs               6.6     23.74%         4.2 hr
+  zstd-19-T4-long27  zbugs-highentropy        4.2     26.73%         6.6 hr
+  xz-6               chinook             9.3     19.64%         3.0 hr
+  xz-6               zbugs               9.6     29.00%         2.9 hr
+  xz-6               zbugs-highentropy        5.6     29.87%         5.0 hr
+  lz4-real           zbugs             360.6     61.11%        4.6 min
+  lz4-9-real         zbugs              46.7     53.10%       35.7 min
+
+==============================================================================
+PROJECTED 100GB BASE IMAGE
+==============================================================================
+
+chinook
+  codec                  uploaded       vs raw      parts       size trend
+  lz4                     45.9 GB        2.18x       2738    -0.48 pp/decade
+  zstd-1                  39.2 GB        2.55x       2340    +0.20 pp/decade
+  zstd-3                  36.4 GB        2.75x       2168    -0.25 pp/decade
+  zstd-9                  32.4 GB        3.09x       1931    -0.22 pp/decade
+  zstd-3-T4               36.4 GB        2.75x       2168    -0.25 pp/decade
+  zstd-9-T4               32.4 GB        3.09x       1931    -0.22 pp/decade
+  gzip-6                  34.7 GB        2.88x       2071    -0.66 pp/decade
+  zstd-12                 32.1 GB        3.11x       1916    +0.00 pp/decade
+  zstd-19-long27          27.1 GB        3.70x       1613    +0.00 pp/decade
+  zstd-19-T4-long27       27.1 GB        3.70x       1613    +0.00 pp/decade
+  xz-6                    19.6 GB        5.09x       1171    +0.00 pp/decade
+
+zbugs
+  codec                  uploaded       vs raw      parts       size trend
+  lz4                     53.7 GB        1.86x       3200    -0.01 pp/decade
+  zstd-1                  44.7 GB        2.24x       2664    +0.21 pp/decade
+  zstd-3                  43.2 GB        2.32x       2574    +2.45 pp/decade
+  zstd-9                  37.7 GB        2.65x       2248    +2.13 pp/decade
+  zstd-3-T4               43.2 GB        2.32x       2574    +2.45 pp/decade
+  zstd-9-T4               37.7 GB        2.65x       2248    +2.13 pp/decade
+  gzip-6                  45.4 GB        2.20x       2709    -0.27 pp/decade
+  zstd-12                 32.9 GB        3.04x       1959    +0.00 pp/decade
+  zstd-19-long27          23.7 GB        4.21x       1416    +0.00 pp/decade
+  zstd-19-T4-long27       23.7 GB        4.21x       1416    +0.00 pp/decade
+  xz-6                    29.0 GB        3.45x       1729    +0.00 pp/decade
+  lz4-real                61.1 GB        1.64x       3643    +0.00 pp/decade
+  lz4-9-real              53.1 GB        1.88x       3166    +0.00 pp/decade
+
+zbugs-highentropy
+  codec                  uploaded       vs raw      parts       size trend
+  lz4                     54.3 GB        1.84x       3236    +0.20 pp/decade
+  zstd-1                  45.1 GB        2.22x       2690    -0.02 pp/decade
+  zstd-3                  43.1 GB        2.32x       2572    +1.54 pp/decade
+  zstd-9                  39.0 GB        2.56x       2328    +1.64 pp/decade
+  zstd-3-T4               43.1 GB        2.32x       2572    +1.54 pp/decade
+  zstd-9-T4               39.0 GB        2.56x       2328    +1.64 pp/decade
+  gzip-6                  44.9 GB        2.23x       2675    -0.35 pp/decade
+  zstd-12                 35.0 GB        2.86x       2086    +0.00 pp/decade
+  zstd-19-long27          26.7 GB        3.74x       1594    +0.00 pp/decade
+  zstd-19-T4-long27       26.7 GB        3.74x       1594    +0.00 pp/decade
+  xz-6                    29.9 GB        3.35x       1781    +0.00 pp/decade
+
+==============================================================================
+UPLOAD TIME AND COST PER BASE  (S3 Standard, us-east-1, transfer IN free)
+==============================================================================
+  Litestream defaults: 48 concurrent parts x 16 MiB = 768 MiB in flight
+
+  chinook / zstd-3 -> 36.4 GB uploaded (compress 8.4 min at 197 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              4.8 min        8.4 min        $0.0387
+    2.5 Gbps              1.9 min        8.4 min        $0.0387
+    5.0 Gbps                  58s        8.4 min        $0.0387
+    10.0 Gbps                 29s        8.4 min        $0.0387
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2168 parts = $0.0108;  storage @ 1d retention: $0.0279/base
+
+  chinook / zstd-9 -> 32.4 GB uploaded (compress 43.3 min at 38 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              4.3 min       43.3 min        $0.0345
+    2.5 Gbps              1.7 min       43.3 min        $0.0345
+    5.0 Gbps                  52s       43.3 min        $0.0345
+    10.0 Gbps                 26s       43.3 min        $0.0345
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 1931 parts = $0.0097;  storage @ 1d retention: $0.0248/base
+
+  chinook / lz4 -> 45.9 GB uploaded (compress 18.6 min at 90 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              6.1 min       18.6 min        $0.0489
+    2.5 Gbps              2.4 min       18.6 min        $0.0489
+    5.0 Gbps                  73s       18.6 min        $0.0489
+    10.0 Gbps                 37s       18.6 min        $0.0489
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2738 parts = $0.0137;  storage @ 1d retention: $0.0352/base
+
+  chinook / gzip-6 -> 34.7 GB uploaded (compress 83.8 min at 20 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              4.6 min       83.8 min        $0.0370
+    2.5 Gbps              1.9 min       83.8 min        $0.0370
+    5.0 Gbps                  56s       83.8 min        $0.0370
+    10.0 Gbps                 28s       83.8 min        $0.0370
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2071 parts = $0.0104;  storage @ 1d retention: $0.0266/base
+
+  zbugs / zstd-3 -> 43.2 GB uploaded (compress 8.9 min at 187 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              5.8 min        8.9 min        $0.0460
+    2.5 Gbps              2.3 min        8.9 min        $0.0460
+    5.0 Gbps                  69s        8.9 min        $0.0460
+    10.0 Gbps                 35s        8.9 min        $0.0460
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2574 parts = $0.0129;  storage @ 1d retention: $0.0331/base
+
+  zbugs / zstd-9 -> 37.7 GB uploaded (compress 33.1 min at 50 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              5.0 min       33.1 min        $0.0402
+    2.5 Gbps              2.0 min       33.1 min        $0.0402
+    5.0 Gbps                  60s       33.1 min        $0.0402
+    10.0 Gbps                 30s       33.1 min        $0.0402
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2248 parts = $0.0112;  storage @ 1d retention: $0.0289/base
+
+  zbugs / lz4 -> 53.7 GB uploaded (compress 23.8 min at 70 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              7.2 min       23.8 min        $0.0572
+    2.5 Gbps              2.9 min       23.8 min        $0.0572
+    5.0 Gbps                  86s       23.8 min        $0.0572
+    10.0 Gbps                 43s       23.8 min        $0.0572
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 3200 parts = $0.0160;  storage @ 1d retention: $0.0412/base
+
+  zbugs / gzip-6 -> 45.4 GB uploaded (compress 55.9 min at 30 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              6.1 min       55.9 min        $0.0484
+    2.5 Gbps              2.4 min       55.9 min        $0.0484
+    5.0 Gbps                  73s       55.9 min        $0.0484
+    10.0 Gbps                 36s       55.9 min        $0.0484
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2709 parts = $0.0135;  storage @ 1d retention: $0.0348/base
+
+  zbugs-highentropy / zstd-3 -> 43.1 GB uploaded (compress 9.4 min at 178 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              5.8 min        9.4 min        $0.0459
+    2.5 Gbps              2.3 min        9.4 min        $0.0459
+    5.0 Gbps                  69s        9.4 min        $0.0459
+    10.0 Gbps                 35s        9.4 min        $0.0459
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2572 parts = $0.0129;  storage @ 1d retention: $0.0331/base
+
+  zbugs-highentropy / zstd-9 -> 39.0 GB uploaded (compress 37.6 min at 44 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              5.2 min       37.6 min        $0.0416
+    2.5 Gbps              2.1 min       37.6 min        $0.0416
+    5.0 Gbps                  62s       37.6 min        $0.0416
+    10.0 Gbps                 31s       37.6 min        $0.0416
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2328 parts = $0.0116;  storage @ 1d retention: $0.0299/base
+
+  zbugs-highentropy / lz4 -> 54.3 GB uploaded (compress 26.2 min at 64 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              7.2 min       26.2 min        $0.0578
+    2.5 Gbps              2.9 min       26.2 min        $0.0578
+    5.0 Gbps                  87s       26.2 min        $0.0578
+    10.0 Gbps                 43s       26.2 min        $0.0578
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 3236 parts = $0.0162;  storage @ 1d retention: $0.0416/base
+
+  zbugs-highentropy / gzip-6 -> 44.9 GB uploaded (compress 56.5 min at 30 MB/s)
+    link                   upload     total wall         $/base
+    1.0 Gbps              6.0 min       56.5 min        $0.0478
+    2.5 Gbps              2.4 min       56.5 min        $0.0478
+    5.0 Gbps                  72s       56.5 min        $0.0478
+    10.0 Gbps                 36s       56.5 min        $0.0478
+    (streamed: compress and upload overlap, so wall time is the slower of the two)
+    PUT requests: 2675 parts = $0.0134;  storage @ 1d retention: $0.0344/base
+
+==============================================================================
+BASE CADENCE: WHAT IS AFFORDABLE
+==============================================================================
+  Each base is a full copy. Cost is storage x retention plus one PUT
+  per 16 MiB part; transfer into S3 is free. Wall time assumes the
+  compressor and the uploader are streamed together, so the slower of
+  the two sets the pace.
+
+  chinook / zstd-3-T4 -- 36.4 GB per base, compress 2.7 min (622 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily              4.8 min        0.3%       36 GB       $0.84       $0.33
+    every 4h           4.8 min        2.0%      218 GB       $5.02       $1.95
+    hourly             4.8 min        8.1%      873 GB      $20.08       $7.80
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+
+  chinook / zstd-9-T4 -- 32.4 GB per base, compress 11.0 min (152 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily             11.0 min        0.8%       32 GB       $0.74       $0.29
+    every 4h          11.0 min        4.6%      194 GB       $4.47       $1.74
+    hourly            11.0 min       18.3%      777 GB      $17.87       $6.95
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+
+  chinook / lz4 -- 45.9 GB per base, compress 18.6 min (90 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily             18.6 min        1.3%       46 GB       $1.06       $0.41
+    every 4h          18.6 min        7.8%      276 GB       $6.34       $2.46
+    hourly            18.6 min       31.0%     1102 GB      $25.35       $9.86
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+
+  zbugs / zstd-3-T4 -- 43.2 GB per base, compress 2.5 min (658 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily              5.8 min        0.4%       43 GB       $0.99       $0.39
+    every 4h           5.8 min        2.4%      259 GB       $5.96       $2.32
+    hourly             5.8 min        9.6%     1036 GB      $23.83       $9.27
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+
+  zbugs / zstd-9-T4 -- 37.7 GB per base, compress 8.2 min (203 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily              8.2 min        0.6%       38 GB       $0.87       $0.34
+    every 4h           8.2 min        3.4%      226 GB       $5.20       $2.02
+    hourly             8.2 min       13.7%      905 GB      $20.82       $8.09
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+
+  zbugs / lz4 -- 53.7 GB per base, compress 23.8 min (70 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily             23.8 min        1.7%       54 GB       $1.23       $0.48
+    every 4h          23.8 min        9.9%      322 GB       $7.41       $2.88
+    hourly            23.8 min       39.6%     1288 GB      $29.63      $11.52
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+
+  zbugs-highentropy / zstd-3-T4 -- 43.1 GB per base, compress 3.0 min (553 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily              5.8 min        0.4%       43 GB       $0.99       $0.39
+    every 4h           5.8 min        2.4%      259 GB       $5.95       $2.31
+    hourly             5.8 min        9.6%     1035 GB      $23.81       $9.26
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+
+  zbugs-highentropy / zstd-9-T4 -- 39.0 GB per base, compress 9.9 min (168 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily              9.9 min        0.7%       39 GB       $0.90       $0.35
+    every 4h           9.9 min        4.1%      234 GB       $5.39       $2.10
+    hourly             9.9 min       16.6%      937 GB      $21.55       $8.38
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+
+  zbugs-highentropy / lz4 -- 54.3 GB per base, compress 26.2 min (64 MB/s)
+    cadence          wall/base  duty cycle   resident  $/mo store    $/mo PUT
+    daily             26.2 min        1.8%       54 GB       $1.25       $0.49
+    every 4h          26.2 min       10.9%      326 GB       $7.49       $2.91
+    hourly            26.2 min       43.6%     1303 GB      $29.97      $11.65
+    (duty cycle at 1.0 Gbps, the slowest link modelled; retention 1 day(s))
+

@@ -1,0 +1,6 @@
+{"issues_per_user": 500, "users": 549, "codec": "zstd-3", "raw": 992800768, "comp": 361553300, "pct": 36.42, "ratio": 2.746}
+{"issues_per_user": 500, "users": 549, "codec": "zstd-9", "raw": 992800768, "comp": 326234707, "pct": 32.86, "ratio": 3.043}
+{"issues_per_user": 50, "users": 5491, "codec": "zstd-3", "raw": 992813056, "comp": 379892565, "pct": 38.26, "ratio": 2.613}
+{"issues_per_user": 50, "users": 5491, "codec": "zstd-9", "raw": 992813056, "comp": 332749662, "pct": 33.52, "ratio": 2.984}
+{"issues_per_user": 5, "users": 53651, "codec": "zstd-3", "raw": 990756864, "comp": 414223464, "pct": 41.81, "ratio": 2.392}
+{"issues_per_user": 5, "users": 53651, "codec": "zstd-9", "raw": 990756864, "comp": 361723246, "pct": 36.51, "ratio": 2.739}
