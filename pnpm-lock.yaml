@@ -1888,6 +1888,22 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
 
+  tools/logical-log-compression:
+    dependencies:
+      '@rocicorp/logger':
+        specifier: ^6.1.0
+        version: 6.1.0
+      postgres:
+        specifier: 3.4.7
+        version: 3.4.7(patch_hash=2bd119d361250d5ee010b23af4c98504e9c6861b692d2e2ae23b9a9e5de4dbce)
+    devDependencies:
+      oxfmt:
+        specifier: ^0.45.0
+        version: 0.45.0
+      zero-cache:
+        specifier: workspace:*
+        version: link:../../packages/zero-cache
+
   tools/process-tracker:
     dependencies:
       '@rocicorp/logger':

@@ -1,0 +1,24 @@
+{
+  "name": "logical-log-compression",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "go": "node src/main.ts",
+    "check-types": "tsc",
+    "format": "oxfmt .",
+    "check-format": "oxfmt --check .",
+    "lint": "oxlint --quiet --config ../../oxlint.config.ts",
+    "fmt": "oxfmt .",
+    "check-fmt": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@rocicorp/logger": "^6.1.0",
+    "postgres": "3.4.7"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.45.0",
+    "zero-cache": "workspace:*"
+  },
+  "packageManager": "pnpm@11.11.0"
+}
