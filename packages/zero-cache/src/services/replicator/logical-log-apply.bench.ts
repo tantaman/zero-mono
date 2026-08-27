@@ -52,11 +52,23 @@
 //   workload     insert-heavy | update-heavy | mixed
 //   coalesce     logical transactions per SQLite commit. 1 is the live
 //                streaming shape (every upstream tx is its own SQLite tx).
-//                Catchup does not need that: nothing reads the replica while
-//                it is behind, so N logical txs can share one commit. Under
-//                WAL + synchronous=NORMAL there is no per-commit fsync to
-//                amortize, so what this buys is the per-transaction overhead
-//                and the page rewrites that each commit forces into the WAL.
+//                Replay does not need that: nothing reads the replica while it
+//                is behind, so a whole chunk can share one commit.
+//                Measured result: how much this buys depends entirely on the
+//                pragma profile it runs under.
+//                  Under `rep-manager` it is a big lever (3.4 -> 7.6 MB/s at a
+//                  977 MB replica) because every commit rewrites pages into a
+//                  WAL that never checkpoints -- fewer commits, less WAL.
+//                  Under `excl` most of that is already banked: it saturates
+//                  by ~16 transactions per commit (7.2 -> 8.2 MB/s) and is
+//                  flat after that.
+//                Coalescing the *whole* chunk into one transaction is a
+//                trap at the default page cache: the dirty set outgrows the
+//                cache, SQLite spills pages mid-transaction and rewrites the
+//                ones that are touched again (update-heavy: 7.5 MB/s at 256,
+//                5.9 at whole-chunk). It only pays with a cache big enough to
+//                hold the dirty set -- at 4 GB the same case is the best
+//                result on the board, 8.2 MB/s.
 //   pragmas      a ladder of profiles, from what the replication manager runs
 //                today to what a replayer could run instead. Every pragma it
 //                relaxes exists to protect a reader or a crash, and replay has
@@ -71,9 +83,11 @@
 //                than a checkpointing WAL -- it is slightly slower until
 //                EXCLUSIVE locking brings it level -- but it removes the WAL
 //                file outright, which is worth more than the throughput.
-//                `cache_size` does nothing at all: one pass over a log touches
-//                each page about once, so there is no reuse for a cache to
-//                capture.
+//                `cache_size` does nothing at moderate batch sizes -- one pass
+//                over a log touches each page about once, so there is no reuse
+//                for a cache to capture, and 64 MB to 4 GB measures flat. It
+//                matters only as the counterpart to very large transactions,
+//                where it is what keeps the dirty set from spilling.
 //   base         rows pre-loaded into the replica before measuring, to check
 //                whether apply throughput holds up once the replica is big
 //                enough that the B-trees miss cache.
@@ -971,6 +985,7 @@ function printResults(title: string, results: readonly CaseResult[]) {
   const header = [
     'workload'.padEnd(13),
     'coalesce'.padStart(8),
+    'commits'.padStart(8),
     'pragmas'.padStart(12),
     'base MB'.padStart(9),
     'MB/s'.padStart(8),
@@ -990,7 +1005,8 @@ function printResults(title: string, results: readonly CaseResult[]) {
     console.log(
       [
         r.workload.padEnd(13),
-        String(r.coalesce).padStart(8),
+        String(Math.min(r.coalesce, r.transactions)).padStart(8),
+        String(r.commits).padStart(8),
         r.profile.padStart(12),
         fmt(r.baseMB, 0).padStart(9),
         fmt(total).padStart(8),
@@ -1245,11 +1261,10 @@ describe('replicator/logical-log apply ceiling', () => {
     try {
       for (const workload of WORKLOADS) {
         for (const coalesce of COALESCE) {
-          rows.push(runCase(fixture, workload, coalesce, 'rep-manager'));
+          for (const profile of SIZE_SWEEP_PROFILES) {
+            rows.push(runCase(fixture, workload, coalesce, profile));
+          }
         }
-        rows.push(
-          runCase(fixture, workload, must(COALESCE.at(-1)), 'excl+cache'),
-        );
       }
       const log = must(fixture.logs.get(must(WORKLOADS.at(-1))));
       fixtureLog = {log, entries: replayEntries(log, 1)};
