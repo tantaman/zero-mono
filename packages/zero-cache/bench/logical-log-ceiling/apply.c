@@ -121,6 +121,7 @@ int main(int argc, char **argv) {
   int no_key_in_update = envflag("ZLOG_NO_KEY_IN_UPDATE");
   int plain_insert = envflag("ZLOG_PLAIN_INSERT");
   int drop_secondary = envflag("ZLOG_DROP_SECONDARY");
+  int defer_indexes = envflag("ZLOG_DEFER_INDEXES");
   const char *mmap_mb = getenv("ZLOG_MMAP_MB");
   const char *cache_mb = getenv("ZLOG_CACHE_MB");
 
@@ -153,6 +154,47 @@ int main(int argc, char **argv) {
              atoll(mmap_mb) * 1048576LL);
     run_once(db, pg);
   }
+  /* Defer index maintenance: drop every index the apply path does not itself
+   * need, replay, then rebuild. The apply path only ever looks a row up by its
+   * key, so the key index stays; everything else is dead weight during replay
+   * and can be rebuilt in one sorted pass at the end.
+   *
+   * Legitimate because a replica being caught up serves no queries. A
+   * restoring ViewSyncer would rebuild before serving; the replication
+   * manager's replica needs them only once something restores from it. */
+  char *deferred_sql[32]; char *deferred_name[32]; int n_deferred = 0;
+  double drop_ms = 0, rebuild_ms = 0;
+  if (defer_indexes) {
+    sqlite3_stmt *q = prep(db,
+      "SELECT name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL");
+    while (sqlite3_step(q) == SQLITE_ROW && n_deferred < 32) {
+      const char *nm = (const char *)sqlite3_column_text(q, 0);
+      const char *sq = (const char *)sqlite3_column_text(q, 1);
+      char isql[256]; sqlite3_stmt *ii;
+      snprintf(isql, sizeof isql, "PRAGMA index_info(\"%s\")", nm);
+      if (sqlite3_prepare_v2(db, isql, -1, &ii, NULL) != SQLITE_OK) continue;
+      int ncols = 0, is_id = 0;
+      while (sqlite3_step(ii) == SQLITE_ROW) {
+        ncols++;
+        const char *c = (const char *)sqlite3_column_text(ii, 2);
+        if (c && strcmp(c, "id") == 0) is_id = 1;
+      }
+      sqlite3_finalize(ii);
+      if (ncols == 1 && is_id) continue;   /* the key index has to stay */
+      deferred_name[n_deferred] = strdup(nm);
+      deferred_sql[n_deferred] = strdup(sq);
+      n_deferred++;
+    }
+    sqlite3_finalize(q);
+    double d0 = now_ms();
+    for (int i = 0; i < n_deferred; i++) {
+      char st[256];
+      snprintf(st, sizeof st, "DROP INDEX \"%s\"", deferred_name[i]);
+      run_once(db, st);
+    }
+    drop_ms = now_ms() - d0;
+  }
+
   if (drop_secondary) {
     /* Bounds what non-key index maintenance costs. Not a real option -- the
      * replica carries upstream's indexes. */
@@ -303,6 +345,12 @@ int main(int argc, char **argv) {
   double ms = now_ms() - t0;
   proc_io(&rd1, &wr1);
 
+  if (defer_indexes) {
+    double r0 = now_ms();
+    for (int i = 0; i < n_deferred; i++) run_once(db, deferred_sql[i]);
+    rebuild_ms = now_ms() - r0;
+  }
+
   /* Same fingerprint the JS benchmark computes, so the two can be compared. */
   char buf[512]; int n = 0;
   const char *tables[2] = {"issue", "comment"};
@@ -343,6 +391,12 @@ int main(int argc, char **argv) {
              op_ms[o], op_ms[o] * 1000.0 / (double)op_n[o]);
   }
   printf("    %-7s          %7.1f ms\n", "commit", commit_ms);
+  if (defer_indexes) {
+    printf("    deferred %d index(es): drop %.1f + rebuild %.1f ms"
+           " => total %.1f ms (%.2f us/change)\n",
+           n_deferred, drop_ms, rebuild_ms, ms + drop_ms + rebuild_ms,
+           (ms + drop_ms + rebuild_ms) * 1000.0 / (double)applied);
+  }
   printf("    checksum=%s\n", buf);
   sqlite3_close(db);
   munmap((void *)map, st.st_size);

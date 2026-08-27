@@ -203,6 +203,46 @@ format rests on ~8% of replay throughput at realistic replica sizes, against
 the cost of owning a schema-versioned wire format. The applier is the clear win;
 the format is a judgement call.
 
+### 4.4 Deferring index maintenance — conditional, and the condition is size
+
+Since a replica being caught up serves no queries, the non-key indexes can be
+dropped before replay and rebuilt after. The apply path only ever looks a row up
+by its key, so the key index has to stay; everything else is dead weight during
+replay and can be rebuilt in one sorted pass at the end. Verified equivalent:
+the checksum matches with and without, and the planner uses the rebuilt indexes.
+
+Against the 977 MB / 2M-row replica:
+
+| Log | Keep indexes | Defer (apply only) | Defer + rebuild | Winner |
+| --- | --- | --- | --- | --- |
+| 12 MB | 384 ms | 206 ms | 1,851 ms | keep, by 4.8× |
+| 24 MB | 796 ms | 436 ms | 2,092 ms | keep, by 2.6× |
+| 96 MB | 2,987 ms | 1,684 ms | 3,487 ms | keep, by 1.17× |
+| 240 MB | 8,007 ms | 4,703 ms | **6,648 ms** | **defer, by 1.20×** |
+
+Replay itself gets **1.85× faster** (17.9 → 9.6 µs/change) in every case. What
+decides it is the rebuild: ~1.7 s for these two indexes over 2M rows, and that
+cost scales with **table** size while the saving scales with **log** size.
+
+Break-even lands near **130 MB of log** here, or as a portable rule:
+
+> Deferring pays when the log carries more than roughly **11% as many changes as
+> the table has rows**. (Rebuild measured ~0.83 µs/row; replay saves ~7.6
+> µs/change.)
+
+Even past break-even the win is modest — 1.2× at 240 MB — because the rebuild
+eats most of what replay saved. It is worth having as a switch for large
+catch-ups, not as a default.
+
+**The stronger version of this idea.** The replication manager's replica is
+never queried, so it need not carry the secondary indexes *at all* — a restoring
+ViewSyncer could build them once after download. That turns a per-change cost
+paid continuously into a one-time cost paid per restore, which is the better
+side of the trade given the replication manager applies changes constantly and
+restores are occasional. The cost is ~1.7 s per 2M rows added to every restore,
+on the latency-sensitive path, and a backup file that cannot serve queries until
+its indexes are built. A real trade, but the arithmetic favours it.
+
 ---
 
 ## 5. Where the time goes
