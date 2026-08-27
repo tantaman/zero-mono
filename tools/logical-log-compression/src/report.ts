@@ -1,3 +1,6 @@
+import {existsSync, readFileSync, writeFileSync} from 'node:fs';
+import {dirname, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
 /* oxlint-disable no-console */
 /**
  * Assembles results.json (and optionally field-cost.json) into a
@@ -6,42 +9,84 @@
  *   node src/report.ts --results results.json --chunks ./chunks --out report.html
  */
 import {parseArgs} from 'node:util';
-import {existsSync, readFileSync, writeFileSync} from 'node:fs';
-import {dirname, resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const {values} = parseArgs({
   options: {
-    results: {type: 'string', default: 'results.json'},
+    'results': {type: 'string', default: 'results.json'},
     'field-cost': {type: 'string', default: 'field-cost.json'},
-    chunks: {type: 'string', default: './chunks'},
+    'chunks': {type: 'string', default: './chunks'},
     /** Chunk to quote as the wire-format sample. */
-    sample: {type: 'string', default: 'zbugs--insert-viewstate-batch100'},
-    out: {type: 'string', default: 'report.html'},
+    'sample': {type: 'string', default: 'chinook--insert-track-single'},
+    'out': {type: 'string', default: 'report.html'},
   },
 });
 
 const escape = (s: string) =>
   s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
-/** Highlights the relation block and the row payload in a sample line. */
-function highlight(line: string): string {
-  return escape(line)
-    .replace(/(&quot;relation&quot;:\{.*?\}\})/, '<span class="r">$1</span>')
-    .replace(/(&quot;(?:new|key)&quot;:\{.*?\})/, '<span class="p">$1</span>')
-    .replace(/^(\[&quot;\w+&quot;)/, '<span class="k">$1</span>');
+/** Index of the `}` closing the object that opens at `open`. */
+function matchBrace(line: string, open: number): number {
+  let depth = 0;
+  let inStr = false;
+  for (let i = open; i < line.length; i++) {
+    const c = line[i];
+    if (inStr) {
+      if (c === '\\') i++;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return i;
+  }
+  return -1;
 }
 
+const HIGHLIGHTED = [
+  ['"relation":', 'r'],
+  ['"new":', 'p'],
+  ['"key":', 'p'],
+] as const;
+
+/** Tints the relation block and the row payload so the split is visible. */
+function highlight(line: string): string {
+  const spans: {from: number; to: number; cls: string}[] = [];
+  for (const [key, cls] of HIGHLIGHTED) {
+    const at = line.indexOf(key);
+    if (at < 0) continue;
+    const open = line.indexOf('{', at);
+    const close = matchBrace(line, open);
+    if (open > 0 && close > 0) spans.push({from: at, to: close + 1, cls});
+  }
+  spans.sort((a, b) => a.from - b.from);
+
+  let out = '';
+  let cursor = 0;
+  for (const {from, to, cls} of spans) {
+    if (from < cursor) continue;
+    out += escape(line.slice(cursor, from));
+    out += `<span class="${cls}">${escape(line.slice(from, to))}</span>`;
+    cursor = to;
+  }
+  return `<span class="k">${out + escape(line.slice(cursor))}</span>`;
+}
+
+/** The first complete transaction in the sample chunk. */
 function sampleTransaction(): string {
   const path = `${values.chunks}/${values.sample}.ndjson`;
   if (!existsSync(path)) return '';
-  const fd = readFileSync(path, {encoding: 'utf8'}).slice(0, 8192).split('\n');
-  const begin = fd.findIndex(l => l.startsWith('["begin"'));
-  const commit = fd.findIndex((l, i) => i > begin && l.startsWith('["commit"'));
-  const lines = [fd[begin], fd[begin + 1], fd[commit]].filter(Boolean);
-  return lines.map(highlight).join('\n\n');
+  const lines = readFileSync(path, {encoding: 'utf8'})
+    .slice(0, 1 << 16)
+    .split('\n');
+  const begin = lines.findIndex(l => l.startsWith('["begin"'));
+  const commit = lines.findIndex(
+    (l, i) => i > begin && l.startsWith('["commit"'),
+  );
+  if (begin < 0 || commit < 0) return '';
+  return lines
+    .slice(begin, commit + 1)
+    .map(highlight)
+    .join('\n\n');
 }
 
 const results = JSON.parse(readFileSync(values.results!, 'utf8'));

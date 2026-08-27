@@ -66,6 +66,13 @@ export const CODECS: Codec[] = [
   brotli(11),
 ];
 
+/**
+ * zstd's default window is smaller than a 16MiB chunk (windowLog 21 = 2MiB at
+ * level 3), so long-range matches across the chunk are unreachable. These
+ * variants raise the window to cover the whole chunk.
+ */
+export const EXTRA_CODECS: Codec[] = [zstd(6, 24), zstd(9, 24), zstd(12, 24)];
+
 export type CodecResult = {
   codec: string;
   compressedBytes: number;

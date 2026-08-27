@@ -44,6 +44,7 @@ type Result = {
   transactions?: number;
   bytesPerMessage?: number;
   bytesPerTransaction?: number;
+  byTag?: Record<string, number>;
   relationBytes?: number;
   framingBytes?: number;
   codecs: CodecResult[];
@@ -52,6 +53,22 @@ type Result = {
 };
 
 const results = JSON.parse(readFileSync(values.results!, 'utf8')) as Result[];
+
+const DATA_TAGS = ['insert', 'update', 'delete', 'truncate', 'backfill'];
+
+/**
+ * Row changes in a chunk. A message is not a row change: a single-row
+ * transaction emits three messages (begin, data, commit) for one change.
+ */
+function rowsIn(r: Result): number {
+  const tags = r.byTag ?? {};
+  const total = Object.values(tags).reduce((a, b) => a + b, 0) || 1;
+  const data = DATA_TAGS.reduce((a, t) => a + (tags[t] ?? 0), 0);
+  return (r.messages ?? 1) * (data / total);
+}
+
+const rawPerRow = (r: Result) => r.rawBytes / rowsIn(r);
+const storedPerRow = (r: Result) => pick(r).compressedBytes / rowsIn(r);
 const TTFB = Number(values['ttfb-ms']) / 1000;
 const STREAM_BPS = Number(values['stream-mbps']) * 1e6;
 const RETENTION_DAYS = Number(values.retention);
@@ -80,7 +97,7 @@ function ratioAt(r: Result, bytes: number): number {
   const pts = r.sizeSweep;
   const full = pick(r).ratio;
   if (!pts?.length) return full;
-  const sorted = [...pts].sort((a, b) => a.rawBytes - b.rawBytes);
+  const sorted = pts.toSorted((a, b) => a.rawBytes - b.rawBytes);
   if (bytes <= sorted[0].rawBytes) return sorted[0].ratio;
   for (let i = 1; i < sorted.length; i++) {
     const a = sorted[i - 1];
@@ -92,24 +109,20 @@ function ratioAt(r: Result, bytes: number): number {
       return a.ratio + t * (b.ratio - a.ratio);
     }
   }
-  return sorted[sorted.length - 1].ratio;
+  return sorted.at(-1)!.ratio;
 }
 
 // ---------------------------------------------------------------------------
 console.log(`\n## 1. Compression of a 16MiB chunk (${values.codec})\n`);
 table(
-  ['dataset / workload', 'B/change', 'ratio', 'chunk on S3', 'B/change stored'],
-  results.map(r => {
-    const c = pick(r);
-    const bpm = r.bytesPerMessage ?? 0;
-    return [
-      `${r.dataset}/${r.workload}`,
-      n(bpm, 0),
-      `${n(c.ratio, 1)}x`,
-      `${n(c.compressedBytes / MiB, 2)} MiB`,
-      n(bpm / c.ratio, 1),
-    ];
-  }),
+  ['dataset / workload', 'raw B/row', 'ratio', 'chunk on S3', 'stored B/row'],
+  results.map(r => [
+    `${r.dataset}/${r.workload}`,
+    n(rawPerRow(r), 0),
+    `${n(pick(r).ratio, 1)}x`,
+    `${n(pick(r).compressedBytes / MiB, 2)} MiB`,
+    n(storedPerRow(r), 1),
+  ]),
 );
 
 // ---------------------------------------------------------------------------
@@ -134,15 +147,14 @@ const RATES = [1_000, 10_000, 100_000];
 table(
   [
     'dataset / workload',
-    ...RATES.flatMap(r => [`${r / 1000}k/s raw`, `stored`, `$/mo`]),
+    ...RATES.flatMap(r => [`${r / 1000}k rows/s`, `stored`, `$/mo`]),
   ],
   results.map(r => {
     const c = pick(r);
-    const bpm = r.bytesPerMessage ?? 0;
     return [
       `${r.dataset}/${r.workload}`,
       ...RATES.flatMap(rate => {
-        const rawBps = rate * bpm;
+        const rawBps = rate * rawPerRow(r);
         const compressedBps = rawBps / c.ratio;
         const storedGB = (compressedBps * 86400 * RETENTION_DAYS) / 1e9;
         const putsPerMonth = ((rawBps / CHUNK) * 86400 * 30) / 1000;
@@ -166,7 +178,7 @@ console.log(
 const ref =
   results.find(r => r.workload === 'mixed-oltp-small-txn') ?? results[0];
 if (ref) {
-  const refBpm = ref.bytesPerMessage ?? 0;
+  const refBpm = rawPerRow(ref);
   table(
     ['flush interval', ...RATES.map(r => `${r / 1000}k changes/s`)],
     [1, 5, 30, 300].map(sec => [
@@ -244,7 +256,7 @@ table(
 console.log(`\n## 7. Codec trade-off (median across workloads)\n`);
 const codecNames = results[0]?.codecs.map(c => c.codec) ?? [];
 const median = (xs: number[]) =>
-  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  xs.toSorted((a, b) => a - b)[Math.floor(xs.length / 2)];
 table(
   [
     'codec',

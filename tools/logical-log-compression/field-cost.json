@@ -1,0 +1,289 @@
+[
+  {
+    "chunk": "chinook--insert-track-batch100",
+    "rawBytes": 16776967,
+    "compressedBytes": 338977,
+    "ratio": 49.49293609890937,
+    "relations": [],
+    "columns": [
+      {
+        "column": "track_id",
+        "rows": 41243,
+        "rawBytesPerRow": 21,
+        "compressedBytesPerRow": 3.6284702858666926,
+        "shareOfCompressedChunk": 0.4414724302828805
+      },
+      {
+        "column": "composer",
+        "rows": 41243,
+        "rawBytesPerRow": 32.34582838299833,
+        "compressedBytesPerRow": 0.6331741143951701,
+        "shareOfCompressedChunk": 0.07703767512250094
+      },
+      {
+        "column": "bytes",
+        "rows": 41243,
+        "rawBytesPerRow": 16.325364304245568,
+        "compressedBytesPerRow": 0.5460563004631089,
+        "shareOfCompressedChunk": 0.06643813592072619
+      },
+      {
+        "column": "milliseconds",
+        "rows": 41243,
+        "rawBytesPerRow": 22.043352811386175,
+        "compressedBytesPerRow": 0.48638556846010234,
+        "shareOfCompressedChunk": 0.05917805632830546
+      },
+      {
+        "column": "name",
+        "rows": 41243,
+        "rawBytesPerRow": 26.00669204471062,
+        "compressedBytesPerRow": 0.24222292267778775,
+        "shareOfCompressedChunk": 0.029471026057815132
+      },
+      {
+        "column": "album_id",
+        "rows": 41243,
+        "rawBytesPerRow": 14.613243459496157,
+        "compressedBytesPerRow": 0.16385810925490385,
+        "shareOfCompressedChunk": 0.019936455865737203
+      },
+      {
+        "column": "genre_id",
+        "rows": 41243,
+        "rawBytesPerRow": 13.168925635865481,
+        "compressedBytesPerRow": 0.13444705768251583,
+        "shareOfCompressedChunk": 0.01635804199104954
+      },
+      {
+        "column": "media_type_id",
+        "rows": 41243,
+        "rawBytesPerRow": 18,
+        "compressedBytesPerRow": 0.026889411536503163,
+        "shareOfCompressedChunk": 0.0032716083982099083
+      },
+      {
+        "column": "unit_price",
+        "rows": 41243,
+        "rawBytesPerRow": 18,
+        "compressedBytesPerRow": 0.02528913997526853,
+        "shareOfCompressedChunk": 0.003076904922752871
+      }
+    ]
+  },
+  {
+    "chunk": "pagila--insert-rental-batch100",
+    "rawBytes": 16776918,
+    "compressedBytes": 1807882,
+    "ratio": 9.279874460833174,
+    "relations": [],
+    "columns": [
+      {
+        "column": "uuid",
+        "rows": 38808,
+        "rawBytesPerRow": 46,
+        "compressedBytesPerRow": 24.036384250669965,
+        "shareOfCompressedChunk": 0.5159650906419777
+      },
+      {
+        "column": "return_date",
+        "rows": 38808,
+        "rawBytesPerRow": 28.67308286951144,
+        "compressedBytesPerRow": 7.130256648113791,
+        "shareOfCompressedChunk": 0.15305810888099997
+      },
+      {
+        "column": "inventory_id",
+        "rows": 38808,
+        "rawBytesPerRow": 19.762755102040817,
+        "compressedBytesPerRow": 3.815218511647083,
+        "shareOfCompressedChunk": 0.0818974910973172
+      },
+      {
+        "column": "customer_id",
+        "rows": 38808,
+        "rawBytesPerRow": 17.820062873634303,
+        "compressedBytesPerRow": 2.9217944753659038,
+        "shareOfCompressedChunk": 0.06271924826952202
+      },
+      {
+        "column": "last_update",
+        "rows": 38808,
+        "rawBytesPerRow": 28.766826427540714,
+        "compressedBytesPerRow": 2.659992784992785,
+        "shareOfCompressedChunk": 0.05709941246165402
+      },
+      {
+        "column": "rental_date",
+        "rows": 38808,
+        "rawBytesPerRow": 28,
+        "compressedBytesPerRow": 2.567486085343228,
+        "shareOfCompressedChunk": 0.05511366339174791
+      },
+      {
+        "column": "rental_id",
+        "rows": 38808,
+        "rawBytesPerRow": 22,
+        "compressedBytesPerRow": 1.5337559266130694,
+        "shareOfCompressedChunk": 0.03292360895235419
+      },
+      {
+        "column": "staff_id",
+        "rows": 38808,
+        "rawBytesPerRow": 13,
+        "compressedBytesPerRow": 0.9327458256029685,
+        "shareOfCompressedChunk": 0.020022324465866687
+      }
+    ]
+  },
+  {
+    "chunk": "zbugs--insert-comment-batch50",
+    "rawBytes": 16777058,
+    "compressedBytes": 1514559,
+    "ratio": 11.077190125970661,
+    "relations": [
+      {
+        "relation": "comment",
+        "messages": 9382,
+        "rawBytes": 7355146,
+        "compressedBytes": 1218300
+      },
+      {
+        "relation": "issue",
+        "messages": 9350,
+        "rawBytes": 9360436,
+        "compressedBytes": 420392
+      }
+    ],
+    "columns": [
+      {
+        "column": "body",
+        "rows": 9382,
+        "rawBytesPerRow": 453.0328288211469,
+        "compressedBytesPerRow": 110.19889149435089,
+        "shareOfCompressedChunk": 0.6826317099564956
+      },
+      {
+        "column": "creatorID",
+        "rows": 18732,
+        "rawBytesPerRow": 36,
+        "compressedBytesPerRow": 8.661168054665813,
+        "shareOfCompressedChunk": 0.10712095071898817
+      },
+      {
+        "column": "id",
+        "rows": 18732,
+        "rawBytesPerRow": 24.99316677343583,
+        "compressedBytesPerRow": 2.569239803544736,
+        "shareOfCompressedChunk": 0.031776246418924584
+      },
+      {
+        "column": "issueID",
+        "rows": 9382,
+        "rawBytesPerRow": 34,
+        "compressedBytesPerRow": 2.442016627584737,
+        "shareOfCompressedChunk": 0.01512717563330316
+      },
+      {
+        "column": "created",
+        "rows": 18732,
+        "rawBytesPerRow": 27.965300021353833,
+        "compressedBytesPerRow": 1.046711509715994,
+        "shareOfCompressedChunk": 0.01294568253861355
+      }
+    ]
+  },
+  {
+    "chunk": "zbugs--insert-viewstate-batch100",
+    "rawBytes": 16777020,
+    "compressedBytes": 381639,
+    "ratio": 43.960444294215215,
+    "relations": [],
+    "columns": [
+      {
+        "column": "viewed",
+        "rows": 51611,
+        "rawBytesPerRow": 23,
+        "compressedBytesPerRow": 3.424444401387301,
+        "shareOfCompressedChunk": 0.4631051857907604
+      },
+      {
+        "column": "issueID",
+        "rows": 51611,
+        "rawBytesPerRow": 34,
+        "compressedBytesPerRow": 2.8672569801011414,
+        "shareOfCompressedChunk": 0.38775387211474716
+      },
+      {
+        "column": "userID",
+        "rows": 51611,
+        "rawBytesPerRow": 22.78473581213307,
+        "compressedBytesPerRow": 1.663191955203348,
+        "shareOfCompressedChunk": 0.22492198124405524
+      }
+    ]
+  },
+  {
+    "chunk": "zbugs--mixed-oltp-small-txn",
+    "rawBytes": 16777067,
+    "compressedBytes": 2046458,
+    "ratio": 8.198099838843504,
+    "relations": [
+      {
+        "relation": "issue",
+        "messages": 9596,
+        "rawBytes": 9873269,
+        "compressedBytes": 1183095
+      },
+      {
+        "relation": "comment",
+        "messages": 4799,
+        "rawBytes": 3786067,
+        "compressedBytes": 545414
+      },
+      {
+        "relation": "viewState",
+        "messages": 4798,
+        "rawBytes": 1539048,
+        "compressedBytes": 65773
+      }
+    ],
+    "columns": [
+      {
+        "column": "body",
+        "rows": 4799,
+        "rawBytesPerRow": 457.05001041883725,
+        "compressedBytesPerRow": 90.89206084600958,
+        "shareOfCompressedChunk": 0.21314436944222653
+      },
+      {
+        "column": "issueID",
+        "rows": 9597,
+        "rawBytesPerRow": 34,
+        "compressedBytesPerRow": 22.514952589350838,
+        "shareOfCompressedChunk": 0.10558535772539676
+      },
+      {
+        "column": "id",
+        "rows": 14395,
+        "rawBytesPerRow": 24.333171240013893,
+        "compressedBytesPerRow": 3.474053490795415,
+        "shareOfCompressedChunk": 0.024436856265801693
+      },
+      {
+        "column": "creatorID",
+        "rows": 14395,
+        "rawBytesPerRow": 36,
+        "compressedBytesPerRow": 3.45425494963529,
+        "shareOfCompressedChunk": 0.024297591252788964
+      },
+      {
+        "column": "created",
+        "rows": 14395,
+        "rawBytesPerRow": 27.917749218478637,
+        "compressedBytesPerRow": 3.0492532129211534,
+        "shareOfCompressedChunk": 0.021448766600633877
+      }
+    ]
+  }
+]

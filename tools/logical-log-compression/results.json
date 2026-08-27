@@ -1,0 +1,4952 @@
+[
+  {
+    "dataset": "chinook",
+    "workload": "delete-track-batch100",
+    "describe": "DELETE by primary key, 100 rows/txn",
+    "txnSize": 100,
+    "rawBytes": 16776973,
+    "messages": 66511,
+    "transactions": 652,
+    "bytesPerMessage": 252.2450980392157,
+    "bytesPerTransaction": 25729,
+    "relationBytes": 11476339,
+    "framingBytes": 214529,
+    "byTag": {
+      "begin": 809,
+      "delete": 80900,
+      "commit": 809
+    },
+    "bytesByTag": {
+      "begin": 114069,
+      "delete": 20548600,
+      "commit": 152092
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 119147,
+        "ratio": 140.8090258252411,
+        "compressMs": 39.002588999999716,
+        "decompressMs": 5.652557999999772,
+        "compressMiBs": 410.22323562010797,
+        "decompressMiBs": 2830.5358843096806
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 121238,
+        "ratio": 138.3804830168759,
+        "compressMs": 179.78601300000082,
+        "decompressMs": 7.880245999998806,
+        "compressMiBs": 88.99339826364046,
+        "decompressMiBs": 2030.3640593381906
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 99304,
+        "ratio": 168.94559131555627,
+        "compressMs": 49311.829332,
+        "decompressMs": 8.402075999998488,
+        "compressMiBs": 0.32446105678659865,
+        "decompressMiBs": 1904.26369115728
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 256875,
+        "ratio": 65.31181703163017,
+        "compressMs": 12.167309000000387,
+        "decompressMs": 8.368975999999748,
+        "compressMiBs": 1314.9800220525842,
+        "decompressMiBs": 1911.7952133142212
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 232631,
+        "ratio": 72.11838920866093,
+        "compressMs": 36.13912100000016,
+        "decompressMs": 7.716917999998259,
+        "compressMiBs": 442.7271005606651,
+        "decompressMiBs": 2073.3365648235117
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 227205,
+        "ratio": 73.84068572434586,
+        "compressMs": 44.05184499999996,
+        "decompressMs": 8.122083000000202,
+        "compressMiBs": 363.20313614880666,
+        "decompressMiBs": 1969.909474840471
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 128890,
+        "ratio": 130.1650477151059,
+        "compressMs": 6.1936019999999985,
+        "decompressMs": 18.460283000000004,
+        "compressMiBs": 2583.273555055865,
+        "decompressMiBs": 866.713054027455
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 146859,
+        "ratio": 114.23864386928959,
+        "compressMs": 11.643331999999987,
+        "decompressMs": 9.182886999999994,
+        "compressMiBs": 1374.1571791598085,
+        "decompressMiBs": 1742.3461986563839
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 121408,
+        "ratio": 138.18671751449656,
+        "compressMs": 11.670814000000007,
+        "decompressMs": 7.570281000000023,
+        "compressMiBs": 1370.9213647943584,
+        "decompressMiBs": 2113.497274029995
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 145131,
+        "ratio": 115.59882451027003,
+        "compressMs": 70.89817200000005,
+        "decompressMs": 7.666661999999974,
+        "compressMiBs": 225.67250756678328,
+        "decompressMiBs": 2086.9275647134523
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 123298,
+        "ratio": 136.0684925951759,
+        "compressMs": 67.78799500000002,
+        "decompressMs": 13.297228999999959,
+        "compressMiBs": 236.02657457476224,
+        "decompressMiBs": 1203.2407847635895
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 137499,
+        "ratio": 122.0152364744471,
+        "compressMs": 92.00962300000003,
+        "decompressMs": 9.092538000000104,
+        "compressMiBs": 173.89233577384735,
+        "decompressMiBs": 1759.6592125477978
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 142197,
+        "ratio": 117.98401513393391,
+        "compressMs": 74.32210600000008,
+        "decompressMs": 10.658713000000034,
+        "compressMiBs": 215.27603452384807,
+        "decompressMiBs": 1501.0975768970477
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 137507,
+        "ratio": 122.00813776753184,
+        "compressMs": 164.18177300000002,
+        "decompressMs": 9.909294000000045,
+        "compressMiBs": 97.45154997894383,
+        "decompressMiBs": 1614.6224198354635
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 142193,
+        "ratio": 117.98733411630671,
+        "compressMs": 147.56281799999988,
+        "decompressMs": 10.239012000000002,
+        "compressMiBs": 108.42682780116823,
+        "decompressMiBs": 1562.6281380606947
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 103966,
+        "ratio": 161.36980358963507,
+        "compressMs": 11675.128541999999,
+        "decompressMs": 7.478342999998858,
+        "compressMiBs": 1.3704147410098053,
+        "decompressMiBs": 2139.4803978827335
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048351,
+        "compressedBytes": 8545,
+        "ratio": 122.68589818607373
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2097144,
+        "compressedBytes": 17292,
+        "ratio": 121.27827897293547
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194222,
+        "compressedBytes": 35827,
+        "ratio": 117.06874703435956
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388557,
+        "compressedBytes": 72745,
+        "ratio": 115.31455082823562
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776973,
+        "compressedBytes": 146859,
+        "ratio": 114.23864386928959
+      }
+    ],
+    "interned": {
+      "rawBytes": 4909668,
+      "zstd3Bytes": 94856,
+      "effectiveRatio": 176.8678101543392
+    }
+  },
+  {
+    "dataset": "chinook",
+    "workload": "hot-row-churn",
+    "describe": "Repeatedly UPDATE the same 200 rows (cache-like churn)",
+    "txnSize": 100,
+    "rawBytes": 16777042,
+    "messages": 39956,
+    "transactions": 392,
+    "bytesPerMessage": 419.8872549019608,
+    "bytesPerTransaction": 42828.5,
+    "relationBytes": 6894380,
+    "framingBytes": 128878,
+    "byTag": {
+      "begin": 440,
+      "update": 44000,
+      "commit": 440
+    },
+    "bytesByTag": {
+      "begin": 62040,
+      "update": 18699780,
+      "commit": 82720
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 92989,
+        "ratio": 180.41964103281032,
+        "compressMs": 26.866201000011642,
+        "decompressMs": 5.215828000000329,
+        "compressMiBs": 595.5376445170648,
+        "decompressMiBs": 3067.5540030591383
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 86307,
+        "ratio": 194.38796389632358,
+        "compressMs": 121.70261300000129,
+        "decompressMs": 8.365265999993426,
+        "compressMiBs": 131.4666437003187,
+        "decompressMiBs": 1912.6509618082105
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 66497,
+        "ratio": 252.29772771703986,
+        "compressMs": 3625.7829769999953,
+        "decompressMs": 10.361650999999256,
+        "compressMiBs": 4.412794191534141,
+        "decompressMiBs": 1544.1394484981297
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 1734660,
+        "ratio": 9.6716601524218,
+        "compressMs": 41.413944999992964,
+        "decompressMs": 18.90957200000412,
+        "compressMiBs": 386.33928887169924,
+        "decompressMiBs": 846.1235431804306
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1497990,
+        "ratio": 11.199702267705392,
+        "compressMs": 116.95965300001262,
+        "decompressMs": 17.0495879999944,
+        "compressMiBs": 136.7978926943911,
+        "decompressMiBs": 938.4293661919689
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1468717,
+        "ratio": 11.42292354483539,
+        "compressMs": 194.55681599999662,
+        "decompressMs": 17.398274999999558,
+        "compressMiBs": 82.23733503466269,
+        "decompressMiBs": 919.6218625507041
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 196940,
+        "ratio": 85.18859551132324,
+        "compressMs": 5.163933999996516,
+        "decompressMs": 4.73409299999912,
+        "compressMiBs": 3098.380819871001,
+        "decompressMiBs": 3379.704213810738
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 127047,
+        "ratio": 132.05382260108465,
+        "compressMs": 6.762377999999444,
+        "decompressMs": 4.350531999996747,
+        "compressMiBs": 2366.00705560533,
+        "decompressMiBs": 3677.6729973899533
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 129485,
+        "ratio": 129.56745568984823,
+        "compressMs": 6.757040999997116,
+        "decompressMs": 6.481115000002319,
+        "compressMiBs": 2367.8758291796325,
+        "decompressMiBs": 2468.685413028965
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 127582,
+        "ratio": 131.50007054286655,
+        "compressMs": 23.090351999999257,
+        "decompressMs": 6.6728690000018105,
+        "compressMiBs": 692.9229169251929,
+        "decompressMiBs": 2397.7443676272687
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 135296,
+        "ratio": 124.00249822611164,
+        "compressMs": 23.644559000000072,
+        "decompressMs": 8.052954999999884,
+        "compressMiBs": 676.6814327418369,
+        "decompressMiBs": 1986.8276999771108
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 98206,
+        "ratio": 170.83520355171783,
+        "compressMs": 32.99789400000009,
+        "decompressMs": 6.456087999998999,
+        "compressMiBs": 484.8744001865362,
+        "decompressMiBs": 2478.2552624238433
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 103833,
+        "ratio": 161.5771671819171,
+        "compressMs": 31.85677399999986,
+        "decompressMs": 6.88699500000007,
+        "compressMiBs": 502.2427588138402,
+        "decompressMiBs": 2323.1952485327465
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 98856,
+        "ratio": 169.71192441531116,
+        "compressMs": 76.65925100000459,
+        "decompressMs": 6.1105399999942165,
+        "compressMiBs": 208.71367580499825,
+        "decompressMiBs": 2618.3993657981273
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 106258,
+        "ratio": 157.88968360029364,
+        "compressMs": 80.65599599999996,
+        "decompressMs": 9.830539000000044,
+        "compressMiBs": 198.37129108998855,
+        "decompressMiBs": 1627.5642729934618
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 78455,
+        "ratio": 213.84286533681728,
+        "compressMs": 17113.995479000005,
+        "decompressMs": 5.870106999995187,
+        "compressMiBs": 0.9348976444630824,
+        "decompressMiBs": 2725.646067555849
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048311,
+        "compressedBytes": 13650,
+        "ratio": 76.79934065934066
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096840,
+        "compressedBytes": 20661,
+        "ratio": 101.48782730748754
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194004,
+        "compressedBytes": 35814,
+        "ratio": 117.10515440889037
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388247,
+        "compressedBytes": 66403,
+        "ratio": 126.32331370570607
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777042,
+        "compressedBytes": 127047,
+        "ratio": 132.05382260108465
+      }
+    ],
+    "interned": {
+      "rawBytes": 9647743,
+      "zstd3Bytes": 127121,
+      "effectiveRatio": 131.97695109383972
+    }
+  },
+  {
+    "dataset": "chinook",
+    "workload": "insert-invoiceline-batch100",
+    "describe": "INSERT into a 5-column numeric line-item table, 100/txn",
+    "txnSize": 100,
+    "rawBytes": 16777025,
+    "messages": 50674,
+    "transactions": 497,
+    "bytesPerMessage": 331.07828310908485,
+    "bytesPerTransaction": 33769.984877126655,
+    "relationBytes": 9787016,
+    "framingBytes": 163448,
+    "byTag": {
+      "begin": 529,
+      "insert": 52900,
+      "commit": 529
+    },
+    "bytesByTag": {
+      "begin": 74589,
+      "insert": 17690281,
+      "commit": 99452
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 406099,
+        "ratio": 41.312647901127555,
+        "compressMs": 54.337813999998616,
+        "decompressMs": 7.924332000009599,
+        "compressMiBs": 294.4508928571542,
+        "decompressMiBs": 2019.0746485869327
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 142602,
+        "ratio": 117.64929664380584,
+        "compressMs": 213.86855699999433,
+        "decompressMs": 9.046622000008938,
+        "compressMiBs": 74.81145462727366,
+        "decompressMiBs": 1768.595819322368
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 111543,
+        "ratio": 150.40858682301894,
+        "compressMs": 8086.294599000001,
+        "decompressMs": 7.583494999998948,
+        "compressMiBs": 1.9786340520148993,
+        "decompressMiBs": 2109.8211112696436
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 623725,
+        "ratio": 26.898112148783518,
+        "compressMs": 20.84238400000322,
+        "decompressMs": 11.56813400000101,
+        "compressMiBs": 767.6577616170537,
+        "decompressMiBs": 1383.0940969567062
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 496232,
+        "ratio": 33.80883336826323,
+        "compressMs": 67.22238300000026,
+        "decompressMs": 10.752231999998912,
+        "compressMiBs": 238.01324996475512,
+        "decompressMiBs": 1488.04618875478
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 447331,
+        "ratio": 37.5047224538429,
+        "compressMs": 223.17633600000408,
+        "decompressMs": 12.01765300000261,
+        "compressMiBs": 71.6913725485899,
+        "decompressMiBs": 1331.3596130793667
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 332329,
+        "ratio": 50.483180823822174,
+        "compressMs": 8.757787000009557,
+        "decompressMs": 8.146563999995124,
+        "compressMiBs": 1826.924752587395,
+        "decompressMiBs": 1963.9958451458974
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 308498,
+        "ratio": 54.38292954897601,
+        "compressMs": 11.381286999996519,
+        "decompressMs": 7.039241000005859,
+        "compressMiBs": 1405.8004027321742,
+        "decompressMiBs": 2272.9464509301856
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 276578,
+        "ratio": 60.65928960365611,
+        "compressMs": 12.289041999989422,
+        "decompressMs": 7.085201000008965,
+        "compressMiBs": 1301.958106109438,
+        "decompressMiBs": 2258.202392308323
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 311468,
+        "ratio": 53.86436166797231,
+        "compressMs": 56.2560189999931,
+        "decompressMs": 6.954866000000038,
+        "compressMiBs": 284.4107729736,
+        "decompressMiBs": 2300.5213685217627
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 263889,
+        "ratio": 63.57606796797138,
+        "compressMs": 47.843374999999924,
+        "decompressMs": 9.043849000000137,
+        "compressMiBs": 334.4207604126087,
+        "decompressMiBs": 1769.1381012891
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 226535,
+        "ratio": 74.05930650892797,
+        "compressMs": 60.84511300000304,
+        "decompressMs": 7.847959000006085,
+        "compressMiBs": 262.95978525349716,
+        "decompressMiBs": 2038.72342454811
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 213536,
+        "ratio": 78.5676654053649,
+        "compressMs": 67.39590199999975,
+        "decompressMs": 10.525036,
+        "compressMiBs": 237.40045571621883,
+        "decompressMiBs": 1520.1675175463122
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 212651,
+        "ratio": 78.89464427630249,
+        "compressMs": 117.01443100000324,
+        "decompressMs": 9.821626000004471,
+        "compressMiBs": 136.7337149056865,
+        "decompressMiBs": 1629.03961606747
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 191156,
+        "ratio": 87.76614388248342,
+        "compressMs": 114.8241509999998,
+        "decompressMs": 10.335102000000006,
+        "compressMiBs": 139.3419216154761,
+        "decompressMiBs": 1548.104493618501
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 138720,
+        "ratio": 120.9416450403691,
+        "compressMs": 5706.530312999996,
+        "decompressMs": 7.623837000006461,
+        "compressMiBs": 2.8037733912946234,
+        "decompressMiBs": 2098.65686375404
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048317,
+        "compressedBytes": 25148,
+        "ratio": 41.68589947510736
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2097086,
+        "compressedBytes": 41933,
+        "ratio": 50.01039753893115
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194073,
+        "compressedBytes": 80165,
+        "ratio": 52.31800661136406
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388388,
+        "compressedBytes": 156099,
+        "ratio": 53.737615231359584
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777025,
+        "compressedBytes": 308498,
+        "ratio": 54.38292954897601
+      }
+    ],
+    "interned": {
+      "rawBytes": 6691990,
+      "zstd3Bytes": 255571,
+      "effectiveRatio": 65.6452610037915
+    }
+  },
+  {
+    "dataset": "chinook",
+    "workload": "insert-playlisttrack-batch100",
+    "describe": "INSERT into a 2-column join table (narrowest row), 100/txn",
+    "txnSize": 100,
+    "rawBytes": 16776957,
+    "messages": 57169,
+    "transactions": 560,
+    "bytesPerMessage": 293.4648097649656,
+    "bytesPerTransaction": 29933.41059602649,
+    "relationBytes": 11938138,
+    "framingBytes": 184397,
+    "byTag": {
+      "begin": 604,
+      "insert": 60400,
+      "commit": 604
+    },
+    "bytesByTag": {
+      "begin": 85164,
+      "insert": 17881064,
+      "commit": 113552
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 113183,
+        "ratio": 148.22859440021912,
+        "compressMs": 33.74235700001009,
+        "decompressMs": 5.471735999992234,
+        "compressMiBs": 474.17413663032687,
+        "decompressMiBs": 2924.07254267654
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 116212,
+        "ratio": 144.36509998967404,
+        "compressMs": 245.32371100000455,
+        "decompressMs": 8.543013000002247,
+        "compressMiBs": 65.21894248677721,
+        "decompressMiBs": 1872.8466172704925
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 85463,
+        "ratio": 196.30667072300292,
+        "compressMs": 48522.290689,
+        "decompressMs": 11.161762999981875,
+        "compressMiBs": 0.3297402651680497,
+        "decompressMiBs": 1433.443175453379
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 249198,
+        "ratio": 67.32380275925168,
+        "compressMs": 12.338593000007677,
+        "decompressMs": 7.993489999993471,
+        "compressMiBs": 1296.7242698046769,
+        "decompressMiBs": 2001.5979251071958
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 215750,
+        "ratio": 77.76109849362689,
+        "compressMs": 50.942645999995875,
+        "decompressMs": 8.915007000003243,
+        "compressMiBs": 314.0738507841416,
+        "decompressMiBs": 1794.6988710548662
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 215684,
+        "ratio": 77.78489364069658,
+        "compressMs": 117.09481699999014,
+        "decompressMs": 9.507754999998724,
+        "compressMiBs": 136.63929291040608,
+        "decompressMiBs": 1682.810821098587
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 130758,
+        "ratio": 128.30539622814666,
+        "compressMs": 5.277354999998352,
+        "decompressMs": 6.601127000001725,
+        "compressMiBs": 3031.775008191992,
+        "decompressMiBs": 2423.791119054045
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 157790,
+        "ratio": 106.32458964446415,
+        "compressMs": 8.974899000008008,
+        "decompressMs": 5.053070000009029,
+        "compressMiBs": 1782.7223457709968,
+        "decompressMiBs": 3166.3430346944456
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 146281,
+        "ratio": 114.6899255542415,
+        "compressMs": 8.966476000001421,
+        "decompressMs": 6.878844000006211,
+        "compressMiBs": 1784.3970137598667,
+        "decompressMiBs": 2325.9363053352577
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 126976,
+        "ratio": 132.12699250252015,
+        "compressMs": 62.000264999995125,
+        "decompressMs": 5.593041000000085,
+        "compressMiBs": 258.05942923555745,
+        "decompressMiBs": 2860.6536226628427
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 128404,
+        "ratio": 130.65758854864333,
+        "compressMs": 51.57575700000007,
+        "decompressMs": 8.336820999999873,
+        "compressMiBs": 310.2184811044466,
+        "decompressMiBs": 1919.1671499666713
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 121081,
+        "ratio": 138.55978229449707,
+        "compressMs": 81.08840700000292,
+        "decompressMs": 7.6719799999991665,
+        "compressMiBs": 197.31245920704146,
+        "decompressMiBs": 2085.478976529369
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 124559,
+        "ratio": 134.69084530222625,
+        "compressMs": 67.99008400000002,
+        "decompressMs": 7.577785999999833,
+        "compressMiBs": 235.32480116294673,
+        "decompressMiBs": 2111.402063657169
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 121595,
+        "ratio": 137.97406965746947,
+        "compressMs": 160.5617510000011,
+        "decompressMs": 8.398623000000953,
+        "compressMiBs": 99.64859562569134,
+        "decompressMiBs": 1905.0447910747077
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 125260,
+        "ratio": 133.93706690084625,
+        "compressMs": 129.0427109999996,
+        "decompressMs": 8.482214999999997,
+        "compressMiBs": 123.98804143499513,
+        "decompressMiBs": 1886.270626051339
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 129788,
+        "ratio": 129.26431565321909,
+        "compressMs": 8950.303893999997,
+        "decompressMs": 6.327593000009074,
+        "compressMiBs": 1.7876212012284614,
+        "decompressMiBs": 2528.568603942938
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048544,
+        "compressedBytes": 8008,
+        "ratio": 130.93706293706293
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096947,
+        "compressedBytes": 18239,
+        "ratio": 114.97050276879214
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194197,
+        "compressedBytes": 38684,
+        "ratio": 108.42200909936925
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388401,
+        "compressedBytes": 77716,
+        "ratio": 107.93660250141541
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776957,
+        "compressedBytes": 157790,
+        "ratio": 106.32458964446415
+      }
+    ],
+    "interned": {
+      "rawBytes": 4502888,
+      "zstd3Bytes": 120173,
+      "effectiveRatio": 139.60670866167942
+    }
+  },
+  {
+    "dataset": "chinook",
+    "workload": "insert-track-batch100",
+    "describe": "INSERT into a 9-column catalog table, 100 rows/txn",
+    "txnSize": 100,
+    "rawBytes": 16776967,
+    "messages": 42065,
+    "transactions": 412,
+    "bytesPerMessage": 398.83013250962483,
+    "bytesPerTransaction": 40680.67351598173,
+    "relationBytes": 7258351,
+    "framingBytes": 135269,
+    "byTag": {
+      "begin": 438,
+      "insert": 43800,
+      "commit": 438
+    },
+    "bytesByTag": {
+      "begin": 61320,
+      "insert": 17674471,
+      "commit": 82344
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 404394,
+        "ratio": 41.486686251526976,
+        "compressMs": 59.70744800000102,
+        "decompressMs": 7.902988000016194,
+        "compressMiBs": 267.96929145414055,
+        "decompressMiBs": 2024.520666748125
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 296505,
+        "ratio": 56.58240839108953,
+        "compressMs": 218.93383999998332,
+        "decompressMs": 9.745185999985551,
+        "compressMiBs": 73.08035402428622,
+        "decompressMiBs": 1641.8119197641724
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 213043,
+        "ratio": 78.74920555944105,
+        "compressMs": 5764.981904999993,
+        "decompressMs": 8.797810999996727,
+        "compressMiBs": 2.7753361239900083,
+        "decompressMiBs": 1818.6072120782278
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 1995455,
+        "ratio": 8.407589747701651,
+        "compressMs": 52.40068200000678,
+        "decompressMs": 23.33350999999675,
+        "compressMiBs": 305.33500566067335,
+        "decompressMiBs": 685.6989169266623
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1741736,
+        "ratio": 9.632324875870971,
+        "compressMs": 123.94630300000426,
+        "decompressMs": 21.387622999987798,
+        "compressMiBs": 129.08624257308153,
+        "decompressMiBs": 748.0851207777667
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1703464,
+        "ratio": 9.848735869968488,
+        "compressMs": 198.84428699998534,
+        "decompressMs": 23.208639999997104,
+        "compressMiBs": 80.46377784591012,
+        "decompressMiBs": 689.3881991834598
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1547800,
+        "ratio": 10.839234397208942,
+        "compressMs": 22.331478000007337,
+        "decompressMs": 15.249320999981137,
+        "compressMiBs": 716.4667979024925,
+        "decompressMiBs": 1049.211472111775
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 338977,
+        "ratio": 49.49293609890937,
+        "compressMs": 14.566190999990795,
+        "decompressMs": 7.889729999995325,
+        "compressMiBs": 1098.41773563901,
+        "decompressMiBs": 2027.9226963539559
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 336766,
+        "ratio": 49.81787650772346,
+        "compressMs": 25.859209999995073,
+        "decompressMs": 9.637558000016725,
+        "compressMiBs": 618.7258827743873,
+        "decompressMiBs": 1660.1469516518032
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 330787,
+        "ratio": 50.718338386937816,
+        "compressMs": 52.48532500001602,
+        "decompressMs": 7.182941999984905,
+        "compressMiBs": 304.84259238349637,
+        "decompressMiBs": 2227.466480326423
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 333508,
+        "ratio": 50.30454142029576,
+        "compressMs": 44.09146499999997,
+        "decompressMs": 7.757841000000099,
+        "compressMiBs": 362.8766368977585,
+        "decompressMiBs": 2062.398872971876
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 314877,
+        "ratio": 53.28101766721609,
+        "compressMs": 71.39088699998683,
+        "decompressMs": 8.542293999984395,
+        "compressMiBs": 224.11491448618878,
+        "decompressMiBs": 1873.0053701177276
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 317261,
+        "ratio": 52.88064716432212,
+        "compressMs": 77.81346399999984,
+        "decompressMs": 8.608608999999888,
+        "compressMiBs": 205.61689086473834,
+        "decompressMiBs": 1858.576982076364
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 312452,
+        "ratio": 53.69454188163302,
+        "compressMs": 145.69409899998573,
+        "decompressMs": 10.588980000000447,
+        "compressMiBs": 109.81750561563089,
+        "decompressMiBs": 1510.9824114404353
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 316964,
+        "ratio": 52.93019712017769,
+        "compressMs": 142.73141199999918,
+        "decompressMs": 9.99918500000058,
+        "compressMiBs": 112.09699610549154,
+        "decompressMiBs": 1600.1066622023982
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 236301,
+        "ratio": 70.99829031616456,
+        "compressMs": 6387.721276000026,
+        "decompressMs": 5.8248270000040065,
+        "compressMiBs": 2.5047684211284538,
+        "decompressMiBs": 2746.821928803072
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048462,
+        "compressedBytes": 96333,
+        "ratio": 10.88372624126727
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096968,
+        "compressedBytes": 138145,
+        "ratio": 15.179470845850375
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194234,
+        "compressedBytes": 166473,
+        "ratio": 25.194680218413797
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388253,
+        "compressedBytes": 223875,
+        "ratio": 37.46846677833612
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776967,
+        "compressedBytes": 338977,
+        "ratio": 49.49293609890937
+      }
+    ],
+    "interned": {
+      "rawBytes": 9270928,
+      "zstd3Bytes": 321266,
+      "effectiveRatio": 52.22142087864884
+    }
+  },
+  {
+    "dataset": "chinook",
+    "workload": "insert-track-single",
+    "describe": "INSERT into a 9-column catalog table, 1 row/txn",
+    "txnSize": 1,
+    "rawBytes": 16777147,
+    "messages": 68726,
+    "transactions": 22909,
+    "bytesPerMessage": 244.11623043899738,
+    "bytesPerTransaction": 732.3486913169921,
+    "relationBytes": 4031929,
+    "framingBytes": 7533155,
+    "byTag": {
+      "begin": 24070,
+      "insert": 24070,
+      "commit": 24070
+    },
+    "bytesByTag": {
+      "begin": 3389874,
+      "insert": 9712599,
+      "commit": 4525160
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1100481,
+        "ratio": 15.245285470626026,
+        "compressMs": 114.62307400000282,
+        "decompressMs": 14.999629000027198,
+        "compressMiBs": 139.5873765911371,
+        "decompressMiBs": 1066.6886625291302
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 979949,
+        "ratio": 17.120428716188293,
+        "compressMs": 806.1645739999949,
+        "decompressMs": 17.930389000015566,
+        "compressMiBs": 19.846982505177994,
+        "decompressMiBs": 892.3361448799733
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 624523,
+        "ratio": 26.86393775729637,
+        "compressMs": 35336.768882000004,
+        "decompressMs": 12.029823999997461,
+        "compressMiBs": 0.45278430096143524,
+        "decompressMiBs": 1330.0223009476733
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 1942441,
+        "ratio": 8.637146250516746,
+        "compressMs": 46.9725970000145,
+        "decompressMs": 21.949400000012247,
+        "compressMiBs": 340.6227293855443,
+        "decompressMiBs": 728.9463127221354
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1733295,
+        "ratio": 9.679337331498678,
+        "compressMs": 131.43703600001754,
+        "decompressMs": 21.085411000007298,
+        "compressMiBs": 121.73078976362515,
+        "decompressMiBs": 758.8153817094972
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1665713,
+        "ratio": 10.072051427827002,
+        "compressMs": 290.42180599999847,
+        "decompressMs": 26.453599000000395,
+        "compressMiBs": 55.09205529998066,
+        "decompressMiBs": 604.830147930795
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1615108,
+        "ratio": 10.387631663021915,
+        "compressMs": 22.22098400001414,
+        "decompressMs": 12.722409000009065,
+        "compressMiBs": 720.0371593113063,
+        "decompressMiBs": 1257.6182856926519
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 1683274,
+        "ratio": 9.966973291335814,
+        "compressMs": 45.864827000012156,
+        "decompressMs": 14.265959000011208,
+        "compressMiBs": 348.84976665164197,
+        "decompressMiBs": 1121.5463465484233
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1211749,
+        "ratio": 13.845397850544956,
+        "compressMs": 35.7939990000159,
+        "decompressMs": 13.206818000006024,
+        "compressMiBs": 447.00046497920107,
+        "decompressMiBs": 1211.4904738192706
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1537917,
+        "ratio": 10.909006792954367,
+        "compressMs": 128.4440530000138,
+        "decompressMs": 14.261066000006394,
+        "compressMiBs": 124.56734136589765,
+        "decompressMiBs": 1121.9311513224181
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1070738,
+        "ratio": 15.668769577618427,
+        "compressMs": 101.80729299999985,
+        "decompressMs": 13.36167099999966,
+        "compressMiBs": 157.1590180329438,
+        "decompressMiBs": 1197.4500941141698
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 914300,
+        "ratio": 18.34971781690911,
+        "compressMs": 146.95439600001555,
+        "decompressMs": 11.54042100001243,
+        "compressMiBs": 108.87686678301529,
+        "decompressMiBs": 1386.4255209108
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 926865,
+        "ratio": 18.100960765591537,
+        "compressMs": 147.1635529999994,
+        "decompressMs": 13.515078000000358,
+        "compressMiBs": 108.72212494402218,
+        "decompressMiBs": 1183.8580729220907
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 916613,
+        "ratio": 18.3034137634967,
+        "compressMs": 314.25370900001144,
+        "decompressMs": 12.58974299998954,
+        "compressMiBs": 50.91406636817638,
+        "decompressMiBs": 1270.8705965233335
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 930117,
+        "ratio": 18.03767375502222,
+        "compressMs": 316.59084600000006,
+        "decompressMs": 14.242244000000028,
+        "compressMiBs": 50.538208538323204,
+        "decompressMiBs": 1123.4138522322844
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 676040,
+        "ratio": 24.81679634341163,
+        "compressMs": 12244.135318000015,
+        "decompressMs": 8.142497000022558,
+        "compressMiBs": 1.3067426797342545,
+        "decompressMiBs": 1964.9911073259027
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048500,
+        "compressedBytes": 107987,
+        "ratio": 9.709502069693574
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2097103,
+        "compressedBytes": 212917,
+        "ratio": 9.84939201660741
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193964,
+        "compressedBytes": 422181,
+        "ratio": 9.934042507834317
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388527,
+        "compressedBytes": 837194,
+        "ratio": 10.019812612130522
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777147,
+        "compressedBytes": 1683274,
+        "ratio": 9.966973291335814
+      }
+    ],
+    "interned": {
+      "rawBytes": 12608078,
+      "zstd3Bytes": 1235073,
+      "effectiveRatio": 13.583931476115177
+    }
+  },
+  {
+    "dataset": "chinook",
+    "workload": "update-track-1col-batch100",
+    "describe": "UPDATE one column of a 9-column row, 100 rows/txn",
+    "txnSize": 100,
+    "rawBytes": 16776958,
+    "messages": 39921,
+    "transactions": 391,
+    "bytesPerMessage": 420.2587576997226,
+    "bytesPerTransaction": 42866.393285371705,
+    "relationBytes": 6888251,
+    "framingBytes": 128763,
+    "byTag": {
+      "begin": 417,
+      "update": 41700,
+      "commit": 417
+    },
+    "bytesByTag": {
+      "begin": 58797,
+      "update": 17738093,
+      "commit": 78396
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 509778,
+        "ratio": 32.9103217478981,
+        "compressMs": 72.13934600001085,
+        "decompressMs": 9.537543999991613,
+        "compressMiBs": 221.7895619960841,
+        "decompressMiBs": 1677.5549294493883
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 362340,
+        "ratio": 46.301700060716456,
+        "compressMs": 442.5792230000079,
+        "decompressMs": 13.665330999996513,
+        "compressMiBs": 36.1511637251577,
+        "decompressMiBs": 1170.828130839308
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 265593,
+        "ratio": 63.16792234735102,
+        "compressMs": 44089.018691000005,
+        "decompressMs": 9.334216999995988,
+        "compressMiBs": 0.362896576677322,
+        "decompressMiBs": 1714.0970637422768
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 2037379,
+        "ratio": 8.23457883879239,
+        "compressMs": 52.10644900001353,
+        "decompressMs": 23.63344700000016,
+        "compressMiBs": 307.05899670925976,
+        "decompressMiBs": 676.996205929091
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1758320,
+        "ratio": 9.541470267073116,
+        "compressMs": 138.33711300001596,
+        "decompressMs": 22.811203999997815,
+        "compressMiBs": 115.65771183922654,
+        "decompressMiBs": 701.398924494643
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1696916,
+        "ratio": 9.886734523099552,
+        "compressMs": 222.9290059999912,
+        "decompressMs": 22.363045000005513,
+        "compressMiBs": 71.7706243754884,
+        "decompressMiBs": 715.4550711686366
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1540129,
+        "ratio": 10.8932160877433,
+        "compressMs": 20.657923999999184,
+        "decompressMs": 10.75286499998765,
+        "compressMiBs": 774.509285251848,
+        "decompressMiBs": 1487.952648158862
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 550360,
+        "ratio": 30.483607093538776,
+        "compressMs": 17.56594500000938,
+        "decompressMs": 8.71484299999429,
+        "compressMiBs": 910.8393514848092,
+        "decompressMiBs": 1835.9199301739402
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 476215,
+        "ratio": 35.22979746543053,
+        "compressMs": 14.652946999995038,
+        "decompressMs": 8.679818999982672,
+        "compressMiBs": 1091.913725753037,
+        "decompressMiBs": 1843.3280638753306
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 426894,
+        "ratio": 39.30005575154488,
+        "compressMs": 68.28546499999356,
+        "decompressMs": 7.241176999988966,
+        "compressMiBs": 234.30687558513185,
+        "decompressMiBs": 2209.5515621356512
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 430933,
+        "ratio": 38.93170864148255,
+        "compressMs": 69.51031499999954,
+        "decompressMs": 8.920153000000028,
+        "compressMiBs": 230.17812467151782,
+        "decompressMiBs": 1793.6636234856417
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 400154,
+        "ratio": 41.92625339244391,
+        "compressMs": 94.14329899998847,
+        "decompressMs": 7.149406999989878,
+        "compressMiBs": 169.95106525880644,
+        "decompressMiBs": 2237.913431428511
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 403578,
+        "ratio": 41.57054646189832,
+        "compressMs": 110.46204299999954,
+        "decompressMs": 9.510043000000223,
+        "compressMiBs": 144.84390762197322,
+        "decompressMiBs": 1682.406057683019
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 402754,
+        "ratio": 41.655596220025124,
+        "compressMs": 198.98959700000705,
+        "decompressMs": 9.772616000002017,
+        "compressMiBs": 80.40497690955071,
+        "decompressMiBs": 1637.2027665901396
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 405554,
+        "ratio": 41.36800031561765,
+        "compressMs": 208.61452000000008,
+        "decompressMs": 10.377612000000227,
+        "compressMiBs": 76.69530362520482,
+        "decompressMiBs": 1541.756808023466
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 407824,
+        "ratio": 41.13774079014477,
+        "compressMs": 8554.393490999995,
+        "decompressMs": 8.231783000024734,
+        "compressMiBs": 1.8703551536248095,
+        "decompressMiBs": 1943.6559433087937
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048396,
+        "compressedBytes": 96011,
+        "ratio": 10.919540469321223
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096783,
+        "compressedBytes": 148475,
+        "ratio": 14.122128304428355
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194272,
+        "compressedBytes": 201878,
+        "ratio": 20.776270817028106
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388559,
+        "compressedBytes": 318168,
+        "ratio": 26.36518757386035
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776958,
+        "compressedBytes": 550360,
+        "ratio": 30.483607093538776
+      }
+    ],
+    "interned": {
+      "rawBytes": 9653665,
+      "zstd3Bytes": 500743,
+      "effectiveRatio": 33.504128864507344
+    }
+  },
+  {
+    "dataset": "chinook",
+    "workload": "update-track-1col-replicaidentity-full",
+    "describe": "UPDATE one column with REPLICA IDENTITY FULL (ships old row too)",
+    "txnSize": 100,
+    "rawBytes": 16776557,
+    "messages": 17754,
+    "transactions": 175,
+    "bytesPerMessage": 944.9212807881773,
+    "bytesPerTransaction": 95909.51,
+    "relationBytes": 6161231,
+    "framingBytes": 57549,
+    "byTag": {
+      "begin": 200,
+      "commit": 200,
+      "update": 19900
+    },
+    "bytesByTag": {
+      "begin": 28200,
+      "commit": 37600,
+      "update": 19116102
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 533092,
+        "ratio": 31.470284678817166,
+        "compressMs": 68.22246199997608,
+        "decompressMs": 10.747318000008818,
+        "compressMiBs": 234.51765092604103,
+        "decompressMiBs": 1488.6850401758245
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 409867,
+        "ratio": 40.93170955456282,
+        "compressMs": 322.58743199997116,
+        "decompressMs": 12.757754000020213,
+        "compressMiBs": 49.59700825736732,
+        "decompressMiBs": 1254.0899854786462
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 291202,
+        "ratio": 57.61140720187361,
+        "compressMs": 21883.839395000017,
+        "decompressMs": 9.806582999997772,
+        "compressMiBs": 0.7311044117916986,
+        "decompressMiBs": 1631.49300104115
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 1235115,
+        "ratio": 13.582991867154071,
+        "compressMs": 31.575643000018317,
+        "decompressMs": 15.985260999994352,
+        "compressMiBs": 506.69978529388004,
+        "decompressMiBs": 1000.8827211911736
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1052794,
+        "ratio": 15.93527033778688,
+        "compressMs": 100.52390200004447,
+        "decompressMs": 15.085185999982059,
+        "compressMiBs": 159.15987352558608,
+        "decompressMiBs": 1060.601541714137
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1039199,
+        "ratio": 16.14373859097247,
+        "compressMs": 213.3238629999687,
+        "decompressMs": 15.866884000017308,
+        "compressMiBs": 75.00038347152862,
+        "decompressMiBs": 1008.3499399509088
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 945584,
+        "ratio": 17.74200599840945,
+        "compressMs": 13.009503999957815,
+        "decompressMs": 12.537567999970634,
+        "compressMiBs": 1229.82179248935,
+        "decompressMiBs": 1276.114436919741
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 907609,
+        "ratio": 18.484344029202003,
+        "compressMs": 25.518902999989223,
+        "decompressMs": 8.883473000023514,
+        "compressMiBs": 626.9615715311996,
+        "decompressMiBs": 1801.0266399845127
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 525590,
+        "ratio": 31.919475256378547,
+        "compressMs": 16.98606700001983,
+        "decompressMs": 15.271734000009019,
+        "compressMiBs": 941.9114812514758,
+        "decompressMiBs": 1047.6460321150198
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 826396,
+        "ratio": 20.300869074874516,
+        "compressMs": 72.81142699997872,
+        "decompressMs": 8.506227999983821,
+        "compressMiBs": 219.73709605540574,
+        "decompressMiBs": 1880.9008562497877
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 471910,
+        "ratio": 35.55033163103134,
+        "compressMs": 57.63716000000022,
+        "decompressMs": 7.6144120000008115,
+        "compressMiBs": 277.5877841417833,
+        "decompressMiBs": 2101.1959332675697
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 436042,
+        "ratio": 38.474635470895,
+        "compressMs": 79.08759299997473,
+        "decompressMs": 9.098816999990959,
+        "compressMiBs": 202.2993863099437,
+        "decompressMiBs": 1758.4012876224883
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 436959,
+        "ratio": 38.39389279085681,
+        "compressMs": 71.96539600000051,
+        "decompressMs": 12.252512999999453,
+        "compressMiBs": 222.3203430802406,
+        "decompressMiBs": 1305.8032689805107
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 429173,
+        "ratio": 39.09042973346413,
+        "compressMs": 168.21281100000488,
+        "decompressMs": 10.940873000014108,
+        "compressMiBs": 95.11387054000913,
+        "decompressMiBs": 1462.3487109853902
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 428912,
+        "ratio": 39.114216902301635,
+        "compressMs": 128.44066999999995,
+        "decompressMs": 11.50515600000108,
+        "compressMiBs": 124.56624158551567,
+        "decompressMiBs": 1390.626213901314
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 315467,
+        "ratio": 53.18006954768644,
+        "compressMs": 9652.056806000008,
+        "decompressMs": 7.113229000009596,
+        "compressMiBs": 1.6576126570949934,
+        "decompressMiBs": 2249.241733761686
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1047605,
+        "compressedBytes": 60354,
+        "ratio": 17.357673062265963
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2097109,
+        "compressedBytes": 116502,
+        "ratio": 18.000626598685002
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193729,
+        "compressedBytes": 228469,
+        "ratio": 18.35579006342217
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8387926,
+        "compressedBytes": 456196,
+        "ratio": 18.38667151838245
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776557,
+        "compressedBytes": 907609,
+        "ratio": 18.484344029202003
+      }
+    ],
+    "interned": {
+      "rawBytes": 10510402,
+      "zstd3Bytes": 870725,
+      "effectiveRatio": 19.267342731631686
+    }
+  },
+  {
+    "dataset": "chinook",
+    "workload": "update-track-allcols-batch100",
+    "describe": "UPDATE every column of a 9-column row, 100 rows/txn",
+    "txnSize": 100,
+    "rawBytes": 16776882,
+    "messages": 39909,
+    "transactions": 391,
+    "bytesPerMessage": 420.3738469383025,
+    "bytesPerTransaction": 42878.13238770686,
+    "relationBytes": 6886334,
+    "framingBytes": 128727,
+    "byTag": {
+      "begin": 423,
+      "update": 42300,
+      "commit": 423
+    },
+    "bytesByTag": {
+      "begin": 59643,
+      "update": 17998283,
+      "commit": 79524
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 391372,
+        "ratio": 42.86684279917827,
+        "compressMs": 84.39019800000824,
+        "decompressMs": 11.421907000010833,
+        "compressMiBs": 189.59170439174414,
+        "decompressMiBs": 1400.7889814514463
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 288435,
+        "ratio": 58.16520879920953,
+        "compressMs": 312.8370879999711,
+        "decompressMs": 13.371509999968112,
+        "compressMiBs": 51.14381282304928,
+        "decompressMiBs": 1196.5500884205655
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 206974,
+        "ratio": 81.05792031849411,
+        "compressMs": 6246.176956000039,
+        "decompressMs": 8.924526000046171,
+        "compressMiBs": 2.5615158817121126,
+        "decompressMiBs": 1792.7766105108042
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 1951236,
+        "ratio": 8.598079371229312,
+        "compressMs": 53.97300900000846,
+        "decompressMs": 25.38759100000607,
+        "compressMiBs": 296.4385675213293,
+        "decompressMiBs": 630.2166075061826
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1672642,
+        "ratio": 10.030169037965088,
+        "compressMs": 139.33805899997242,
+        "decompressMs": 23.683390000020154,
+        "compressMiBs": 114.82635532321781,
+        "decompressMiBs": 675.5655112196652
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1636041,
+        "ratio": 10.25456085758242,
+        "compressMs": 231.72235399996862,
+        "decompressMs": 24.988002999976743,
+        "compressMiBs": 69.0467760084143,
+        "decompressMiBs": 640.2945234476406
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1468742,
+        "ratio": 11.422620174271588,
+        "compressMs": 19.007490999996662,
+        "decompressMs": 10.161091000016313,
+        "compressMiBs": 841.7566249422993,
+        "decompressMiBs": 1574.602714684145
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 326238,
+        "ratio": 51.4252846081695,
+        "compressMs": 11.46715400001267,
+        "decompressMs": 6.557558999978937,
+        "compressMiBs": 1395.2617600461845,
+        "decompressMiBs": 2439.883723932901
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 326843,
+        "ratio": 51.330094265442426,
+        "compressMs": 12.99541400000453,
+        "decompressMs": 14.160396000021137,
+        "compressMiBs": 1231.1790507615028,
+        "decompressMiBs": 1129.8894093607578
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 316932,
+        "ratio": 52.935273181628865,
+        "compressMs": 43.13933099998394,
+        "decompressMs": 7.751762999978382,
+        "compressMiBs": 370.88385707196704,
+        "decompressMiBs": 2064.005500790329
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 323442,
+        "ratio": 51.869831376259114,
+        "compressMs": 40.55330700000013,
+        "decompressMs": 9.717179999999644,
+        "compressMiBs": 394.5345683590803,
+        "decompressMiBs": 1646.5354632495134
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 306271,
+        "ratio": 54.77789931139416,
+        "compressMs": 62.248656999960076,
+        "decompressMs": 8.665387000015471,
+        "compressMiBs": 257.0285407569288,
+        "decompressMiBs": 1846.389719553178
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 309711,
+        "ratio": 54.169474122649824,
+        "compressMs": 55.868194000000585,
+        "decompressMs": 8.252964999999676,
+        "compressMiBs": 286.3826504357408,
+        "decompressMiBs": 1938.6585878867713
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 304380,
+        "ratio": 55.118214074512125,
+        "compressMs": 136.53258199995616,
+        "decompressMs": 10.353727000008803,
+        "compressMiBs": 117.18581190227148,
+        "decompressMiBs": 1545.3064845890488
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 308787,
+        "ratio": 54.331568362657755,
+        "compressMs": 121.70868199999859,
+        "decompressMs": 7.979252000000997,
+        "compressMiBs": 131.45883440573704,
+        "decompressMiBs": 2005.1605680302266
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 232328,
+        "ratio": 72.21205364829035,
+        "compressMs": 6346.827191000048,
+        "decompressMs": 6.285368000040762,
+        "compressMiBs": 2.5208944550225425,
+        "decompressMiBs": 2545.544106991756
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048459,
+        "compressedBytes": 91851,
+        "ratio": 11.41478045965749
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096769,
+        "compressedBytes": 136712,
+        "ratio": 15.337124758616653
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194077,
+        "compressedBytes": 163046,
+        "ratio": 25.72327441335574
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388297,
+        "compressedBytes": 217451,
+        "ratio": 38.57557334755876
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776882,
+        "compressedBytes": 326238,
+        "ratio": 51.4252846081695
+      }
+    ],
+    "interned": {
+      "rawBytes": 9655955,
+      "zstd3Bytes": 311338,
+      "effectiveRatio": 53.8863935658352
+    }
+  },
+  {
+    "dataset": "pagila",
+    "workload": "delete-rental-batch100",
+    "describe": "DELETE by primary key, 100 rows/txn",
+    "txnSize": 100,
+    "rawBytes": 16777023,
+    "messages": 65493,
+    "transactions": 642,
+    "bytesPerMessage": 256.1666666666667,
+    "bytesPerTransaction": 26129,
+    "relationBytes": 11493311,
+    "framingBytes": 211246,
+    "byTag": {
+      "begin": 680,
+      "delete": 68000,
+      "commit": 680
+    },
+    "bytesByTag": {
+      "begin": 95880,
+      "delete": 17544000,
+      "commit": 127840
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 117036,
+        "ratio": 143.34925151235518,
+        "compressMs": 45.49476200004574,
+        "decompressMs": 6.757698000001255,
+        "compressMiBs": 351.68479265461036,
+        "decompressMiBs": 2367.6429371146746
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 121485,
+        "ratio": 138.09954315347574,
+        "compressMs": 193.9311699999962,
+        "decompressMs": 7.7023279999848455,
+        "compressMiBs": 82.50254943987213,
+        "decompressMiBs": 2077.2701371440444
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 91488,
+        "ratio": 183.37949239244492,
+        "compressMs": 49079.047634999966,
+        "decompressMs": 8.637761000019964,
+        "compressMiBs": 0.32600094565500315,
+        "decompressMiBs": 1852.3105629826935
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 251921,
+        "ratio": 66.59636552728831,
+        "compressMs": 12.034581999992952,
+        "decompressMs": 7.609727999952156,
+        "compressMiBs": 1329.4866361678621,
+        "decompressMiBs": 2102.547678571104
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 229163,
+        "ratio": 73.20999899634758,
+        "compressMs": 35.397188999981154,
+        "decompressMs": 7.777690000017174,
+        "compressMiBs": 452.0080942265063,
+        "decompressMiBs": 2057.142408712819
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 223780,
+        "ratio": 74.97105639467334,
+        "compressMs": 41.39681900001597,
+        "decompressMs": 8.472314000013284,
+        "compressMiBs": 386.49868099408224,
+        "decompressMiBs": 1888.4824076199072
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 126880,
+        "ratio": 132.22748266078185,
+        "compressMs": 6.080665999965277,
+        "decompressMs": 8.023170999949798,
+        "compressMiBs": 2631.260447613518,
+        "decompressMiBs": 1994.2010385864949
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 148602,
+        "ratio": 112.89903904388905,
+        "compressMs": 9.410090000019409,
+        "decompressMs": 7.048045000003185,
+        "compressMiBs": 1700.2829878166874,
+        "decompressMiBs": 2270.106950345763
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 125595,
+        "ratio": 133.58034157410725,
+        "compressMs": 14.291029000014532,
+        "decompressMs": 8.98061400000006,
+        "compressMiBs": 1119.5706020077814,
+        "decompressMiBs": 1781.5948821379948
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 141546,
+        "ratio": 118.527001822729,
+        "compressMs": 69.08592599997064,
+        "decompressMs": 6.628441000008024,
+        "compressMiBs": 231.59298669404436,
+        "decompressMiBs": 2413.812831831431
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 121868,
+        "ratio": 137.6655315587357,
+        "compressMs": 56.0121909999998,
+        "decompressMs": 7.269465000001219,
+        "compressMiBs": 285.64881421719406,
+        "decompressMiBs": 2200.961960867031
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 135833,
+        "ratio": 123.51212886411992,
+        "compressMs": 93.65795799996704,
+        "decompressMs": 10.1782569999923,
+        "compressMiBs": 170.8324234536756,
+        "decompressMiBs": 1571.9603013432495
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 140112,
+        "ratio": 119.74008650222679,
+        "compressMs": 67.95426499999849,
+        "decompressMs": 6.49749200000042,
+        "compressMiBs": 235.44976817654182,
+        "decompressMiBs": 2462.4602755733904
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 135833,
+        "ratio": 123.51212886411992,
+        "compressMs": 168.45993800001452,
+        "decompressMs": 9.176026000001002,
+        "compressMiBs": 94.97697868590902,
+        "decompressMiBs": 1743.6541636712002
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 140101,
+        "ratio": 119.7494878694656,
+        "compressMs": 136.10041699999965,
+        "decompressMs": 9.233213999999862,
+        "compressMiBs": 117.55890462008632,
+        "decompressMiBs": 1732.854447092548
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 99013,
+        "ratio": 169.44262874572027,
+        "compressMs": 4770.963518000033,
+        "decompressMs": 6.3402270000078715,
+        "compressMiBs": 3.353581699061909,
+        "decompressMiBs": 2523.5399207058467
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048397,
+        "compressedBytes": 8382,
+        "ratio": 125.07718921498449
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096911,
+        "compressedBytes": 17266,
+        "ratio": 121.44741109695354
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194197,
+        "compressedBytes": 35722,
+        "ratio": 117.4121549745255
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388582,
+        "compressedBytes": 73829,
+        "ratio": 113.62177464140107
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777023,
+        "compressedBytes": 148602,
+        "ratio": 112.89903904388905
+      }
+    ],
+    "interned": {
+      "rawBytes": 4898733,
+      "zstd3Bytes": 93348,
+      "effectiveRatio": 179.7255752667438
+    }
+  },
+  {
+    "dataset": "pagila",
+    "workload": "insert-film-batch20",
+    "describe": "INSERT a wide row: text, numeric, enum, array and tsvector, 20/txn",
+    "txnSize": 20,
+    "rawBytes": 16776953,
+    "messages": 23127,
+    "transactions": 1051,
+    "bytesPerMessage": 725.4293508786006,
+    "bytesPerTransaction": 15959.445719329215,
+    "relationBytes": 3637235,
+    "framingBytes": 345853,
+    "byTag": {
+      "begin": 1133,
+      "insert": 22660,
+      "commit": 1133
+    },
+    "bytesByTag": {
+      "begin": 159753,
+      "insert": 17709295,
+      "commit": 213004
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 248659,
+        "ratio": 67.46971957580462,
+        "compressMs": 56.603263000026345,
+        "decompressMs": 7.166419999965001,
+        "compressMiBs": 282.6647853083547,
+        "decompressMiBs": 2232.599984892446
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 216655,
+        "ratio": 77.4362604140223,
+        "compressMs": 241.58471100003226,
+        "decompressMs": 8.84185600001365,
+        "compressMiBs": 66.22831849509156,
+        "decompressMiBs": 1809.5464553630013
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 178769,
+        "ratio": 93.84710436373197,
+        "compressMs": 6819.695804999967,
+        "decompressMs": 7.845001999987289,
+        "compressMiBs": 2.3461089234983645,
+        "decompressMiBs": 2039.4831236092364
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 2948607,
+        "ratio": 5.689789449729991,
+        "compressMs": 73.85475399997085,
+        "decompressMs": 32.77546199999051,
+        "compressMiBs": 216.63804043895536,
+        "decompressMiBs": 488.16243028578566
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 2320195,
+        "ratio": 7.230837494262336,
+        "compressMs": 173.2791960000177,
+        "decompressMs": 27.73235800000839,
+        "compressMiBs": 92.33508437823748,
+        "decompressMiBs": 576.9343228458953
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 2237974,
+        "ratio": 7.496491469516625,
+        "compressMs": 256.86564900004305,
+        "decompressMs": 30.289649999991525,
+        "compressMiBs": 62.28839568833162,
+        "decompressMiBs": 528.2249607921934
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 2321557,
+        "ratio": 7.226595340971598,
+        "compressMs": 33.72723000001861,
+        "decompressMs": 19.201138000003994,
+        "compressMiBs": 474.3866953688743,
+        "decompressMiBs": 833.2708813223184
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 499224,
+        "ratio": 33.60606260916943,
+        "compressMs": 16.30287200002931,
+        "decompressMs": 6.4525269999867305,
+        "compressMiBs": 981.4067842540885,
+        "decompressMiBs": 2479.6097999570848
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 317493,
+        "ratio": 52.84196187002548,
+        "compressMs": 15.19764299999224,
+        "decompressMs": 15.741589000041131,
+        "compressMiBs": 1052.7783277751,
+        "decompressMiBs": 1016.3998808260703
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 294639,
+        "ratio": 56.94070710258995,
+        "compressMs": 67.82916799996747,
+        "decompressMs": 8.770328999962658,
+        "compressMiBs": 235.88302282673524,
+        "decompressMiBs": 1824.3043315390917
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 297114,
+        "ratio": 56.46638327376024,
+        "compressMs": 63.97881899999993,
+        "decompressMs": 8.259817000000112,
+        "compressMiBs": 250.07884536997784,
+        "decompressMiBs": 1937.058555129559
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 228219,
+        "ratio": 73.5125164863574,
+        "compressMs": 109.08726200001547,
+        "decompressMs": 8.708807999966666,
+        "compressMiBs": 146.6692709149902,
+        "decompressMiBs": 1837.1916321632107
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 238143,
+        "ratio": 70.4490705164544,
+        "compressMs": 93.14290000000074,
+        "decompressMs": 10.102034999999887,
+        "compressMiBs": 171.77636925256417,
+        "decompressMiBs": 1583.8144674469017
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 221750,
+        "ratio": 75.65705975197294,
+        "compressMs": 223.66001099999994,
+        "decompressMs": 9.796642999979667,
+        "compressMiBs": 71.53602967342601,
+        "decompressMiBs": 1633.1869175683946
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 240228,
+        "ratio": 69.8376250894983,
+        "compressMs": 210.4497449999999,
+        "decompressMs": 10.239414000001489,
+        "compressMiBs": 76.02646030126952,
+        "decompressMiBs": 1562.5649264354834
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 260987,
+        "ratio": 64.28271523102683,
+        "compressMs": 10062.096036000003,
+        "decompressMs": 5.789909000042826,
+        "compressMiBs": 1.5901010213390077,
+        "decompressMiBs": 2763.3852593428396
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048023,
+        "compressedBytes": 120275,
+        "ratio": 8.713556433173975
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096500,
+        "compressedBytes": 136481,
+        "ratio": 15.361112535810845
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193666,
+        "compressedBytes": 160740,
+        "ratio": 26.089747418190868
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8387942,
+        "compressedBytes": 289574,
+        "ratio": 28.966488704096363
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776953,
+        "compressedBytes": 499224,
+        "ratio": 33.60606260916943
+      }
+    ],
+    "interned": {
+      "rawBytes": 13013304,
+      "zstd3Bytes": 435739,
+      "effectiveRatio": 38.50229839422223
+    }
+  },
+  {
+    "dataset": "pagila",
+    "workload": "insert-payment-batch100",
+    "describe": "INSERT into a partitioned money table (numeric), 100/txn",
+    "txnSize": 100,
+    "rawBytes": 16776893,
+    "messages": 40223,
+    "transactions": 394,
+    "bytesPerMessage": 417.0945871306269,
+    "bytesPerTransaction": 42543.64788732395,
+    "relationBytes": 8360123,
+    "framingBytes": 129740,
+    "byTag": {
+      "begin": 426,
+      "insert": 42600,
+      "commit": 426
+    },
+    "bytesByTag": {
+      "begin": 60066,
+      "insert": 17983440,
+      "commit": 80088
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1572618,
+        "ratio": 10.668129831910864,
+        "compressMs": 150.5852259999956,
+        "decompressMs": 16.463028999976814,
+        "compressMiBs": 106.2500777014889,
+        "decompressMiBs": 971.8559059343414
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1411622,
+        "ratio": 11.88483390029342,
+        "compressMs": 932.7225800000015,
+        "decompressMs": 23.523119000019506,
+        "compressMiBs": 17.15375215125142,
+        "decompressMiBs": 680.1688144834251
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1147141,
+        "ratio": 14.624961534806967,
+        "compressMs": 28729.41657900001,
+        "decompressMs": 22.219581999990623,
+        "compressMiBs": 0.5569097415953409,
+        "decompressMiBs": 720.0716900616111
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 2070792,
+        "ratio": 8.101679454044636,
+        "compressMs": 47.249677999992855,
+        "decompressMs": 21.068798000051174,
+        "compressMiBs": 338.62012696040426,
+        "decompressMiBs": 759.4022194885982
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1830308,
+        "ratio": 9.166158373344814,
+        "compressMs": 102.8847919999971,
+        "decompressMs": 24.656975000048988,
+        "compressMiBs": 155.51075773372077,
+        "decompressMiBs": 648.891113494823
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1795751,
+        "ratio": 9.342549718752768,
+        "compressMs": 233.7296529999585,
+        "decompressMs": 23.72312099998817,
+        "compressMiBs": 68.45383868857515,
+        "decompressMiBs": 674.4345300605169
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1608188,
+        "ratio": 10.432171487413163,
+        "compressMs": 18.189933000016026,
+        "decompressMs": 10.351716999954078,
+        "compressMiBs": 879.5904835483288,
+        "decompressMiBs": 1545.6075512175205
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 1824618,
+        "ratio": 9.194742680385703,
+        "compressMs": 47.01680799998576,
+        "decompressMs": 13.459803999983706,
+        "compressMiBs": 340.2972818401591,
+        "decompressMiBs": 1188.7017049590893
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1823477,
+        "ratio": 9.200496085226192,
+        "compressMs": 43.59956699999748,
+        "decompressMs": 13.990882000012789,
+        "compressMiBs": 366.9690564403249,
+        "decompressMiBs": 1143.5799375036665
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1783342,
+        "ratio": 9.407557832429225,
+        "compressMs": 135.56993899994995,
+        "decompressMs": 14.525368999980856,
+        "compressMiBs": 118.0179919030701,
+        "decompressMiBs": 1101.499862978826
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1816768,
+        "ratio": 9.234471875330257,
+        "compressMs": 118.33821800000078,
+        "decompressMs": 15.898372999999992,
+        "compressMiBs": 135.20308344676693,
+        "decompressMiBs": 1006.3729139576615
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1747035,
+        "ratio": 9.603066338109997,
+        "compressMs": 188.12801799998851,
+        "decompressMs": 16.51403500000015,
+        "compressMiBs": 85.04683211618578,
+        "decompressMiBs": 968.8541875559581
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1587865,
+        "ratio": 10.565692297518996,
+        "compressMs": 162.8195739999992,
+        "decompressMs": 18.031055000001288,
+        "compressMiBs": 98.2663912583132,
+        "decompressMiBs": 887.3408662551724
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1733548,
+        "ratio": 9.67777817516446,
+        "compressMs": 402.6143729999894,
+        "decompressMs": 17.796784000005573,
+        "compressMiBs": 39.739495249456034,
+        "decompressMiBs": 899.0215290128144
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1557858,
+        "ratio": 10.769205537346792,
+        "compressMs": 327.5378410000012,
+        "decompressMs": 19.266255999998975,
+        "compressMiBs": 48.84837707407292,
+        "decompressMiBs": 830.4515398942406
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1584069,
+        "ratio": 10.591011502655503,
+        "compressMs": 6644.8119289999595,
+        "decompressMs": 10.976557000016328,
+        "compressMiBs": 2.4078472248956104,
+        "decompressMiBs": 1457.6239127781143
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048440,
+        "compressedBytes": 111278,
+        "ratio": 9.421808443717536
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2097115,
+        "compressedBytes": 224053,
+        "ratio": 9.359905915118297
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194030,
+        "compressedBytes": 452089,
+        "ratio": 9.277000767547984
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388307,
+        "compressedBytes": 910298,
+        "ratio": 9.21490215292135
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776893,
+        "compressedBytes": 1824618,
+        "ratio": 9.194742680385703
+      }
+    ],
+    "interned": {
+      "rawBytes": 8180286,
+      "zstd3Bytes": 1762592,
+      "effectiveRatio": 9.518307696846463
+    }
+  },
+  {
+    "dataset": "pagila",
+    "workload": "insert-rental-batch100",
+    "describe": "INSERT into a 7-column OLTP table (ids + timestamps), 100/txn",
+    "txnSize": 100,
+    "rawBytes": 16776918,
+    "messages": 39584,
+    "transactions": 388,
+    "bytesPerMessage": 423.8298187199408,
+    "bytesPerTransaction": 43230.64150943396,
+    "relationBytes": 6946620,
+    "framingBytes": 127290,
+    "byTag": {
+      "begin": 424,
+      "insert": 42400,
+      "commit": 424
+    },
+    "bytesByTag": {
+      "begin": 59360,
+      "insert": 18190720,
+      "commit": 79712
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1594686,
+        "ratio": 10.520515010478553,
+        "compressMs": 150.3165700000245,
+        "decompressMs": 18.34189099998912,
+        "compressMiBs": 106.44013367954778,
+        "decompressMiBs": 872.3045952602816
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1459843,
+        "ratio": 11.492275539218943,
+        "compressMs": 1055.7045849999995,
+        "decompressMs": 24.31655899999896,
+        "compressMiBs": 15.15548576030265,
+        "decompressMiBs": 657.9761472441226
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1163439,
+        "ratio": 14.420109692042299,
+        "compressMs": 30404.542436999967,
+        "decompressMs": 23.50182699994184,
+        "compressMiBs": 0.5262278108018261,
+        "decompressMiBs": 680.7860429358665
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 2083424,
+        "ratio": 8.052570192145238,
+        "compressMs": 57.67988300003344,
+        "decompressMs": 25.209638000000268,
+        "compressMiBs": 277.3881459684035,
+        "decompressMiBs": 634.6666225454543
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1809868,
+        "ratio": 9.269691491313178,
+        "compressMs": 112.2458939999924,
+        "decompressMs": 24.402637999970466,
+        "compressMiBs": 142.54165773809768,
+        "decompressMiBs": 655.6551715873127
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1770304,
+        "ratio": 9.476857082173456,
+        "compressMs": 356.644598999992,
+        "decompressMs": 25.76814399997238,
+        "compressMiBs": 44.861791962967786,
+        "decompressMiBs": 620.910679677623
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1610034,
+        "ratio": 10.420225908272744,
+        "compressMs": 18.978989999974146,
+        "decompressMs": 10.31703799997922,
+        "compressMiBs": 843.022510948976,
+        "decompressMiBs": 1550.8051637578476
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 1807882,
+        "ratio": 9.279874460833174,
+        "compressMs": 52.37090199999511,
+        "decompressMs": 14.050381999986712,
+        "compressMiBs": 305.50773796210734,
+        "decompressMiBs": 1138.7388474611469
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1801618,
+        "ratio": 9.312139421342371,
+        "compressMs": 41.822964999999385,
+        "decompressMs": 20.759461999987252,
+        "compressMiBs": 382.5581425194016,
+        "decompressMiBs": 770.7191932557566
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1750286,
+        "ratio": 9.585243783016033,
+        "compressMs": 137.1133399999817,
+        "decompressMs": 14.748518999957014,
+        "compressMiBs": 116.68970944078708,
+        "decompressMiBs": 1084.835420092034
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1777667,
+        "ratio": 9.437604455727648,
+        "compressMs": 134.66591100000005,
+        "decompressMs": 17.142141999998785,
+        "compressMiBs": 118.81043752084895,
+        "decompressMiBs": 933.3556917831415
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1721144,
+        "ratio": 9.747538846255747,
+        "compressMs": 193.99865999998292,
+        "decompressMs": 17.843389999994542,
+        "compressMiBs": 82.47333154288344,
+        "decompressMiBs": 896.6746680456239
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1594426,
+        "ratio": 10.522230570750853,
+        "compressMs": 160.6986340000003,
+        "decompressMs": 18.119321999998647,
+        "compressMiBs": 99.56348356423291,
+        "decompressMiBs": 883.019563593765
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1711199,
+        "ratio": 9.804188758876085,
+        "compressMs": 453.83616300002905,
+        "decompressMs": 18.142805000010412,
+        "compressMiBs": 35.25438717639759,
+        "decompressMiBs": 881.8766340179773
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1546432,
+        "ratio": 10.848791282125564,
+        "compressMs": 315.36931299999924,
+        "decompressMs": 17.180026999998518,
+        "compressMiBs": 50.7332677769246,
+        "decompressMiBs": 931.2974773005357
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1461948,
+        "ratio": 11.475728274877081,
+        "compressMs": 11236.542722999991,
+        "decompressMs": 11.369302999984939,
+        "compressMiBs": 1.4239002333256847,
+        "decompressMiBs": 1407.2732343464597
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048425,
+        "compressedBytes": 108921,
+        "ratio": 9.625554300823532
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2097006,
+        "compressedBytes": 220437,
+        "ratio": 9.512949278025014
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194288,
+        "compressedBytes": 447688,
+        "ratio": 9.368774682368079
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388270,
+        "compressedBytes": 899715,
+        "ratio": 9.323252363248361
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776918,
+        "compressedBytes": 1807882,
+        "ratio": 9.279874460833174
+      }
+    ],
+    "interned": {
+      "rawBytes": 9597628,
+      "zstd3Bytes": 1759146,
+      "effectiveRatio": 9.536967369394013
+    }
+  },
+  {
+    "dataset": "pagila",
+    "workload": "insert-rental-single",
+    "describe": "INSERT into a 7-column OLTP table, 1 row/txn",
+    "txnSize": 1,
+    "rawBytes": 16776856,
+    "messages": 66397,
+    "transactions": 22132,
+    "bytesPerMessage": 252.67571701184264,
+    "bytesPerTransaction": 758.0271510355278,
+    "relationBytes": 3961675,
+    "framingBytes": 7281514,
+    "byTag": {
+      "begin": 23756,
+      "insert": 23756,
+      "commit": 23756
+    },
+    "bytesByTag": {
+      "begin": 3349596,
+      "insert": 10191969,
+      "commit": 4466128
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1758522,
+        "ratio": 9.540316242844844,
+        "compressMs": 148.20038300007582,
+        "decompressMs": 18.08824499999173,
+        "compressMiBs": 107.95961760259357,
+        "decompressMiBs": 884.5333904562555
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1676060,
+        "ratio": 10.009698936792239,
+        "compressMs": 1397.5628190001007,
+        "decompressMs": 27.08137499995064,
+        "compressMiBs": 11.448255820581428,
+        "decompressMiBs": 590.7992735699445
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1237639,
+        "ratio": 13.555532752280754,
+        "compressMs": 35845.93837899994,
+        "decompressMs": 21.639752999995835,
+        "compressMiBs": 0.44634503658633096,
+        "decompressMiBs": 739.3641081415843
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 2019776,
+        "ratio": 8.306295351563739,
+        "compressMs": 50.71775899990462,
+        "decompressMs": 23.52347000001464,
+        "compressMiBs": 315.46458267756236,
+        "decompressMiBs": 680.1571654707463
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1797942,
+        "ratio": 9.33114416371607,
+        "compressMs": 124.63707000005525,
+        "decompressMs": 21.757120999973267,
+        "compressMiBs": 128.36996791756258,
+        "decompressMiBs": 735.3756352812374
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1729392,
+        "ratio": 9.701013997983106,
+        "compressMs": 303.8495010000188,
+        "decompressMs": 21.73797800007742,
+        "compressMiBs": 52.656517863575836,
+        "decompressMiBs": 736.0232252139142
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1625175,
+        "ratio": 10.323107357669175,
+        "compressMs": 22.322610000032,
+        "decompressMs": 16.24333599989768,
+        "compressMiBs": 716.7466831711505,
+        "decompressMiBs": 984.9981972512838
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 1868783,
+        "ratio": 8.977423274933473,
+        "compressMs": 48.912605999968946,
+        "decompressMs": 14.778776000021026,
+        "compressMiBs": 327.1070177135165,
+        "decompressMiBs": 1082.6104054370492
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1877695,
+        "ratio": 8.9348142270177,
+        "compressMs": 54.01190799998585,
+        "decompressMs": 18.571223000064492,
+        "compressMiBs": 296.2246154542492,
+        "decompressMiBs": 861.5295113946202
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1790092,
+        "ratio": 9.372063558744467,
+        "compressMs": 141.3585449999664,
+        "decompressMs": 16.49043599993456,
+        "compressMiBs": 113.184927570172,
+        "decompressMiBs": 970.2385478048965
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1821825,
+        "ratio": 9.208818629670796,
+        "compressMs": 126.4635989999988,
+        "decompressMs": 16.242676000001666,
+        "compressMiBs": 126.51590500161431,
+        "decompressMiBs": 985.0382213647832
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1677698,
+        "ratio": 9.999926089200798,
+        "compressMs": 225.21106999996118,
+        "decompressMs": 18.164457999984734,
+        "compressMiBs": 71.04294063896971,
+        "decompressMiBs": 880.8221350320247
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1692843,
+        "ratio": 9.910461867993664,
+        "compressMs": 188.63217899999654,
+        "decompressMs": 14.623108000003413,
+        "compressMiBs": 84.81933868370564,
+        "decompressMiBs": 1094.1351645110165
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1672868,
+        "ratio": 10.028798446739373,
+        "compressMs": 457.98738999990746,
+        "decompressMs": 16.70031400001608,
+        "compressMiBs": 34.93471005227748,
+        "decompressMiBs": 958.0452605400527
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1677885,
+        "ratio": 9.998811599126281,
+        "compressMs": 395.76771200000076,
+        "decompressMs": 19.015354999999545,
+        "compressMiBs": 40.426887267766965,
+        "decompressMiBs": 841.407203664958
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1282355,
+        "ratio": 13.08284835322512,
+        "compressMs": 11248.942868000013,
+        "decompressMs": 10.808178000035696,
+        "compressMiBs": 1.4223253567017828,
+        "decompressMiBs": 1480.328754503604
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048476,
+        "compressedBytes": 111759,
+        "ratio": 9.381580006979304
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2097145,
+        "compressedBytes": 229518,
+        "ratio": 9.13717006944989
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194270,
+        "compressedBytes": 465296,
+        "ratio": 9.014197414119185
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388569,
+        "compressedBytes": 936110,
+        "ratio": 8.961093247588424
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776856,
+        "compressedBytes": 1868783,
+        "ratio": 8.977423274933473
+      }
+    ],
+    "interned": {
+      "rawBytes": 12682441,
+      "zstd3Bytes": 1846658,
+      "effectiveRatio": 9.084982709305134
+    }
+  },
+  {
+    "dataset": "pagila",
+    "workload": "mixed-oltp-small-txn",
+    "describe": "Rental + payment written together in one small transaction",
+    "txnSize": 2,
+    "rawBytes": 16777125,
+    "messages": 56743,
+    "transactions": 14186,
+    "bytesPerMessage": 295.6710960168821,
+    "bytesPerTransaction": 1182.6843840675283,
+    "relationBytes": 5546582,
+    "framingBytes": 4667073,
+    "byTag": {
+      "begin": 15164,
+      "insert": 30328,
+      "commit": 15164
+    },
+    "bytesByTag": {
+      "begin": 2138124,
+      "insert": 12945270,
+      "commit": 2850832
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1771051,
+        "ratio": 9.472976780454092,
+        "compressMs": 160.22672899998724,
+        "decompressMs": 19.75917199999094,
+        "compressMiBs": 99.85795326095986,
+        "decompressMiBs": 809.746137927467
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1712401,
+        "ratio": 9.79742770530968,
+        "compressMs": 1295.4881150000729,
+        "decompressMs": 26.23313499998767,
+        "compressMiBs": 12.350490159175493,
+        "decompressMiBs": 609.9123576211813
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1320578,
+        "ratio": 12.704380203214047,
+        "compressMs": 33769.75267399999,
+        "decompressMs": 23.655544999986887,
+        "compressMiBs": 0.4737942077957788,
+        "decompressMiBs": 676.3705175951802
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 2116416,
+        "ratio": 7.927139560464483,
+        "compressMs": 53.44907500001136,
+        "decompressMs": 26.27110100002028,
+        "compressMiBs": 299.34873925570844,
+        "decompressMiBs": 609.0309353850398
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1832363,
+        "ratio": 9.156005114707074,
+        "compressMs": 126.27541300002486,
+        "decompressMs": 22.591375999967568,
+        "compressMiBs": 126.7064809808546,
+        "decompressMiBs": 708.2310176972035
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1768287,
+        "ratio": 9.487783940050456,
+        "compressMs": 227.12309299991466,
+        "decompressMs": 22.025559999980032,
+        "compressMiBs": 70.44599914656507,
+        "decompressMiBs": 726.4248089788279
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1600199,
+        "ratio": 10.484399127858472,
+        "compressMs": 20.212957000010647,
+        "decompressMs": 11.122843999997713,
+        "compressMiBs": 791.567172266224,
+        "decompressMiBs": 1438.4732192270696
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 1869175,
+        "ratio": 8.975684459721535,
+        "compressMs": 44.53424399998039,
+        "decompressMs": 12.856442999909632,
+        "compressMiBs": 359.27214158264934,
+        "decompressMiBs": 1244.5054371376025
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1876244,
+        "ratio": 8.941867369062873,
+        "compressMs": 41.582164000021294,
+        "decompressMs": 20.641118000028655,
+        "compressMiBs": 384.77827213679916,
+        "decompressMiBs": 775.1476066177712
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1789992,
+        "ratio": 9.37273742005551,
+        "compressMs": 130.85897099995054,
+        "decompressMs": 13.68874000001233,
+        "compressMiBs": 122.26837100563213,
+        "decompressMiBs": 1168.837542069087
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1822485,
+        "ratio": 9.205631322068495,
+        "compressMs": 137.91030899999896,
+        "decompressMs": 16.294660999999905,
+        "compressMiBs": 116.01680346925572,
+        "decompressMiBs": 981.9113889903755
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1725176,
+        "ratio": 9.724877345847611,
+        "compressMs": 190.19999599992298,
+        "decompressMs": 14.505718000000343,
+        "compressMiBs": 84.12152235609766,
+        "decompressMiBs": 1103.0073254999738
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1745362,
+        "ratio": 9.612404188930434,
+        "compressMs": 178.41976799999975,
+        "decompressMs": 16.453405000000203,
+        "compressMiBs": 89.67567548701906,
+        "decompressMiBs": 972.4378154939363
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1720537,
+        "ratio": 9.751098058338762,
+        "compressMs": 436.28258600004483,
+        "decompressMs": 17.579864000086673,
+        "compressMiBs": 36.67327949604563,
+        "decompressMiBs": 910.12724646552
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1741169,
+        "ratio": 9.635552321457595,
+        "compressMs": 384.3075549999994,
+        "decompressMs": 18.736085000000458,
+        "compressMiBs": 41.633095700232154,
+        "decompressMiBs": 853.9624588400841
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1407029,
+        "ratio": 11.923794747656231,
+        "compressMs": 13516.787040000083,
+        "decompressMs": 10.349787999992259,
+        "compressMiBs": 1.1837068356769131,
+        "decompressMiBs": 1545.9170000051379
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048366,
+        "compressedBytes": 110533,
+        "ratio": 9.484642595423992
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096967,
+        "compressedBytes": 228574,
+        "ratio": 9.17412741606657
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194273,
+        "compressedBytes": 464258,
+        "ratio": 9.034358050911347
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388473,
+        "compressedBytes": 932898,
+        "ratio": 8.991843695666622
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777125,
+        "compressedBytes": 1869175,
+        "ratio": 8.975684459721535
+      }
+    ],
+    "interned": {
+      "rawBytes": 11060580,
+      "zstd3Bytes": 1825824,
+      "effectiveRatio": 9.188796400967453
+    }
+  },
+  {
+    "dataset": "pagila",
+    "workload": "update-rental-1col-batch100",
+    "describe": "UPDATE one timestamp column, 100 rows/txn",
+    "txnSize": 100,
+    "rawBytes": 16776806,
+    "messages": 37411,
+    "transactions": 367,
+    "bytesPerMessage": 448.45026782642884,
+    "bytesPerTransaction": 45741.92731829574,
+    "relationBytes": 6565198,
+    "framingBytes": 120668,
+    "byTag": {
+      "begin": 399,
+      "update": 39900,
+      "commit": 399
+    },
+    "bytesByTag": {
+      "begin": 56259,
+      "update": 18119758,
+      "commit": 75012
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1529306,
+        "ratio": 10.970208709048418,
+        "compressMs": 144.43978600006085,
+        "decompressMs": 18.667226999998093,
+        "compressMiBs": 110.77009622212769,
+        "decompressMiBs": 857.0961821770264
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1431706,
+        "ratio": 11.718052449315712,
+        "compressMs": 956.7698289999971,
+        "decompressMs": 21.18827699997928,
+        "compressMiBs": 16.7225266815247,
+        "decompressMiBs": 755.1160952608803
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1105993,
+        "ratio": 15.168998357132459,
+        "compressMs": 29920.366276999936,
+        "decompressMs": 21.48809700005222,
+        "compressMiBs": 0.5347397436718321,
+        "decompressMiBs": 744.5800804739197
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 1948546,
+        "ratio": 8.60991015865163,
+        "compressMs": 49.41123199998401,
+        "decompressMs": 21.925842999946326,
+        "compressMiBs": 323.80510151083564,
+        "decompressMiBs": 729.7146565160318
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1702419,
+        "ratio": 9.854686772175357,
+        "compressMs": 121.02469400002155,
+        "decompressMs": 21.173441999941133,
+        "compressMiBs": 132.20119353102785,
+        "decompressMiBs": 755.6451612153921
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1661457,
+        "ratio": 10.097646824443846,
+        "compressMs": 382.08857100002933,
+        "decompressMs": 21.298279999988154,
+        "compressMiBs": 41.874084198998574,
+        "decompressMiBs": 751.2160133841405
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1459138,
+        "ratio": 11.49775141213511,
+        "compressMs": 17.565654999925755,
+        "decompressMs": 9.001390999997966,
+        "compressMiBs": 910.8461365999674,
+        "decompressMiBs": 1777.4596163563929
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 1701817,
+        "ratio": 9.858172764756727,
+        "compressMs": 40.076459000003524,
+        "decompressMs": 11.439902999904007,
+        "compressMiBs": 399.22711219394074,
+        "decompressMiBs": 1398.579078307266
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1697029,
+        "ratio": 9.885986627217331,
+        "compressMs": 36.51457399991341,
+        "decompressMs": 20.299700999981724,
+        "compressMiBs": 438.1704958017096,
+        "decompressMiBs": 788.169687501539
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1621168,
+        "ratio": 10.348591879435075,
+        "compressMs": 134.31030100001954,
+        "decompressMs": 14.317879999987781,
+        "compressMiBs": 119.1242136634624,
+        "decompressMiBs": 1117.4565643477895
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1652010,
+        "ratio": 10.155390100544185,
+        "compressMs": 113.5239419999998,
+        "decompressMs": 14.438583000002836,
+        "compressMiBs": 140.9359885823054,
+        "decompressMiBs": 1108.1149025168972
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1590121,
+        "ratio": 10.55064740356237,
+        "compressMs": 198.9143229998881,
+        "decompressMs": 16.3472189999884,
+        "compressMiBs": 80.43467535286172,
+        "decompressMiBs": 978.7358322869247
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1530581,
+        "ratio": 10.96107033864918,
+        "compressMs": 160.30789300000106,
+        "decompressMs": 13.540179999999964,
+        "compressMiBs": 99.80549737204872,
+        "decompressMiBs": 1181.639313032051
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1584409,
+        "ratio": 10.588683856251762,
+        "compressMs": 438.69965999992564,
+        "decompressMs": 18.26043399993796,
+        "compressMiBs": 36.47052973219306,
+        "decompressMiBs": 876.1899631511843
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1492311,
+        "ratio": 11.242164669428826,
+        "compressMs": 332.45456300000296,
+        "decompressMs": 18.108430000000226,
+        "compressMiBs": 48.12570129630054,
+        "decompressMiBs": 883.5447906599342
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1424296,
+        "ratio": 11.779016440402838,
+        "compressMs": 7053.200371999992,
+        "decompressMs": 12.228860000032,
+        "compressMiBs": 2.2684183278056307,
+        "decompressMiBs": 1308.3483655457997
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048521,
+        "compressedBytes": 102176,
+        "ratio": 10.261910820544943
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096720,
+        "compressedBytes": 207120,
+        "ratio": 10.123213595983005
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194053,
+        "compressedBytes": 421251,
+        "ratio": 9.956185267215982
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388437,
+        "compressedBytes": 848219,
+        "ratio": 9.889470761678293
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776806,
+        "compressedBytes": 1701817,
+        "ratio": 9.858172764756727
+      }
+    ],
+    "interned": {
+      "rawBytes": 9991751,
+      "zstd3Bytes": 1662799,
+      "effectiveRatio": 10.089497287405152
+    }
+  },
+  {
+    "dataset": "pagila",
+    "workload": "update-rental-allcols-batch100",
+    "describe": "UPDATE every column, 100 rows/txn",
+    "txnSize": 100,
+    "rawBytes": 16776852,
+    "messages": 37408,
+    "transactions": 367,
+    "bytesPerMessage": 448.48593457483497,
+    "bytesPerTransaction": 45745.565326633165,
+    "relationBytes": 6564694,
+    "framingBytes": 120658,
+    "byTag": {
+      "begin": 398,
+      "update": 39800,
+      "commit": 398
+    },
+    "bytesByTag": {
+      "begin": 56118,
+      "update": 18075793,
+      "commit": 74824
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1539842,
+        "ratio": 10.895177557177945,
+        "compressMs": 147.179909999948,
+        "decompressMs": 17.79440999997314,
+        "compressMiBs": 108.70813049521828,
+        "decompressMiBs": 899.13927253407
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1433641,
+        "ratio": 11.70226855956268,
+        "compressMs": 1080.6303830000106,
+        "decompressMs": 23.097212000051513,
+        "compressMiBs": 14.805851394008668,
+        "decompressMiBs": 692.7092699548822
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1105451,
+        "ratio": 15.17647729297816,
+        "compressMs": 30324.778936000075,
+        "decompressMs": 27.5280920000514,
+        "compressMiBs": 0.527609876276949,
+        "decompressMiBs": 581.2118348964742
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 1949320,
+        "ratio": 8.606515092442493,
+        "compressMs": 51.93904399999883,
+        "decompressMs": 23.666945999953896,
+        "compressMiBs": 308.04673383185855,
+        "decompressMiBs": 676.0336911479832
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1702657,
+        "ratio": 9.853336285581888,
+        "compressMs": 126.88537599996198,
+        "decompressMs": 22.505846999934874,
+        "compressMiBs": 126.0953260882769,
+        "decompressMiBs": 710.9109407255424
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1661659,
+        "ratio": 10.096446984609958,
+        "compressMs": 394.51247100008186,
+        "decompressMs": 22.491588999982923,
+        "compressMiBs": 40.55550594380452,
+        "decompressMiBs": 711.3616055566806
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 1457627,
+        "ratio": 11.509701727533862,
+        "compressMs": 17.620051000034437,
+        "decompressMs": 10.498858999926597,
+        "compressMiBs": 908.0366942477953,
+        "decompressMiBs": 1523.9420648149187
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 1702765,
+        "ratio": 9.852711325403094,
+        "compressMs": 42.58074400003534,
+        "decompressMs": 15.06134499993641,
+        "compressMiBs": 375.74855109472844,
+        "decompressMiBs": 1062.2990750571335
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1697744,
+        "ratio": 9.881850267178091,
+        "compressMs": 41.5911039999919,
+        "decompressMs": 20.89067100000102,
+        "compressMiBs": 384.68930429333983,
+        "decompressMiBs": 765.8754887551504
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1621079,
+        "ratio": 10.34918841092877,
+        "compressMs": 132.32104100007564,
+        "decompressMs": 13.200880000018515,
+        "compressMiBs": 120.9154095344495,
+        "decompressMiBs": 1212.0141128868975
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1652023,
+        "ratio": 10.155338031008043,
+        "compressMs": 130.49709699999948,
+        "decompressMs": 17.134431999998924,
+        "compressMiBs": 122.60543131123363,
+        "decompressMiBs": 933.7720014617254
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1590682,
+        "ratio": 10.54695533110955,
+        "compressMs": 194.45300599990878,
+        "decompressMs": 14.448199000093155,
+        "compressMiBs": 82.28030613502747,
+        "decompressMiBs": 1107.3804328446522
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1531819,
+        "ratio": 10.952241746577108,
+        "compressMs": 169.16208600000027,
+        "decompressMs": 16.493226000002323,
+        "compressMiBs": 94.58178981399415,
+        "decompressMiBs": 970.0741906129567
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1584975,
+        "ratio": 10.584931623527185,
+        "compressMs": 386.10033499996644,
+        "decompressMs": 16.140936999931,
+        "compressMiBs": 41.4391063984708,
+        "decompressMiBs": 991.2468441340935
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1492465,
+        "ratio": 11.241035468168432,
+        "compressMs": 327.0788759999996,
+        "decompressMs": 12.415604999998322,
+        "compressMiBs": 48.91680275478521,
+        "decompressMiBs": 1288.672832499986
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1424248,
+        "ratio": 11.779445714510395,
+        "compressMs": 7171.600856000092,
+        "decompressMs": 12.642082000034861,
+        "compressMiBs": 2.2309736952472448,
+        "decompressMiBs": 1265.5868600207393
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048391,
+        "compressedBytes": 102275,
+        "ratio": 10.250706428746028
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096843,
+        "compressedBytes": 208560,
+        "ratio": 10.053907748369774
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193955,
+        "compressedBytes": 421464,
+        "ratio": 9.950921075109617
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388164,
+        "compressedBytes": 848662,
+        "ratio": 9.883986793328793
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776852,
+        "compressedBytes": 1702765,
+        "ratio": 9.852711325403094
+      }
+    ],
+    "interned": {
+      "rawBytes": 9991982,
+      "zstd3Bytes": 1663353,
+      "effectiveRatio": 10.086164512283322
+    }
+  },
+  {
+    "dataset": "zbugs",
+    "workload": "delete-comment-batch50",
+    "describe": "DELETE comments by primary key, 50 rows/txn",
+    "txnSize": 50,
+    "rawBytes": 16777013,
+    "messages": 69354,
+    "transactions": 1334,
+    "bytesPerMessage": 241.90384615384616,
+    "bytesPerTransaction": 12579,
+    "relationBytes": 11069974,
+    "framingBytes": 438798,
+    "byTag": {
+      "begin": 1490,
+      "delete": 74500,
+      "commit": 1490
+    },
+    "bytesByTag": {
+      "begin": 210090,
+      "delete": 18252500,
+      "commit": 280120
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 169947,
+        "ratio": 98.7190888924194,
+        "compressMs": 40.79634000000078,
+        "decompressMs": 7.880238999961875,
+        "compressMiBs": 392.1872992556063,
+        "decompressMiBs": 2030.3707037554543
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 165707,
+        "ratio": 101.24504698051379,
+        "compressMs": 186.40184199996293,
+        "decompressMs": 8.125887000001967,
+        "compressMiBs": 85.83502304723443,
+        "decompressMiBs": 1968.9919887034973
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 144024,
+        "ratio": 116.48762011886907,
+        "compressMs": 49363.694609,
+        "decompressMs": 8.671009000041522,
+        "compressMiBs": 0.3241209259324095,
+        "decompressMiBs": 1845.206988487401
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 320853,
+        "ratio": 52.28878333691753,
+        "compressMs": 14.357920999987982,
+        "decompressMs": 8.322420000098646,
+        "compressMiBs": 1114.3539795299864,
+        "decompressMiBs": 1922.494467225173
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 271070,
+        "ratio": 61.89181023351902,
+        "compressMs": 37.71902700001374,
+        "decompressMs": 9.005340000032447,
+        "compressMiBs": 424.1839643453141,
+        "decompressMiBs": 1776.7020905436243
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 266168,
+        "ratio": 63.03166796910222,
+        "compressMs": 76.12540100002661,
+        "decompressMs": 11.565300999907777,
+        "compressMiBs": 210.17697370301113,
+        "decompressMiBs": 1383.4319058571284
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 170605,
+        "ratio": 98.33834295595088,
+        "compressMs": 6.833210000069812,
+        "decompressMs": 5.351957999984734,
+        "compressMiBs": 2341.4773443155273,
+        "decompressMiBs": 2989.5239095970874
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 180764,
+        "ratio": 92.81169370007302,
+        "compressMs": 8.99920399999246,
+        "decompressMs": 4.886266999994405,
+        "compressMiBs": 1777.913513698231,
+        "decompressMiBs": 3274.4437428679385
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 179671,
+        "ratio": 93.37629890188177,
+        "compressMs": 10.908043000032194,
+        "decompressMs": 12.252607999951579,
+        "compressMiBs": 1466.789817758011,
+        "decompressMiBs": 1305.8286369870807
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 171786,
+        "ratio": 97.66228330597372,
+        "compressMs": 66.75207699998282,
+        "decompressMs": 7.9506760000949726,
+        "compressMiBs": 239.69001599932074,
+        "decompressMiBs": 2012.3831487942218
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 176260,
+        "ratio": 95.1833257687507,
+        "compressMs": 54.14391099999921,
+        "decompressMs": 7.525278000000981,
+        "compressMiBs": 295.505184398556,
+        "decompressMiBs": 2126.141572990617
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 178941,
+        "ratio": 93.7572328309331,
+        "compressMs": 86.27247199998237,
+        "decompressMs": 9.205866000032984,
+        "compressMiBs": 185.45668198909425,
+        "decompressMiBs": 1738.0012270498444
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 181155,
+        "ratio": 92.61137147746405,
+        "compressMs": 67.33739200000127,
+        "decompressMs": 7.968705999999656,
+        "compressMiBs": 237.60656492478157,
+        "decompressMiBs": 2007.8299292400122
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 178863,
+        "ratio": 93.79811923091975,
+        "compressMs": 146.60136800003238,
+        "decompressMs": 9.329714999999851,
+        "compressMiBs": 109.13817942074208,
+        "decompressMiBs": 1714.9298134095227
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 181082,
+        "ratio": 92.64870611104361,
+        "compressMs": 132.34190300000046,
+        "decompressMs": 9.416023999998288,
+        "compressMiBs": 120.89750896293002,
+        "decompressMiBs": 1699.2104527470065
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 179306,
+        "ratio": 93.5663781468551,
+        "compressMs": 10469.952233000076,
+        "decompressMs": 6.719835999887437,
+        "compressMiBs": 1.5281642215791809,
+        "decompressMiBs": 2380.981679371607
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048363,
+        "compressedBytes": 10914,
+        "ratio": 96.05671614440169
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2097075,
+        "compressedBytes": 21828,
+        "ratio": 96.07270478284772
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194093,
+        "compressedBytes": 44756,
+        "ratio": 93.71018410939315
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388535,
+        "compressedBytes": 90436,
+        "ratio": 92.75659029589987
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777013,
+        "compressedBytes": 180764,
+        "ratio": 92.81169370007302
+      }
+    ],
+    "interned": {
+      "rawBytes": 5307026,
+      "zstd3Bytes": 146913,
+      "effectiveRatio": 114.19692607189289
+    }
+  },
+  {
+    "dataset": "zbugs",
+    "workload": "insert-comment-batch50",
+    "describe": "INSERT comments with real-length markdown bodies (mean 430B), 50/txn",
+    "txnSize": 50,
+    "rawBytes": 16777058,
+    "messages": 19061,
+    "transactions": 187,
+    "bytesPerMessage": 880.1846243447874,
+    "bytesPerTransaction": 89778.83168316832,
+    "relationBytes": 3083371,
+    "framingBytes": 61294,
+    "byTag": {
+      "begin": 202,
+      "insert": 10100,
+      "update": 10100,
+      "commit": 202
+    },
+    "bytesByTag": {
+      "begin": 28280,
+      "insert": 7944289,
+      "update": 10124779,
+      "commit": 37976
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1248816,
+        "ratio": 13.43437143662477,
+        "compressMs": 129.3032569999341,
+        "decompressMs": 15.533844000077806,
+        "compressMiBs": 123.73895051588812,
+        "decompressMiBs": 1029.9993562042896
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1047563,
+        "ratio": 16.015321274233624,
+        "compressMs": 680.8034370000241,
+        "decompressMs": 15.776301000034437,
+        "compressMiBs": 23.50142265726758,
+        "decompressMiBs": 1014.1698817373656
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 927565,
+        "ratio": 18.08720467029265,
+        "compressMs": 15444.207501000026,
+        "decompressMs": 16.477988000027835,
+        "compressMiBs": 1.035977360341863,
+        "decompressMiBs": 970.9831879614782
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 4151316,
+        "ratio": 4.041383021673127,
+        "compressMs": 108.99864599993452,
+        "decompressMs": 38.42240999999922,
+        "compressMiBs": 146.78943185649865,
+        "decompressMiBs": 416.41972274665574
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 3677522,
+        "ratio": 4.562055101233929,
+        "compressMs": 243.4439199999906,
+        "decompressMs": 36.40386199997738,
+        "compressMiBs": 65.72293659853418,
+        "decompressMiBs": 439.5096684925338
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 3666680,
+        "ratio": 4.575544634383148,
+        "compressMs": 294.0841970000183,
+        "decompressMs": 36.50891800003592,
+        "compressMiBs": 54.405675254481665,
+        "decompressMiBs": 438.24496029825553
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 3584894,
+        "ratio": 4.67993140104003,
+        "compressMs": 34.81531500001438,
+        "decompressMs": 15.67451699997764,
+        "compressMiBs": 459.5635374676748,
+        "decompressMiBs": 1020.7554924646693
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 1514559,
+        "ratio": 11.077190125970661,
+        "compressMs": 37.06859100004658,
+        "decompressMs": 12.518862000084482,
+        "compressMiBs": 431.6282029559177,
+        "decompressMiBs": 1278.0594050281916
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1299450,
+        "ratio": 12.91089153103236,
+        "compressMs": 34.807449000072666,
+        "decompressMs": 21.711657000007108,
+        "compressMiBs": 459.6673924430545,
+        "decompressMiBs": 736.9243775107892
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1551699,
+        "ratio": 10.812056977545259,
+        "compressMs": 103.62869200005662,
+        "decompressMs": 13.4907129999483,
+        "compressMiBs": 154.39594006888814,
+        "decompressMiBs": 1185.9898968660384
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1174585,
+        "ratio": 14.28339200653848,
+        "compressMs": 79.30616299999747,
+        "decompressMs": 12.820118999999977,
+        "compressMiBs": 201.74786818848514,
+        "decompressMiBs": 1248.026583798328
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1259750,
+        "ratio": 13.317767811073626,
+        "compressMs": 136.1392230000347,
+        "decompressMs": 21.70576199993957,
+        "compressMiBs": 117.52564005344684,
+        "decompressMiBs": 737.1245164994692
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1116963,
+        "ratio": 15.020245075262117,
+        "compressMs": 118.7998950000001,
+        "decompressMs": 13.647923000000446,
+        "compressMiBs": 134.67898535986075,
+        "decompressMiBs": 1172.3285161747676
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1198653,
+        "ratio": 13.99659284213196,
+        "compressMs": 280.72587000008207,
+        "decompressMs": 13.75207499996759,
+        "compressMiBs": 56.994566690463294,
+        "decompressMiBs": 1163.4498298980857
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1082216,
+        "ratio": 15.502504121173592,
+        "compressMs": 260.7240129999991,
+        "decompressMs": 14.299929000000702,
+        "compressMiBs": 61.36699544992837,
+        "decompressMiBs": 1118.8761370393672
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 990015,
+        "ratio": 16.94626647071004,
+        "compressMs": 6171.32467500004,
+        "decompressMs": 9.61211500002537,
+        "compressMiBs": 2.5926118235641042,
+        "decompressMiBs": 1664.5503429178468
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1047901,
+        "compressedBytes": 208050,
+        "ratio": 5.036774813746695
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2095668,
+        "compressedBytes": 291466,
+        "ratio": 7.190094213390241
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193452,
+        "compressedBytes": 454324,
+        "ratio": 9.230091300481595
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388418,
+        "compressedBytes": 790769,
+        "ratio": 10.607924691028606
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777058,
+        "compressedBytes": 1514559,
+        "ratio": 11.077190125970661
+      }
+    ],
+    "interned": {
+      "rawBytes": 13574206,
+      "zstd3Bytes": 1494316,
+      "effectiveRatio": 11.227249122675525
+    }
+  },
+  {
+    "dataset": "zbugs",
+    "workload": "insert-comment-highentropy",
+    "describe": "Same, but bodies are incompressible (pessimistic bound)",
+    "txnSize": 50,
+    "rawBytes": 16776965,
+    "messages": 19233,
+    "transactions": 189,
+    "bytesPerMessage": 872.3221568627451,
+    "bytesPerTransaction": 88976.86,
+    "relationBytes": 3111145,
+    "framingBytes": 61846,
+    "byTag": {
+      "begin": 200,
+      "insert": 10000,
+      "update": 10000,
+      "commit": 200
+    },
+    "bytesByTag": {
+      "begin": 28000,
+      "insert": 7708058,
+      "update": 10021714,
+      "commit": 37600
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 3459318,
+        "ratio": 4.849789756246752,
+        "compressMs": 106.49351900001056,
+        "decompressMs": 22.515906000044197,
+        "compressMiBs": 150.24163703093512,
+        "decompressMiBs": 710.598126840429
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 3341276,
+        "ratio": 5.021125162961695,
+        "compressMs": 2182.246562000015,
+        "decompressMs": 39.30693500000052,
+        "compressMiBs": 7.331784091841073,
+        "decompressMiBs": 407.0467623015218
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 3277495,
+        "ratio": 5.118837709897345,
+        "compressMs": 14455.485483000055,
+        "decompressMs": 38.66059500002302,
+        "compressMiBs": 1.106829697733959,
+        "decompressMiBs": 413.85189823739273
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 6222598,
+        "ratio": 2.696135119125484,
+        "compressMs": 140.93290000001434,
+        "decompressMs": 44.11211399990134,
+        "compressMiBs": 113.52750583962263,
+        "decompressMiBs": 362.7067301236655
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 5924761,
+        "ratio": 2.8316694968792833,
+        "compressMs": 230.805413999944,
+        "decompressMs": 42.29054099996574,
+        "compressMiBs": 69.32142686978072,
+        "decompressMiBs": 378.3295330215696
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 5916059,
+        "ratio": 2.8358346324808457,
+        "compressMs": 249.1981800000649,
+        "decompressMs": 45.40715599991381,
+        "compressMiBs": 64.20496581372471,
+        "decompressMiBs": 352.3620952560198
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 5844291,
+        "ratio": 2.87065873345458,
+        "compressMs": 38.0943570000818,
+        "decompressMs": 19.282146000070497,
+        "compressMiBs": 420.0034306317922,
+        "decompressMiBs": 829.7707437589202
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 3844583,
+        "ratio": 4.3637931604025715,
+        "compressMs": 53.463284000055864,
+        "decompressMs": 14.75152499997057,
+        "compressMiBs": 299.26632691942126,
+        "decompressMiBs": 1084.6173956779724
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 3599022,
+        "ratio": 4.661534439078172,
+        "compressMs": 42.290849999990314,
+        "decompressMs": 15.145763000007719,
+        "compressMiBs": 378.32676873957956,
+        "decompressMiBs": 1056.3852496396798
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 3789261,
+        "ratio": 4.427503146391869,
+        "compressMs": 100.0773610000033,
+        "decompressMs": 14.819738999940455,
+        "compressMiBs": 159.8739262094057,
+        "decompressMiBs": 1079.6249939226911
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 3602022,
+        "ratio": 4.6576520076779095,
+        "compressMs": 78.95208699999785,
+        "decompressMs": 14.097067999999126,
+        "compressMiBs": 202.6515224068367,
+        "decompressMiBs": 1134.9708058262593
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 3551614,
+        "ratio": 4.723757987213701,
+        "compressMs": 116.91084099991713,
+        "decompressMs": 13.858611000003293,
+        "compressMiBs": 136.85437972136324,
+        "decompressMiBs": 1154.4995835255627
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 3383161,
+        "ratio": 4.958961456460393,
+        "compressMs": 98.09359399999812,
+        "decompressMs": 15.466561999997793,
+        "compressMiBs": 163.10708962041792,
+        "decompressMiBs": 1034.474282503692
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 3519888,
+        "ratio": 4.766334894746651,
+        "compressMs": 233.11022499995306,
+        "decompressMs": 15.735026000067592,
+        "compressMiBs": 68.63603099241915,
+        "decompressMiBs": 1016.8245433898777
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 3355866,
+        "ratio": 4.999295263875256,
+        "compressMs": 192.4174039999998,
+        "decompressMs": 14.476383000001078,
+        "compressMiBs": 83.15131737120099,
+        "decompressMiBs": 1105.2319234539036
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 3359199,
+        "ratio": 4.994334959018504,
+        "compressMs": 5440.877948999987,
+        "decompressMs": 12.218528999947011,
+        "compressMiBs": 2.9406578823712226,
+        "decompressMiBs": 1309.4670093115112
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048434,
+        "compressedBytes": 350463,
+        "ratio": 2.9915682967959527
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2095221,
+        "compressedBytes": 532155,
+        "ratio": 3.937238210671703
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193366,
+        "compressedBytes": 1015094,
+        "ratio": 4.131012497364776
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388205,
+        "compressedBytes": 1931891,
+        "ratio": 4.341965980482335
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776965,
+        "compressedBytes": 3844583,
+        "ratio": 4.3637931604025715
+      }
+    ],
+    "interned": {
+      "rawBytes": 13550007,
+      "zstd3Bytes": 3834802,
+      "effectiveRatio": 4.374923398913425
+    }
+  },
+  {
+    "dataset": "zbugs",
+    "workload": "insert-issue-batch50",
+    "describe": "INSERT issues (title + real-length markdown body), 50/txn",
+    "txnSize": 50,
+    "rawBytes": 16777013,
+    "messages": 15936,
+    "transactions": 306,
+    "bytesPerMessage": 1052.7558503243745,
+    "bytesPerTransaction": 54743.30421686747,
+    "relationBytes": 2513029,
+    "framingBytes": 100521,
+    "byTag": {
+      "begin": 332,
+      "insert": 16600,
+      "commit": 332
+    },
+    "bytesByTag": {
+      "begin": 46480,
+      "insert": 18065881,
+      "commit": 62416
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 2048593,
+        "ratio": 8.189529594214175,
+        "compressMs": 170.22859600000083,
+        "decompressMs": 21.549051000038162,
+        "compressMiBs": 93.99012140189237,
+        "decompressMiBs": 742.483110002637
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1653168,
+        "ratio": 10.148401735334824,
+        "compressMs": 1105.691908000037,
+        "decompressMs": 20.587088000029325,
+        "compressMiBs": 14.470402006517382,
+        "decompressMiBs": 777.1767626432148
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1460613,
+        "ratio": 11.486282129489467,
+        "compressMs": 25795.714764000033,
+        "decompressMs": 18.148017000057735,
+        "compressMiBs": 0.6202505551985236,
+        "decompressMiBs": 881.6283566443028
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 3146569,
+        "ratio": 5.331843350646371,
+        "compressMs": 81.44465600000694,
+        "decompressMs": 31.809487999998964,
+        "compressMiBs": 196.4500458337304,
+        "decompressMiBs": 502.9884921163865
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 2542431,
+        "ratio": 6.598807597924978,
+        "compressMs": 209.66158000007272,
+        "decompressMs": 29.954038999974728,
+        "compressMiBs": 76.31253377041335,
+        "decompressMiBs": 534.1452084016873
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 2532793,
+        "ratio": 6.623917943550855,
+        "compressMs": 336.2351600000402,
+        "decompressMs": 28.70589900005143,
+        "compressMiBs": 47.58516748846806,
+        "decompressMiBs": 557.3699818314383
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 2738010,
+        "ratio": 6.1274476718492625,
+        "compressMs": 33.54127799998969,
+        "decompressMs": 15.005736000020988,
+        "compressMiBs": 477.01838922532073,
+        "decompressMiBs": 1066.2460277917319
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 2493273,
+        "ratio": 6.728911354673155,
+        "compressMs": 55.895506999921054,
+        "decompressMs": 17.86267299996689,
+        "compressMiBs": 286.24494638068796,
+        "decompressMiBs": 895.711767446195
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 2442002,
+        "ratio": 6.87018806700404,
+        "compressMs": 59.3695740000112,
+        "decompressMs": 19.756973000010476,
+        "compressMiBs": 269.4950515243844,
+        "decompressMiBs": 809.8308584065629
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 2186301,
+        "ratio": 7.673697720487709,
+        "compressMs": 149.54222399997525,
+        "decompressMs": 15.979147000005469,
+        "compressMiBs": 106.99189818199052,
+        "decompressMiBs": 1001.2928978066409
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 2150470,
+        "ratio": 7.801556403948904,
+        "compressMs": 146.54350400000112,
+        "decompressMs": 16.478903999999602,
+        "compressMiBs": 109.1812735971814,
+        "decompressMiBs": 970.9266104174255
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 2082021,
+        "ratio": 8.058042161918635,
+        "compressMs": 243.95961600006558,
+        "decompressMs": 18.180384999956004,
+        "compressMiBs": 65.58383172774575,
+        "decompressMiBs": 880.058722857216
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1823155,
+        "ratio": 9.202186868368296,
+        "compressMs": 198.53675099999964,
+        "decompressMs": 17.609757999998692,
+        "compressMiBs": 80.58863824216503,
+        "decompressMiBs": 908.5761657891584
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 2032341,
+        "ratio": 8.25501871979161,
+        "compressMs": 522.3095960000064,
+        "decompressMs": 21.26150099991355,
+        "compressMiBs": 30.63280193709781,
+        "decompressMiBs": 752.5247819605411
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1715845,
+        "ratio": 9.777697286176782,
+        "compressMs": 445.7715669999998,
+        "decompressMs": 18.467118000000482,
+        "compressMiBs": 35.892388812034255,
+        "decompressMiBs": 866.3943341951543
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1855088,
+        "ratio": 9.04378282863131,
+        "compressMs": 8067.659849999938,
+        "decompressMs": 13.843698999960907,
+        "compressMiBs": 1.9832028991794806,
+        "decompressMiBs": 1155.7464810639808
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1044981,
+        "compressedBytes": 183299,
+        "ratio": 5.700963998712486
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2094659,
+        "compressedBytes": 319923,
+        "ratio": 6.547384839476999
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193163,
+        "compressedBytes": 624730,
+        "ratio": 6.7119603668784915
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388161,
+        "compressedBytes": 1276291,
+        "ratio": 6.5722950330293015
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777013,
+        "compressedBytes": 2493273,
+        "ratio": 6.728911354673155
+      }
+    ],
+    "interned": {
+      "rawBytes": 14171088,
+      "zstd3Bytes": 2463060,
+      "effectiveRatio": 6.811451202975161
+    }
+  },
+  {
+    "dataset": "zbugs",
+    "workload": "insert-viewstate-batch100",
+    "describe": "INSERT into a 3-column, high-frequency table, 100/txn",
+    "txnSize": 100,
+    "rawBytes": 16777020,
+    "messages": 52641,
+    "transactions": 516,
+    "bytesPerMessage": 318.7053514546613,
+    "bytesPerTransaction": 32507.94584837545,
+    "relationBytes": 10115361,
+    "framingBytes": 169277,
+    "byTag": {
+      "begin": 554,
+      "insert": 55400,
+      "commit": 554
+    },
+    "bytesByTag": {
+      "begin": 77560,
+      "insert": 17827690,
+      "commit": 104152
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 324169,
+        "ratio": 51.75393082003523,
+        "compressMs": 69.76777000003494,
+        "decompressMs": 10.063155999989249,
+        "compressMiBs": 229.32957553073535,
+        "decompressMiBs": 1589.9398836558908
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 237868,
+        "ratio": 70.53079859417828,
+        "compressMs": 381.13914700003807,
+        "decompressMs": 10.381401999969967,
+        "compressMiBs": 41.97892870823995,
+        "decompressMiBs": 1541.1996452772248
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 191995,
+        "ratio": 87.38258808823146,
+        "compressMs": 33448.22418400005,
+        "decompressMs": 10.139844000106677,
+        "compressMiBs": 0.4783456661800148,
+        "decompressMiBs": 1577.9151118760462
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 1491053,
+        "ratio": 11.251793195815306,
+        "compressMs": 30.283718000049703,
+        "decompressMs": 15.993845999939367,
+        "compressMiBs": 528.3305398566888,
+        "decompressMiBs": 1000.3730859916145
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 1399255,
+        "ratio": 11.989966089097413,
+        "compressMs": 89.22993999999017,
+        "decompressMs": 16.88035599992145,
+        "compressMiBs": 179.3099163782442,
+        "decompressMiBs": 947.8362352019376
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 1369124,
+        "ratio": 12.253835299067141,
+        "compressMs": 181.27101899997797,
+        "decompressMs": 16.49987699999474,
+        "compressMiBs": 88.26459501414249,
+        "decompressMiBs": 969.6928698219439
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 382545,
+        "ratio": 43.85633062776928,
+        "compressMs": 9.715390000026673,
+        "decompressMs": 9.48194099997636,
+        "compressMiBs": 1646.8523733777085,
+        "decompressMiBs": 1687.3985062629977
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 381639,
+        "ratio": 43.960444294215215,
+        "compressMs": 14.663490999955684,
+        "decompressMs": 8.435248999972828,
+        "compressMiBs": 1091.1326013622772,
+        "decompressMiBs": 1896.7801756516642
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 382948,
+        "ratio": 43.81017788315907,
+        "compressMs": 24.892583000008017,
+        "decompressMs": 8.036339999991469,
+        "compressMiBs": 642.7542324486307,
+        "decompressMiBs": 1990.9328226345535
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 376696,
+        "ratio": 44.53729267101323,
+        "compressMs": 70.78841199993622,
+        "decompressMs": 9.26625200000126,
+        "compressMiBs": 226.02305416666786,
+        "decompressMiBs": 1726.6757994312923
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 394372,
+        "ratio": 42.54110332376538,
+        "compressMs": 76.69250100000136,
+        "decompressMs": 8.752849000000424,
+        "compressMiBs": 208.62291451198993,
+        "decompressMiBs": 1827.9548841563712
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 363715,
+        "ratio": 46.12683007299672,
+        "compressMs": 102.60310199996457,
+        "decompressMs": 7.710852000047453,
+        "compressMiBs": 155.93888262598054,
+        "decompressMiBs": 2074.973437401667
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 376128,
+        "ratio": 44.6045495150587,
+        "compressMs": 90.72253300000011,
+        "decompressMs": 8.154475999999704,
+        "compressMiBs": 176.3598584690527,
+        "decompressMiBs": 1962.0896646007131
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 359171,
+        "ratio": 46.710396997530424,
+        "compressMs": 200.82315299997572,
+        "decompressMs": 9.77547799993772,
+        "compressMiBs": 79.67115763706747,
+        "decompressMiBs": 1636.7294857536294
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 373638,
+        "ratio": 44.901803349766354,
+        "compressMs": 180.3603550000007,
+        "decompressMs": 10.498932000002242,
+        "compressMiBs": 88.71025497723112,
+        "decompressMiBs": 1523.9467290416367
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 284457,
+        "ratio": 58.97910756283024,
+        "compressMs": 11435.046883999952,
+        "decompressMs": 8.086780000012368,
+        "compressMiBs": 1.3991908596562996,
+        "decompressMiBs": 1978.5146968026227
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048282,
+        "compressedBytes": 34911,
+        "ratio": 30.02726934204119
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096892,
+        "compressedBytes": 56481,
+        "ratio": 37.125617464280026
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4194158,
+        "compressedBytes": 110368,
+        "ratio": 38.00157654392578
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388338,
+        "compressedBytes": 203180,
+        "ratio": 41.28525445417856
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777020,
+        "compressedBytes": 381639,
+        "ratio": 43.960444294215215
+      }
+    ],
+    "interned": {
+      "rawBytes": 6351805,
+      "zstd3Bytes": 341412,
+      "effectiveRatio": 49.140100523707424
+    }
+  },
+  {
+    "dataset": "zbugs",
+    "workload": "mixed-oltp-small-txn",
+    "describe": "Realistic app traffic: 1 comment insert + issue touch + viewState, per txn",
+    "txnSize": 3,
+    "rawBytes": 16777067,
+    "messages": 28892,
+    "transactions": 4836,
+    "bytesPerMessage": 580.6909446891826,
+    "bytesPerTransaction": 3469.540651199064,
+    "relationBytes": 3316570,
+    "framingBytes": 1590889,
+    "byTag": {
+      "begin": 5129,
+      "insert": 10258,
+      "update": 10129,
+      "commit": 5129
+    },
+    "bytesByTag": {
+      "begin": 723189,
+      "insert": 5697054,
+      "update": 10410779,
+      "commit": 964252
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1571541,
+        "ratio": 10.675551576446303,
+        "compressMs": 122.96135500003584,
+        "decompressMs": 16.520033000037074,
+        "compressMiBs": 130.1210278832906,
+        "decompressMiBs": 968.5124661973101
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1271708,
+        "ratio": 13.19254655943031,
+        "compressMs": 829.1320870000636,
+        "decompressMs": 18.707810999942012,
+        "compressMiBs": 19.29711580746679,
+        "decompressMiBs": 855.250136030156
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1108847,
+        "ratio": 15.130191090384876,
+        "compressMs": 24199.611870999914,
+        "decompressMs": 16.191581000108272,
+        "compressMiBs": 0.661161756966053,
+        "decompressMiBs": 988.1590872700983
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 3613620,
+        "ratio": 4.642731388469181,
+        "compressMs": 94.56640200002585,
+        "decompressMs": 35.09924100001808,
+        "compressMiBs": 169.19178021093032,
+        "decompressMiBs": 455.8462646676209
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 3139873,
+        "ratio": 5.343231079728384,
+        "compressMs": 209.5866859999951,
+        "decompressMs": 32.98731599992607,
+        "compressMiBs": 76.34004911231446,
+        "decompressMiBs": 485.03060699338846
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 3130950,
+        "ratio": 5.358458934189303,
+        "compressMs": 258.7089299999643,
+        "decompressMs": 32.550894999993034,
+        "compressMiBs": 61.845015951049945,
+        "decompressMiBs": 491.5335784939332
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 3099069,
+        "ratio": 5.413582917966654,
+        "compressMs": 34.40641100006178,
+        "decompressMs": 16.689246999914758,
+        "compressMiBs": 465.0254832594462,
+        "decompressMiBs": 958.6926182234931
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 2046458,
+        "ratio": 8.198099838843504,
+        "compressMs": 48.92240300006233,
+        "decompressMs": 13.753768000053242,
+        "compressMiBs": 327.0456257536342,
+        "decompressMiBs": 1163.3072407841196
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 1729317,
+        "ratio": 9.70155674176568,
+        "compressMs": 43.08858999994118,
+        "decompressMs": 14.341309999930672,
+        "compressMiBs": 371.32470342029524,
+        "decompressMiBs": 1115.6482847525226
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 1637135,
+        "ratio": 10.247821346437526,
+        "compressMs": 117.24729099997785,
+        "decompressMs": 13.194363999995403,
+        "compressMiBs": 136.46249534694903,
+        "decompressMiBs": 1212.6282026577735
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 1499648,
+        "ratio": 11.187336628328781,
+        "compressMs": 108.45788399999583,
+        "decompressMs": 14.33845100000326,
+        "compressMiBs": 147.52139090716054,
+        "decompressMiBs": 1115.8707382354773
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1460552,
+        "ratio": 11.486798826744957,
+        "compressMs": 174.353327000048,
+        "decompressMs": 13.826445000013337,
+        "compressMiBs": 91.76686317274834,
+        "decompressMiBs": 1157.1924599932538
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1365633,
+        "ratio": 12.285194484901874,
+        "compressMs": 170.6571180000028,
+        "decompressMs": 16.242347000006703,
+        "compressMiBs": 93.75441288377196,
+        "decompressMiBs": 985.0705629254351
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1415918,
+        "ratio": 11.84889732315007,
+        "compressMs": 319.4133300000103,
+        "decompressMs": 15.343942999956198,
+        "compressMiBs": 50.09139068343309,
+        "decompressMiBs": 1042.7474803948717
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1316903,
+        "ratio": 12.7397894909496,
+        "compressMs": 348.9530169999998,
+        "decompressMs": 17.03257599999779,
+        "compressMiBs": 45.8510375983563,
+        "decompressMiBs": 939.3680616795093
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1171419,
+        "ratio": 14.322003484662618,
+        "compressMs": 13955.840249,
+        "decompressMs": 10.502590000047348,
+        "compressMiBs": 1.1464632452835162,
+        "decompressMiBs": 1523.4202137239217
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048557,
+        "compressedBytes": 183815,
+        "ratio": 5.7044147648450885
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096514,
+        "compressedBytes": 334699,
+        "ratio": 6.263878888195065
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193704,
+        "compressedBytes": 526340,
+        "ratio": 7.967671087129992
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8387838,
+        "compressedBytes": 1003373,
+        "ratio": 8.359640931139268
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16777067,
+        "compressedBytes": 2046458,
+        "ratio": 8.198099838843504
+      }
+    ],
+    "interned": {
+      "rawBytes": 13351682,
+      "zstd3Bytes": 2002897,
+      "effectiveRatio": 8.376400284188353
+    }
+  },
+  {
+    "dataset": "zbugs",
+    "workload": "update-issue-1col-batch50",
+    "describe": "UPDATE one column of an issue -- full row (incl. body) is shipped",
+    "txnSize": 50,
+    "rawBytes": 16776953,
+    "messages": 16424,
+    "transactions": 316,
+    "bytesPerMessage": 1021.4861425339367,
+    "bytesPerTransaction": 53117.279411764706,
+    "relationBytes": 2589948,
+    "framingBytes": 103598,
+    "byTag": {
+      "begin": 340,
+      "update": 17000,
+      "commit": 340
+    },
+    "bytesByTag": {
+      "begin": 47600,
+      "update": 17948355,
+      "commit": 63920
+    },
+    "codecs": [
+      {
+        "codec": "brotli-4",
+        "compressedBytes": 1952180,
+        "ratio": 8.593958036656456,
+        "compressMs": 156.69003100006375,
+        "decompressMs": 21.408716999925673,
+        "compressMiBs": 102.11083041810282,
+        "decompressMiBs": 747.3474091749792
+      },
+      {
+        "codec": "brotli-9",
+        "compressedBytes": 1579930,
+        "ratio": 10.61879513649339,
+        "compressMs": 1075.8527369999792,
+        "decompressMs": 20.69067499996163,
+        "compressMiBs": 14.871690737405348,
+        "decompressMiBs": 773.2830941322338
+      },
+      {
+        "codec": "brotli-11",
+        "compressedBytes": 1397793,
+        "ratio": 12.002458876242763,
+        "compressMs": 24900.732972000027,
+        "decompressMs": 18.734262999962084,
+        "compressMiBs": 0.6425412939308222,
+        "decompressMiBs": 854.0367552055379
+      },
+      {
+        "codec": "gzip-1",
+        "compressedBytes": 3001629,
+        "ratio": 5.589282686168078,
+        "compressMs": 80.76393799996004,
+        "decompressMs": 31.776562999933958,
+        "compressMiBs": 198.105114483926,
+        "decompressMiBs": 503.5078584077214
+      },
+      {
+        "codec": "gzip-6",
+        "compressedBytes": 2419879,
+        "ratio": 6.932971855204331,
+        "compressMs": 204.37752400001045,
+        "decompressMs": 28.7082390000578,
+        "compressMiBs": 78.28526772667021,
+        "decompressMiBs": 557.3225575982759
+      },
+      {
+        "codec": "gzip-9",
+        "compressedBytes": 2410485,
+        "ratio": 6.959990624293451,
+        "compressMs": 316.9741230000509,
+        "decompressMs": 28.380309999920428,
+        "compressMiBs": 50.476515345235974,
+        "decompressMiBs": 563.7623120994677
+      },
+      {
+        "codec": "zstd-1",
+        "compressedBytes": 2582602,
+        "ratio": 6.496143424344905,
+        "compressMs": 34.12772600003518,
+        "decompressMs": 14.850204000016674,
+        "compressMiBs": 468.81966831421147,
+        "decompressMiBs": 1077.409386674878
+      },
+      {
+        "codec": "zstd-3",
+        "compressedBytes": 2361484,
+        "ratio": 7.104411039837661,
+        "compressMs": 52.391704000066966,
+        "decompressMs": 15.990186000009999,
+        "compressMiBs": 305.387073946561,
+        "decompressMiBs": 1000.598065816419
+      },
+      {
+        "codec": "zstd-3-win24",
+        "compressedBytes": 2312048,
+        "ratio": 7.256316910375563,
+        "compressMs": 51.02912999992259,
+        "decompressMs": 16.471552000031807,
+        "compressMiBs": 313.54148471038127,
+        "decompressMiBs": 971.356505059383
+      },
+      {
+        "codec": "zstd-6",
+        "compressedBytes": 2074362,
+        "ratio": 8.087765298438748,
+        "compressMs": 143.65836000000127,
+        "decompressMs": 16.68722700001672,
+        "compressMiBs": 111.3736032045378,
+        "decompressMiBs": 958.8021535057176
+      },
+      {
+        "codec": "zstd-6-win24",
+        "compressedBytes": 2038908,
+        "ratio": 8.228401183378553,
+        "compressMs": 129.45906999999715,
+        "decompressMs": 15.873984999998356,
+        "compressMiBs": 123.58924858378124,
+        "decompressMiBs": 1007.9226598523586
+      },
+      {
+        "codec": "zstd-9",
+        "compressedBytes": 1975413,
+        "ratio": 8.492883766584507,
+        "compressMs": 218.4958270000061,
+        "decompressMs": 16.174049000022933,
+        "compressMiBs": 73.22679523602223,
+        "decompressMiBs": 989.223489036796
+      },
+      {
+        "codec": "zstd-9-win24",
+        "compressedBytes": 1738466,
+        "ratio": 9.650434923662585,
+        "compressMs": 189.12370999999985,
+        "decompressMs": 18.49101100000553,
+        "compressMiBs": 84.59938303692752,
+        "decompressMiBs": 865.2717357450061
+      },
+      {
+        "codec": "zstd-12",
+        "compressedBytes": 1928831,
+        "ratio": 8.697990129772904,
+        "compressMs": 507.2916770000011,
+        "decompressMs": 16.817110999953,
+        "compressMiBs": 31.53954600294921,
+        "decompressMiBs": 951.3970136546936
+      },
+      {
+        "codec": "zstd-12-win24",
+        "compressedBytes": 1637861,
+        "ratio": 10.243209283327461,
+        "compressMs": 423.591250999998,
+        "decompressMs": 17.81400799999392,
+        "compressMiBs": 37.7716705571307,
+        "decompressMiBs": 898.155495588654
+      },
+      {
+        "codec": "zstd-19",
+        "compressedBytes": 1770352,
+        "ratio": 9.476619903838333,
+        "compressMs": 7653.393302000011,
+        "decompressMs": 15.199450999964029,
+        "compressMiBs": 2.0905431816072584,
+        "decompressMiBs": 1052.653098042334
+      }
+    ],
+    "sizeSweep": [
+      {
+        "chunkMiB": 1,
+        "rawBytes": 1048529,
+        "compressedBytes": 170990,
+        "ratio": 6.132107140768466
+      },
+      {
+        "chunkMiB": 2,
+        "rawBytes": 2096500,
+        "compressedBytes": 303263,
+        "ratio": 6.913141398719923
+      },
+      {
+        "chunkMiB": 4,
+        "rawBytes": 4193753,
+        "compressedBytes": 595460,
+        "ratio": 7.042879454539348
+      },
+      {
+        "chunkMiB": 8,
+        "rawBytes": 8388520,
+        "compressedBytes": 1211759,
+        "ratio": 6.922597645241339
+      },
+      {
+        "chunkMiB": 16,
+        "rawBytes": 16776953,
+        "compressedBytes": 2361484,
+        "ratio": 7.104411039837661
+      }
+    ],
+    "interned": {
+      "rawBytes": 14088578,
+      "zstd3Bytes": 2333711,
+      "effectiveRatio": 7.188959129900832
+    }
+  }
+]

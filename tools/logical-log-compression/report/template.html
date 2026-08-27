@@ -1,309 +1,591 @@
 <title>Logical Log Compression</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap"
+/>
 
 <style>
-:root {
-  color-scheme: light;
-  --ground:     #f2f5f8;
-  --surface:    #ffffff;
-  --surface-2:  #f7f9fb;
-  --ink:        #0f1419;
-  --ink-2:      #48535f;
-  --muted:      #78838f;
-  --rule:       #dee4ea;
-  --rule-soft:  #e089;
-  --rule-soft:  #eaeff4;
-  --accent:     #2a78d6;
-  --s1:         #2a78d6;
-  --s2:         #eb6834;
-  --s3:         #1baf7a;
-  --warn:       #b4640d;
-  --track:      #e6ecf2;
+  :root {
+    color-scheme: light;
+    --ground: #f2f5f8;
+    --surface: #ffffff;
+    --surface-2: #f7f9fb;
+    --ink: #0f1419;
+    --ink-2: #48535f;
+    --muted: #78838f;
+    --rule: #dee4ea;
+    --rule-soft: #e089;
+    --rule-soft: #eaeff4;
+    --accent: #2a78d6;
+    --s1: #2a78d6;
+    --s2: #eb6834;
+    --s3: #1baf7a;
+    --warn: #b4640d;
+    --track: #e6ecf2;
 
-  --step--1: clamp(.78rem, .76rem + .1vw, .82rem);
-  --step-0:  clamp(1rem, .97rem + .14vw, 1.06rem);
-  --step-1:  clamp(1.2rem, 1.13rem + .3vw, 1.35rem);
-  --step-2:  clamp(1.5rem, 1.36rem + .6vw, 1.85rem);
-  --step-3:  clamp(2.1rem, 1.75rem + 1.5vw, 3.1rem);
-  --maxw: 1120px;
-  --prose: 68ch;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --ground:    #0e1216;
-    --surface:   #161b21;
-    --surface-2: #1b2128;
-    --ink:       #e9eef4;
-    --ink-2:     #a7b3bf;
-    --muted:     #76828e;
-    --rule:      #262e36;
-    --rule-soft: #1f262d;
-    --accent:    #5d9ded;
-    --s1:        #3987e5;
-    --s2:        #d95926;
-    --s3:        #199e70;
-    --warn:      #d9913a;
-    --track:     #222a32;
+    --step--1: clamp(0.78rem, 0.76rem + 0.1vw, 0.82rem);
+    --step-0: clamp(1rem, 0.97rem + 0.14vw, 1.06rem);
+    --step-1: clamp(1.2rem, 1.13rem + 0.3vw, 1.35rem);
+    --step-2: clamp(1.5rem, 1.36rem + 0.6vw, 1.85rem);
+    --step-3: clamp(2.1rem, 1.75rem + 1.5vw, 3.1rem);
+    --maxw: 1120px;
+    --prose: 68ch;
   }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --ground:    #0e1216;
-  --surface:   #161b21;
-  --surface-2: #1b2128;
-  --ink:       #e9eef4;
-  --ink-2:     #a7b3bf;
-  --muted:     #76828e;
-  --rule:      #262e36;
-  --rule-soft: #1f262d;
-  --accent:    #5d9ded;
-  --s1:        #3987e5;
-  --s2:        #d95926;
-  --s3:        #199e70;
-  --warn:      #d9913a;
-  --track:     #222a32;
-}
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      color-scheme: dark;
+      --ground: #0e1216;
+      --surface: #161b21;
+      --surface-2: #1b2128;
+      --ink: #e9eef4;
+      --ink-2: #a7b3bf;
+      --muted: #76828e;
+      --rule: #262e36;
+      --rule-soft: #1f262d;
+      --accent: #5d9ded;
+      --s1: #3987e5;
+      --s2: #d95926;
+      --s3: #199e70;
+      --warn: #d9913a;
+      --track: #222a32;
+    }
+  }
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+    --ground: #0e1216;
+    --surface: #161b21;
+    --surface-2: #1b2128;
+    --ink: #e9eef4;
+    --ink-2: #a7b3bf;
+    --muted: #76828e;
+    --rule: #262e36;
+    --rule-soft: #1f262d;
+    --accent: #5d9ded;
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+    --warn: #d9913a;
+    --track: #222a32;
+  }
 
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--ground);
-  color: var(--ink);
-  font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
-  font-size: var(--step-0);
-  line-height: 1.62;
-  -webkit-font-smoothing: antialiased;
-}
-.wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 clamp(1rem, 4vw, 3rem); }
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+    font-size: var(--step-0);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 0 clamp(1rem, 4vw, 3rem);
+  }
 
-h1, h2, h3, .display {
-  font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
-  font-weight: 700;
-  letter-spacing: -0.021em;
-  text-wrap: balance;
-  line-height: 1.12;
-  margin: 0;
-}
-code, .mono, table, .num, .eyebrow, .tag {
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-}
-.eyebrow {
-  font-size: var(--step--1);
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--muted);
-  font-weight: 500;
-}
+  h1,
+  h2,
+  h3,
+  .display {
+    font-family: Archivo, 'Helvetica Neue', Arial, sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.021em;
+    text-wrap: balance;
+    line-height: 1.12;
+    margin: 0;
+  }
+  code,
+  .mono,
+  table,
+  .num,
+  .eyebrow,
+  .tag {
+    font-family:
+      'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .eyebrow {
+    font-size: var(--step--1);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
 
-/* ---------- masthead ---------- */
-header.top { padding: clamp(3rem, 8vw, 5.5rem) 0 clamp(1.5rem, 3vw, 2.25rem); }
-header.top h1 { font-size: var(--step-3); max-width: 16ch; }
-header.top .sub {
-  margin: 1.1rem 0 0;
-  max-width: var(--prose);
-  font-size: clamp(1.05rem, 1rem + .3vw, 1.22rem);
-  color: var(--ink-2);
-}
-.runmeta {
-  margin-top: 1.75rem; display: flex; flex-wrap: wrap; gap: .5rem .5rem;
-}
-.tag {
-  font-size: var(--step--1); color: var(--ink-2);
-  border: 1px solid var(--rule); border-radius: 999px;
-  padding: .2rem .6rem; background: var(--surface);
-}
+  /* ---------- masthead ---------- */
+  header.top {
+    padding: clamp(3rem, 8vw, 5.5rem) 0 0;
+  }
+  header.top h1 {
+    font-size: var(--step-3);
+    max-width: 16ch;
+  }
+  header.top .sub {
+    margin: 1.1rem 0 0;
+    max-width: var(--prose);
+    font-size: clamp(1.05rem, 1rem + 0.3vw, 1.22rem);
+    color: var(--ink-2);
+  }
+  .runmeta {
+    margin-top: 1.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.5rem;
+  }
+  .tag {
+    font-size: var(--step--1);
+    color: var(--ink-2);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    background: var(--surface);
+  }
 
-/* ---------- stat tiles ---------- */
-.tiles {
-  display: grid; gap: 1px; background: var(--rule);
-  border: 1px solid var(--rule); border-radius: 10px; overflow: hidden;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  margin: 1.5rem 0 0;
-}
-.tile { background: var(--surface); padding: 1.15rem 1.25rem 1.25rem; }
-.tile .k { font-size: var(--step--1); color: var(--muted); letter-spacing: .06em; text-transform: uppercase;
-  font-family: "JetBrains Mono", monospace; font-weight: 500; }
-.tile .v {
-  font-family: Archivo, sans-serif; font-weight: 700; font-size: var(--step-2);
-  letter-spacing: -.02em; margin-top: .35rem; font-variant-numeric: tabular-nums;
-}
-.tile .n { font-size: var(--step--1); color: var(--ink-2); margin-top: .3rem; line-height: 1.45; }
+  /* ---------- stat tiles ---------- */
+  .tiles {
+    display: grid;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    margin: 1.5rem 0 0;
+  }
+  .tile {
+    background: var(--surface);
+    padding: 1.15rem 1.25rem 1.25rem;
+  }
+  .tile .k {
+    font-size: var(--step--1);
+    color: var(--muted);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+  }
+  .tile .v {
+    font-family: Archivo, sans-serif;
+    font-weight: 700;
+    font-size: var(--step-2);
+    letter-spacing: -0.02em;
+    margin-top: 0.35rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .tile .n {
+    font-size: var(--step--1);
+    color: var(--ink-2);
+    margin-top: 0.3rem;
+    line-height: 1.45;
+  }
 
-/* ---------- sections ---------- */
-section { padding: clamp(2.5rem, 6vw, 4rem) 0 0; }
-section > .head { border-top: 1px solid var(--rule); padding-top: 1.1rem; margin-bottom: 1.4rem; }
-section h2 { font-size: var(--step-2); margin-top: .35rem; max-width: 22ch; }
-p { max-width: var(--prose); margin: 0 0 1rem; }
-p.wide { max-width: 88ch; }
-.lede { font-size: 1.08rem; color: var(--ink-2); }
-a { color: var(--accent); }
+  /* ---------- sections ---------- */
+  section {
+    padding: clamp(2.25rem, 5vw, 3.25rem) 0 0;
+  }
+  section > .head {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.1rem;
+    margin-bottom: 1.4rem;
+  }
+  section h2 {
+    font-size: var(--step-2);
+    margin-top: 0.35rem;
+    max-width: 22ch;
+  }
+  p {
+    max-width: var(--prose);
+    margin: 0 0 1rem;
+  }
+  p.wide {
+    max-width: 88ch;
+  }
+  .lede {
+    font-size: 1.08rem;
+    color: var(--ink-2);
+  }
+  a {
+    color: var(--accent);
+  }
 
-/* ---------- tables ---------- */
-.scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
-table { width: 100%; border-collapse: collapse; font-size: var(--step--1); }
-th, td { padding: .5rem .75rem; text-align: right; white-space: nowrap; }
-th { color: var(--muted); font-weight: 500; font-size: .74rem; letter-spacing: .05em;
-  text-transform: uppercase; border-bottom: 1px solid var(--rule); background: var(--surface-2); position: sticky; top: 0; }
-td:first-child, th:first-child { text-align: left; }
-tbody tr + tr td { border-top: 1px solid var(--rule-soft); }
-tbody tr:hover td { background: var(--surface-2); }
-td.name { color: var(--ink); }
-td.name .ds { color: var(--muted); }
-.grp td { background: var(--surface-2); color: var(--muted); font-size: .74rem;
-  letter-spacing: .08em; text-transform: uppercase; }
+  /* ---------- tables ---------- */
+  .scroll {
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    background: var(--surface);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--step--1);
+  }
+  th,
+  td {
+    padding: 0.5rem 0.75rem;
+    text-align: right;
+    white-space: nowrap;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 0.74rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-2);
+    vertical-align: bottom;
+  }
+  td:first-child,
+  th:first-child {
+    text-align: left;
+  }
+  tbody tr + tr td {
+    border-top: 1px solid var(--rule-soft);
+  }
+  tbody tr:hover td {
+    background: var(--surface-2);
+  }
+  td.name {
+    color: var(--ink);
+  }
+  td.name .ds {
+    color: var(--muted);
+  }
+  .grp td {
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 0.74rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
 
-/* ---------- bars ---------- */
-.bar { display: flex; align-items: center; gap: .55rem; justify-content: flex-end; }
-.bar .track { width: 120px; height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; }
-.bar .fill { height: 100%; background: var(--s1); border-radius: 0 4px 4px 0; display: block; }
-.bar .lab { min-width: 4.2em; text-align: right; }
+  /* ---------- bars ---------- */
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    justify-content: flex-end;
+  }
+  .bar .track {
+    width: 120px;
+    height: 8px;
+    background: var(--track);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .bar .fill {
+    height: 100%;
+    background: var(--s1);
+    border-radius: 0 4px 4px 0;
+    display: block;
+  }
+  .bar .lab {
+    min-width: 4.2em;
+    text-align: right;
+  }
 
-.stack { display: flex; height: 12px; border-radius: 3px; overflow: hidden; gap: 2px; background: transparent; min-width: 200px; }
-.stack i { display: block; height: 100%; }
-.stack i:first-child { border-radius: 3px 0 0 3px; }
-.stack i:last-child { border-radius: 0 3px 3px 0; }
+  .stack {
+    display: flex;
+    height: 12px;
+    border-radius: 3px;
+    overflow: hidden;
+    gap: 2px;
+    background: transparent;
+    min-width: 200px;
+  }
+  .stack i {
+    display: block;
+    height: 100%;
+  }
+  .stack i:first-child {
+    border-radius: 3px 0 0 3px;
+  }
+  .stack i:last-child {
+    border-radius: 0 3px 3px 0;
+  }
 
-.legend { display: flex; flex-wrap: wrap; gap: 1rem; font-size: var(--step--1);
-  font-family: "JetBrains Mono", monospace; color: var(--ink-2); margin: 0 0 .85rem; }
-.legend span { display: inline-flex; align-items: center; gap: .4rem; }
-.legend b { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    font-size: var(--step--1);
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--ink-2);
+    margin: 0 0 0.85rem;
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .legend b {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+  }
 
-/* ---------- callout ---------- */
-.callout {
-  border: 1px solid var(--rule); border-left: 3px solid var(--accent);
-  background: var(--surface); border-radius: 6px; padding: 1rem 1.15rem;
-  margin: 1.25rem 0; max-width: 88ch;
-}
-.callout p:last-child { margin-bottom: 0; }
-.callout .eyebrow { display: block; margin-bottom: .4rem; }
+  /* ---------- callout ---------- */
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    border-radius: 6px;
+    padding: 1rem 1.15rem;
+    margin: 1.25rem 0;
+    max-width: 88ch;
+  }
+  .callout p:last-child {
+    margin-bottom: 0;
+  }
+  .callout .eyebrow {
+    display: block;
+    margin-bottom: 0.4rem;
+  }
 
-pre {
-  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
-  padding: .9rem 1rem; overflow-x: auto; font-size: .74rem; line-height: 1.7;
-  font-family: "JetBrains Mono", monospace; margin: 1rem 0;
-}
-pre .k { color: var(--s1); }
-pre .r { color: var(--s2); }
-pre .p { color: var(--s3); }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 0.7rem;
+    line-height: 1.7;
+    font-family: 'JetBrains Mono', monospace;
+    margin: 1rem 0;
+  }
+  pre .k {
+    color: var(--ink-2);
+  }
+  pre .r {
+    color: var(--s2);
+  }
+  pre .p {
+    color: var(--s3);
+  }
 
-ul { max-width: var(--prose); padding-left: 1.15rem; }
-li { margin-bottom: .5rem; }
+  ul {
+    max-width: var(--prose);
+    padding-left: 1.15rem;
+  }
+  li {
+    margin-bottom: 0.5rem;
+  }
 
-footer { padding: 3.5rem 0 4rem; margin-top: 3rem; border-top: 1px solid var(--rule);
-  color: var(--muted); font-size: var(--step--1); }
-footer p { max-width: 88ch; }
+  footer {
+    padding: 3.5rem 0 4rem;
+    margin-top: 3rem;
+    border-top: 1px solid var(--rule);
+    color: var(--muted);
+    font-size: var(--step--1);
+  }
+  footer p {
+    max-width: 88ch;
+  }
 
-@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
 </style>
 
 <div class="wrap">
   <header class="top">
     <p class="eyebrow">zero-cache &middot; change-streamer</p>
     <h1>Logical Log Compression</h1>
-    <p class="sub">How well 16&nbsp;MiB chunks of the change-streamer CDC stream compress &mdash; measured on real
-      logical replication streams over Chinook, Pagila and zbugs &mdash; and what that means for S3 cost
-      and restore time.</p>
+    <p class="sub">
+      How well 16&nbsp;MiB chunks of the change-streamer CDC stream compress
+      &mdash; measured on real logical replication streams over Chinook, Pagila
+      and zbugs &mdash; and what that means for S3 cost and restore time.
+    </p>
     <div class="runmeta" id="runmeta"></div>
     <div class="tiles" id="tiles"></div>
   </header>
 
   <section>
-    <div class="head"><p class="eyebrow">Method</p><h2>What was actually measured</h2></div>
-    <p>The bytes under test are the real thing. The harness starts a Postgres logical replication stream
-      through <code>initializePostgresChangeSource</code>, drives real mutations, and serializes every
-      data-plane message with <code>serializeChangeStreamData</code> &mdash; the same call
-      <code>sqlite-change-log-writer</code> makes when it persists the log. Messages are framed as
-      newline-delimited JSON and cut into 16&nbsp;MiB chunks at message boundaries.</p>
-    <p>A transaction on the wire looks like this (one <code>viewState</code> insert, real capture):</p>
+    <div class="head">
+      <p class="eyebrow">Method</p>
+      <h2>What was actually measured</h2>
+    </div>
+    <p>
+      The bytes under test are the real thing. The harness starts a Postgres
+      logical replication stream through
+      <code>initializePostgresChangeSource</code>, drives real mutations, and
+      serializes every data-plane message with
+      <code>serializeChangeStreamData</code> &mdash; the same call
+      <code>sqlite-change-log-writer</code> makes when it persists the log.
+      Messages are framed as newline-delimited JSON and cut into 16&nbsp;MiB
+      chunks at message boundaries.
+    </p>
+    <p>
+      A single-row transaction on the wire looks like this &mdash; a real
+      capture, with the repeated
+      <span style="color: var(--s2)">relation block</span> and the
+      <span style="color: var(--s3)">row payload</span> tinted:
+    </p>
     <pre id="sample"></pre>
-    <p>Two things would otherwise flatter the numbers, and are deliberately avoided. Generated rows
-      recombine sampled column values at co-prime strides rather than copying whole real rows. Text
-      columns are filled from 13.4&nbsp;MB of distinct developer prose and code at the <em>real</em> length
-      distribution sampled from the seeded tables &mdash; cycling zbugs' 924 real comment bodies to fill a
-      16&nbsp;MiB chunk would have made it look far more compressible than production traffic.</p>
+    <p>
+      Two things would otherwise flatter the numbers, and are deliberately
+      avoided. Generated rows recombine sampled column values at co-prime
+      strides rather than copying whole real rows. Text columns are filled from
+      13.4&nbsp;MB of distinct developer prose and code at the
+      <em>real</em> length distribution sampled from the seeded tables &mdash;
+      cycling zbugs' 924 real comment bodies to fill a 16&nbsp;MiB chunk would
+      have made it look far more compressible than production traffic.
+    </p>
   </section>
 
   <section>
-    <div class="head"><p class="eyebrow">Results</p><h2>Ratios span two orders of magnitude</h2></div>
-    <p class="wide">Every row is one 16&nbsp;MiB chunk compressed with <code>zstd-3</code>. The column that
-      actually transfers to your own schema is the last one: <b>compressed bytes per row change</b>.</p>
+    <div class="head">
+      <p class="eyebrow">Results</p>
+      <h2>Ratios span two orders of magnitude</h2>
+    </div>
+    <p class="wide">
+      Every row is one 16&nbsp;MiB chunk compressed with <code>zstd-3</code>. A
+      row change is one insert, update or delete &mdash; not one message, since
+      a single-row transaction emits three. The number that transfers to your
+      own schema is <b>stored bytes per row change</b>.
+    </p>
     <div class="scroll"><table id="ratios"></table></div>
   </section>
 
   <section>
-    <div class="head"><p class="eyebrow">Analysis</p><h2>Where the bytes go</h2></div>
-    <p class="wide">Ratio is governed almost entirely by how much of the chunk is structure rather than
-      payload. Every data message carries a full copy of its table's <code>relation</code> block, and every
-      transaction is wrapped in <code>begin</code>/<code>commit</code> messages carrying LSNs, an xid and a
-      commit timestamp.</p>
+    <div class="head">
+      <p class="eyebrow">Analysis</p>
+      <h2>Where the bytes go</h2>
+    </div>
+    <p class="wide">
+      Ratio is governed almost entirely by how much of the chunk is structure
+      rather than payload. Every data message carries a full copy of its table's
+      <code>relation</code> block, and every transaction is wrapped in
+      <code>begin</code>/<code>commit</code> messages carrying LSNs, an xid and
+      a commit timestamp.
+    </p>
     <div class="legend" id="legend"></div>
     <div class="scroll"><table id="anatomy"></table></div>
     <div class="callout" id="txn-callout"></div>
+    <div class="callout" id="trigger-callout"></div>
   </section>
 
   <section>
-    <div class="head"><p class="eyebrow">Attribution</p><h2>What each column costs on S3</h2></div>
-    <p class="wide">Removing one column from a chunk and recompressing gives that column's marginal cost.
-      It separates &ldquo;the row is wide&rdquo; from &ldquo;the row contains something incompressible&rdquo;
-      &mdash; the two have very different prices. Shares do not sum to 100%: this is marginal cost, and
-      columns interact inside the compressor's window.</p>
+    <div class="head">
+      <p class="eyebrow">Attribution</p>
+      <h2>What each column costs on S3</h2>
+    </div>
+    <p class="wide">
+      Removing one column from a chunk and recompressing gives that column's
+      marginal cost. It separates &ldquo;the row is wide&rdquo; from &ldquo;the
+      row contains something incompressible&rdquo; &mdash; the two have very
+      different prices. Shares do not sum to 100%: this is marginal cost, and
+      columns interact inside the compressor's window.
+    </p>
     <div id="fieldcost"></div>
   </section>
 
   <section>
-    <div class="head"><p class="eyebrow">Codec</p><h2>zstd-3 is the operating point</h2></div>
-    <p class="wide">Median across all 24 chunks, single-threaded, Node 22's built-in <code>zlib</code>
-      bindings. Throughput is what a change-streamer would sustain on one core.</p>
+    <div class="head">
+      <p class="eyebrow">Codec</p>
+      <h2>Picking the operating point</h2>
+    </div>
+    <p class="wide">
+      Median across all 24 chunks, single-threaded, Node 22's built-in
+      <code>zlib</code> bindings. Throughput is what a change-streamer would
+      sustain on one core &mdash; and it is worth noticing up front how much
+      headroom there is: even a shard writing 100k row changes a second only
+      produces tens of MB/s of logical log.
+    </p>
     <div class="scroll"><table id="codecs"></table></div>
     <p class="wide" id="codec-note"></p>
   </section>
 
   <section>
-    <div class="head"><p class="eyebrow">Sizing</p><h2>Chunk size, and the RPO trap</h2></div>
-    <p class="wide">A bigger chunk gives the compressor more history to fold the repeated structure into.
-      The gain flattens well before 16&nbsp;MiB &mdash; but the curve matters in the other direction,
-      because a chunk only fills as fast as the write rate.</p>
+    <div class="head">
+      <p class="eyebrow">Sizing</p>
+      <h2>Chunk size, and the RPO trap</h2>
+    </div>
+    <p class="wide">
+      A bigger chunk gives the compressor more history to fold the repeated
+      structure into, so it pays off exactly where there <em>is</em> structure
+      to fold. Where the payload is already near its entropy floor &mdash;
+      deletes, or pagila's uuid-bearing rows &mdash; chunk size makes almost no
+      difference. Nothing here argues for going below 16&nbsp;MiB.
+      (<code>zstd-3</code>, to isolate the size effect from the window setting.)
+    </p>
     <div class="scroll"><table id="sizes"></table></div>
+    <p class="wide" id="sizes-note"></p>
     <div class="callout" id="rpo-callout"></div>
   </section>
 
   <section>
-    <div class="head"><p class="eyebrow">Cost</p><h2>S3 at steady state</h2></div>
-    <p class="wide">S3 Standard in <code>us-east-1</code>: $0.023/GB-month, $0.005 per 1,000 PUTs,
-      $0.0004 per 1,000 GETs. Transfer to same-region EC2 is free. Seven days of retained logical log,
-      at three sustained row-change rates.</p>
+    <div class="head">
+      <p class="eyebrow">Cost</p>
+      <h2>S3 at steady state</h2>
+    </div>
+    <p class="wide">
+      S3 Standard in <code>us-east-1</code>: $0.023/GB-month, $0.005 per 1,000
+      PUTs, $0.0004 per 1,000 GETs. Transfer to same-region EC2 is free. Seven
+      days of retained logical log, at three sustained row-change rates.
+    </p>
     <div class="scroll"><table id="cost"></table></div>
     <p class="wide" id="cost-note"></p>
   </section>
 
   <section>
-    <div class="head"><p class="eyebrow">Restore</p><h2>The NIC is not the constraint</h2></div>
-    <p class="wide">Replaying 100&nbsp;GiB of raw logical log, assuming 30&nbsp;ms time-to-first-byte and
-      90&nbsp;MB/s sustained per S3 connection. <code>c</code> is the number of concurrent GETs.</p>
+    <div class="head">
+      <p class="eyebrow">Restore</p>
+      <h2>The NIC is not the constraint</h2>
+    </div>
+    <p class="wide">
+      Replaying 100&nbsp;GiB of raw logical log, assuming 30&nbsp;ms
+      time-to-first-byte and 90&nbsp;MB/s sustained per S3 connection.
+      <code>c</code> is the number of concurrent GETs.
+    </p>
     <div class="scroll"><table id="restore"></table></div>
-    <p class="wide">Small objects are latency-bound, not bandwidth-bound, so per-GET efficiency is the
-      thing to size against:</p>
+    <p class="wide" id="restore-note"></p>
+    <p class="wide">
+      Small objects are latency-bound, not bandwidth-bound, so per-GET
+      efficiency is the thing to size against:
+    </p>
     <div class="scroll"><table id="getsize"></table></div>
   </section>
 
   <section>
-    <div class="head"><p class="eyebrow">Implications</p><h2>What follows</h2></div>
+    <div class="head">
+      <p class="eyebrow">Implications</p>
+      <h2>What follows</h2>
+    </div>
     <div id="implications"></div>
   </section>
 
   <footer>
-    <p>Generated by <code>tools/logical-log-compression</code> in the zero monorepo. Postgres 16 with
-      <code>wal_level=logical</code>; Chinook 1.4.5, Pagila (master, patched for PG&nbsp;16), and the
-      zbugs GitHub seed data. Compression via Node 22's built-in <code>zlib</code> zstd, gzip and brotli
-      bindings, single-threaded, best of up to three runs on an otherwise idle 4-core host.</p>
+    <p>
+      Generated by <code>tools/logical-log-compression</code> in the zero
+      monorepo. Postgres 16 with <code>wal_level=logical</code>; Chinook 1.4.5,
+      Pagila (master, patched for PG&nbsp;16), and the zbugs GitHub seed data.
+      Compression via Node 22's built-in <code>zlib</code> zstd, gzip and brotli
+      bindings, single-threaded, best of up to three runs on an otherwise idle
+      4-core host.
+    </p>
     <p id="caveats"></p>
   </footer>
 </div>
 
-<script type="application/json" id="data">__DATA__</script>
-<script>__SCRIPT__</script>
+<script type="application/json" id="data">
+  __DATA__
+</script>
+<script>
+  __SCRIPT__;
+</script>
