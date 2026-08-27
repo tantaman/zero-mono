@@ -2,11 +2,11 @@
 // of the same base replica, and prints the same checksum.
 import {copyFileSync, rmSync, readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {createSilentLogContext} from '/home/user/zero-mono/packages/shared/src/logging-test-utils.ts';
-import {Database} from '/home/user/zero-mono/packages/zqlite/src/db.ts';
-import type {Statement} from '/home/user/zero-mono/packages/zqlite/src/db.ts';
-import {generateLog, replayEntries, SPECS} from '/home/user/zero-mono/packages/zero-cache/src/services/replicator/logical-log-fixture.ts';
-import type {Table} from '/home/user/zero-mono/packages/zero-cache/src/services/replicator/logical-log-fixture.ts';
+import {createSilentLogContext} from '../../../shared/src/logging-test-utils.ts';
+import {Database} from '../../../zqlite/src/db.ts';
+import type {Statement} from '../../../zqlite/src/db.ts';
+import {generateLog, replayEntries, SPECS} from '../../src/services/replicator/logical-log-fixture.ts';
+import type {Table} from '../../src/services/replicator/logical-log-fixture.ts';
 
 const lc = createSilentLogContext();
 const DIR = process.env.CEILING_DIR ?? `${tmpdir()}/zero-logical-log-ceiling`;

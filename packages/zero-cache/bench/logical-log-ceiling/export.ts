@@ -11,16 +11,16 @@
 // with SQLITE_STATIC straight out of the mapping.
 import {mkdirSync, writeFileSync, existsSync, readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {createSilentLogContext} from '/home/user/zero-mono/packages/shared/src/logging-test-utils.ts';
-import {Database} from '/home/user/zero-mono/packages/zqlite/src/db.ts';
-import {StatementRunner} from '/home/user/zero-mono/packages/zero-cache/src/db/statements.ts';
-import {ChangeProcessor} from '/home/user/zero-mono/packages/zero-cache/src/services/replicator/change-processor.ts';
-import {initReplicationState} from '/home/user/zero-mono/packages/zero-cache/src/services/replicator/schema/replication-state.ts';
-import {versionToLexi} from '/home/user/zero-mono/packages/zero-cache/src/types/lexi-version.ts';
+import {createSilentLogContext} from '../../../shared/src/logging-test-utils.ts';
+import {Database} from '../../../zqlite/src/db.ts';
+import {StatementRunner} from '../../src/db/statements.ts';
+import {ChangeProcessor} from '../../src/services/replicator/change-processor.ts';
+import {initReplicationState} from '../../src/services/replicator/schema/replication-state.ts';
+import {versionToLexi} from '../../src/types/lexi-version.ts';
 import {
   createTableMessage, generateLog, INDEX_SPECS, issueRow, commentRow,
   mulberry32, RELATIONS, replayEntries, SPECS, type Table,
-} from '/home/user/zero-mono/packages/zero-cache/src/services/replicator/logical-log-fixture.ts';
+} from '../../src/services/replicator/logical-log-fixture.ts';
 
 const lc = createSilentLogContext();
 const DIR = process.env.CEILING_DIR ?? `${tmpdir()}/zero-logical-log-ceiling`;

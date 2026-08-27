@@ -8,7 +8,7 @@
 // is *recoverable*. This measures the difference by actually building the
 // faster paths and replaying byte-identical input through them.
 //
-// Three variants, same log, same base replica, same pragmas:
+// Four variants, same log, same base replica, same pragmas:
 //
 //   baseline    ChangeProcessor + BigIntJSON.parse -- what runs today.
 //   json-fast   FastApplier + native JSON.parse.
@@ -41,21 +41,33 @@
 //
 // ## Measured result
 //
-// Against a 977 MB replica: json-fast is 1.56x the baseline, and binary is
-// 1.36x -- i.e. the hand-rolled binary decoder is *slower* than V8's native
-// `JSON.parse`, which is C++ and very well optimized. The binary format only
-// wins on a small replica (2.71x vs 2.23x at 12 MB), where decode is a large
-// share of a small total; that is the regime that matters least here.
+// Against a 977 MB replica, median of 8: json-fast 1.51x the baseline, direct
+// 1.57x, binary 1.69x. At a 12 MB replica: 2.23x, 2.34x, 2.98x.
 //
-// Nor does it buy much storage. It is 1.49x smaller raw, but only 1.12x
-// smaller after gzip -1 -- a compact encoding and a general-purpose compressor
-// are chasing the same redundancy, and the encoding gets there first
-// (10.8x compression vs 14.4x).
+// Most of the applier win is simply *having* cached statements plus native
+// `JSON.parse`; removing the last per-row allocations (`direct`) adds only ~4%
+// on top of `json-fast`.
 //
-// So the applier is worth building and the format probably is not, unless the
-// decode moves to native code. Either way the ceiling is bounded: SQLite is
-// ~41% of the baseline's per-change cost at this replica size, so even a free
-// decode lands somewhere near 2.4x.
+// The binary format is worth ~8% over native `JSON.parse` at 977 MB and ~28% at
+// 12 MB. It does not buy much storage though: 1.49x smaller raw but only 1.12x
+// smaller after gzip -1, because a compact encoding and a general-purpose
+// compressor chase the same redundancy and the encoding gets there first
+// (10.8x compression vs 14.4x). So the applier is the clear win and the format
+// is a judgement call resting on throughput alone.
+//
+// > Correction: an earlier version of this header reported the binary format as
+// > *slower* than native `JSON.parse` (1.36x vs 1.56x). That was noise at 3
+// > samples, where the pair flipped order between runs, and it was measured with
+// > binary on `FastApplier` while json-fast had its own. Both formats now drive
+// > the same applier so only the encoding differs, and at 8 samples binary is
+// > consistently ahead.
+//
+// The ceiling is bounded, but not by as much as a CPU profile of the baseline
+// suggests. That profile attributes ~41% of per-change cost to "native SQLite";
+// the C harness in `bench/logical-log-ceiling/` does the *entire* job in 18.1 us
+// against this replica, so that frame was charging better-sqlite3's napi
+// marshalling to SQLite. Measured end to end, the gap from the baseline to C is
+// 3.4x, of which ~2.1x is the JS/native boundary.
 //
 // ## Levers that were measured and did not work
 //
@@ -68,7 +80,8 @@
 //   journal_mode = wal2     slower than wal (6.5 vs 7.4 MB/s). wal2 exists so
 //                           readers cannot starve a checkpoint; replay has no
 //                           readers, so it is overhead with no upside.
-//   mmap_size = 2 GB        ~15%, inside this machine's run-to-run noise.
+//   mmap_size = 2 GB        ~8-15%, at or inside this machine's run-to-run
+//                           noise; measured again in C at ~8%.
 //   BEGIN CONCURRENT        worse, and decisively. This SQLite build (3.54.0)
 //     across 2-4 writers     does support it, so the idea is testable rather
 //                           than impossible. Partitioned by primary-key hash:
