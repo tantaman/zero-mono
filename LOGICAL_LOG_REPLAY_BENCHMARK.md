@@ -178,6 +178,31 @@ only leads on a 12 MB replica, the regime that matters least.
 
 ## 5. Where the time goes
 
+### Are we using prepared statements? Yes — but the path to them costs 3×
+
+`ChangeProcessor` → `StatementRunner.run(sql, args)` → `StatementCache.use(sql)`,
+which prepares once and reuses the `Statement` thereafter. The statement is
+genuinely cached. What is *not* cached is everything in front of it: the SQL text
+is rebuilt from `Object.keys(row)` for every row, and the cache then
+re-normalizes that text with a `replaceAll(/\s+/g, ' ')` and churns four Map
+operations to check it out and back in.
+
+Measured against a small table, so SQLite's own work is near-constant and what
+varies is the JS in front of it:
+
+| Path | µs/row |
+| --- | --- |
+| `StatementRunner`, SQL rebuilt per row (what runs today) | **9.05** |
+| `StatementRunner`, SQL string hoisted | 4.99 |
+| Prepared `Statement` held directly | **2.97** |
+
+Rebuilding the SQL costs 4.1 µs/row; the cache lookup costs another 2.0. We
+spend **6.1 µs getting to a statement that takes 3.0 µs to run.** That is the
+~20% JS share below, and it is what the prototype applier removes by keying a
+held `Statement` on (op, table, column-set).
+
+
+
 CPU profile of the apply loop alone (generation and base restore excluded),
 977 MB replica, ~68 µs/change:
 
@@ -232,22 +257,46 @@ separate files — separate files mean separate write locks — so a per-table
 sharded replica is the version of this idea that could work, at the cost of
 every cross-table read.
 
-> **Open:** this conclusion assumes the contention is SQLite's file-level
-> machinery. It has not yet been separated from *process-global* contention —
-> see [Open questions](#open-questions).
+### Is it a global lock? No — measured
+
+The obvious suspect was process-global contention: `PRAGMA compile_options`
+shows `THREADSAFE=2` and `SYSTEM_MALLOC` with `SQLITE_DEFAULT_MEMSTATUS` **not**
+disabled, so every `malloc`/`free` takes a global mutex to update statistics.
+
+That is separable. Give each writer its **own database file** and nothing is
+shared at the SQLite level; anything still limiting throughput has to be
+process-global.
+
+| Writers | One shared file (`BEGIN CONCURRENT`) | Separate files (`BEGIN IMMEDIATE`) |
+| --- | --- | --- |
+| 1 | 10.7 MB/s | 12.3 MB/s |
+| 2 | 6.4 MB/s (0.60×) | **22.6 MB/s (1.84×)** |
+| 4 | 8.6 MB/s | **30.6 MB/s (2.49×)** |
+
+Separate files scale near-linearly to 2 writers and 2.49× on 4 (on 4 vCPUs, with
+the main thread also live). A global allocator mutex would throttle those
+equally. **It is not a global lock — it is per-database-file contention:** the
+WAL append, the write lock, and `BEGIN CONCURRENT`'s commit-time snapshot
+validation.
+
+`BEGIN CONCURRENT` also costs ~6% even single-threaded (13.3 vs 12.5 MB/s), so
+it is a pessimization unless it is actually buying parallelism.
 
 ---
 
 ## 7. Open questions
 
-1. **Compile flags.** `PRAGMA compile_options` shows `THREADSAFE=2` and
-   `SYSTEM_MALLOC`, with `SQLITE_DEFAULT_MEMSTATUS` **not** disabled and
-   `ENABLE_STMT_SCANSTATUS` **on**. Under `THREADSAFE=2` the core allocator
-   mutex is still active, and with memstatus enabled every `malloc`/`free`
-   takes a global mutex to update statistics. That is a plausible explanation
-   for concurrency failing to scale, and it is separable: two writers against
-   two *separate database files* should scale if the contention is per-file, and
-   should not if it is process-global.
+1. **Compile flags — worth a few percent single-threaded, but not the
+   concurrency story** (that is settled above). `THREADSAFE=2` is already the
+   right choice and `SQLITE_ENABLE_MEMORY_MANAGEMENT` is already off. Two are
+   suboptimal and **untested**, since changing them needs a SQLite rebuild:
+   - `SQLITE_DEFAULT_MEMSTATUS` is not disabled, so every allocation takes a
+     global mutex to maintain statistics nothing reads.
+   - `SQLITE_ENABLE_STMT_SCANSTATUS` is **on**, adding per-VDBE-step accounting
+     to every row.
+
+   Both are bounded by SQLite's ~41% share of per-change cost, so the ceiling on
+   this is small — but it is free throughput if a rebuild is cheap.
 2. **Snapshot frequency.** The real knob. At 14 MB/s, a 60-second recovery
    budget means keeping the log under ~800 MB.
 3. **Log compaction** — last write per key before replaying. On a 240 MB log:
