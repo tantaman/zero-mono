@@ -57,14 +57,23 @@
 //                WAL + synchronous=NORMAL there is no per-commit fsync to
 //                amortize, so what this buys is the per-transaction overhead
 //                and the page rewrites that each commit forces into the WAL.
-//   durability   'production' is the replication manager's config verbatim:
-//                synchronous=NORMAL and wal_autocheckpoint=0, because
-//                litestream owns checkpointing there. 'catchup' is what a
-//                replayer could use instead -- synchronous=OFF, and
-//                checkpointing switched back on. Both are only available to
-//                catchup: if the process dies mid-replay the answer is to
-//                replay again from the last durable watermark, so the
-//                intermediate states need not survive a crash.
+//   pragmas      a ladder of profiles, from what the replication manager runs
+//                today to what a replayer could run instead. Every pragma it
+//                relaxes exists to protect a reader or a crash, and replay has
+//                neither:
+//                  rep-manager  WAL, synchronous=NORMAL, wal_autocheckpoint=0
+//                  wal-ckpt     WAL, synchronous=OFF, checkpointing on
+//                  no-journal   journal_mode=OFF, synchronous=OFF
+//                  excl         + locking_mode=EXCLUSIVE
+//                  excl+cache   + a large page cache
+//                Measured result: nearly the whole win is in not inheriting
+//                `wal_autocheckpoint = 0`. `journal_mode = OFF` is not faster
+//                than a checkpointing WAL -- it is slightly slower until
+//                EXCLUSIVE locking brings it level -- but it removes the WAL
+//                file outright, which is worth more than the throughput.
+//                `cache_size` does nothing at all: one pass over a log touches
+//                each page about once, so there is no reuse for a cache to
+//                capture.
 //   base         rows pre-loaded into the replica before measuring, to check
 //                whether apply throughput holds up once the replica is big
 //                enough that the B-trees miss cache.
@@ -86,6 +95,9 @@
 //   LOGICAL_LOG_COALESCE         logical txs per SQLite commit, e.g. 1,32,256
 //   LOGICAL_LOG_BASE_ROWS        base replica size for the ceiling sweep
 //   LOGICAL_LOG_BASE_SWEEP       base sizes for the size-sensitivity sweep
+//   LOGICAL_LOG_PROFILES         pragma profiles for the profile sweep
+//   LOGICAL_LOG_SIZE_PROFILES    pragma profiles compared at each replica size
+//   LOGICAL_LOG_CACHE_MB         page cache for the 'excl+cache' profile
 //   LOGICAL_LOG_PROJECTIONS      log sizes (MB) to project catchup time for
 //
 // A larger log exercises a larger replica; a 1 GB run needs heap headroom:
@@ -100,6 +112,15 @@
 // measurement. `WAL MB` is the WAL left on disk after replaying the log --
 // under the replication-manager's `wal_autocheckpoint = 0` this is the write
 // amplification a replay would inflict on the file litestream is shipping.
+//
+// Throughput falls as the replica grows, and that is SQLite, not this bench:
+// random-key updates against a bare table with no Zero code in the path go
+// from ~83k/s at 35 MB to ~10k/s at 1.4 GB, and the same 8x shows up with no
+// secondary index at all. It is not page-cache sizing (see above) and it is
+// not within-commit page locality (sorting a batch by key buys ~6%); it is
+// deeper B-trees and more distinct pages dirtied per commit. The pragma
+// profile decides how steep it is: 4.8x from empty to 1 GB under
+// `rep-manager`, 2.2x under `excl`.
 
 import {copyFileSync, existsSync, statSync} from 'node:fs';
 import {gzipSync} from 'node:zlib';
@@ -129,7 +150,19 @@ import {initReplicationState} from './schema/replication-state.ts';
 import {applyPragmas} from './write-worker-client.ts';
 
 type Workload = 'insert-heavy' | 'update-heavy' | 'mixed';
-type Durability = 'production' | 'catchup';
+/**
+ * Named pragma sets, ordered from "what the replication manager runs today" to
+ * "what a replayer could run instead". Each step relaxes something that only
+ * exists to protect a reader or a crash -- and replay has neither: nothing
+ * reads the replica while it is behind, and a crash mid-replay is repaired by
+ * restoring the base and replaying again, not by trusting the file.
+ */
+type PragmaProfile =
+  | 'rep-manager'
+  | 'wal-ckpt'
+  | 'no-journal'
+  | 'excl'
+  | 'excl+cache';
 
 const BYTES_PER_MB = 1024 * 1024;
 const lc = createSilentLogContext();
@@ -201,6 +234,18 @@ const WORKLOADS = envList<Workload>(
 );
 const COALESCE = envNumberList('LOGICAL_LOG_COALESCE', [1, 32, 256]);
 const BASE_ROWS = Math.floor(envNumber('LOGICAL_LOG_BASE_ROWS', 250_000, 0));
+/** Pragma profiles swept by the profile test, least to most relaxed. */
+const PROFILES = envList<PragmaProfile>(
+  'LOGICAL_LOG_PROFILES',
+  ['rep-manager', 'wal-ckpt', 'no-journal', 'excl', 'excl+cache'],
+  ['rep-manager', 'wal-ckpt', 'no-journal', 'excl', 'excl+cache'],
+);
+/** Profiles compared at each replica size. */
+const SIZE_SWEEP_PROFILES = envList<PragmaProfile>(
+  'LOGICAL_LOG_SIZE_PROFILES',
+  ['rep-manager', 'excl'],
+  ['rep-manager', 'wal-ckpt', 'no-journal', 'excl', 'excl+cache'],
+);
 /** Replica sizes (rows) swept by the size-sensitivity test. */
 const BASE_SWEEP = envNumberList(
   'LOGICAL_LOG_BASE_SWEEP',
@@ -574,19 +619,40 @@ type Replica = {
   close(): void;
 };
 
-function applyReplicaPragmas(db: Database, durability: Durability) {
-  db.pragma('journal_mode = WAL');
-  // 'production' is literally the replication-manager's config, including
-  // `wal_autocheckpoint = 0` -- litestream owns checkpointing there, so the
-  // WAL grows for the whole run.
+/** Page cache for the 'excl+cache' profile. Negative means KiB, not pages. */
+const REPLAY_CACHE_KIB = envNumber('LOGICAL_LOG_CACHE_MB', 512) * 1024;
+
+function applyReplicaPragmas(db: Database, profile: PragmaProfile) {
+  // `locking_mode` has to be set before the connection takes its first lock,
+  // and `journal_mode` before there is a journal to migrate.
+  if (profile === 'excl' || profile === 'excl+cache') {
+    db.pragma('locking_mode = EXCLUSIVE');
+  }
+  if (profile === 'excl+cache') {
+    db.pragma(`cache_size = -${REPLAY_CACHE_KIB}`);
+  }
+
+  if (profile === 'rep-manager' || profile === 'wal-ckpt') {
+    db.pragma('journal_mode = WAL');
+  } else {
+    // No journal at all: pages go straight to the db file. A crash leaves a
+    // corrupt file rather than a stale one, which is the right trade only
+    // because the recovery move is "restore the base and replay again".
+    db.pragma('journal_mode = OFF');
+  }
+
+  // busy_timeout / analysis_limit / wal_autocheckpoint=0, as the
+  // replication-manager sets them.
   applyPragmas(db, getPragmaConfig('backup'));
-  if (durability === 'production') {
+
+  if (profile === 'rep-manager') {
     db.pragma('synchronous = NORMAL');
   } else {
-    // Catchup has no reader and no litestream: a crash mid-replay is repaired
-    // by replaying again from the last durable watermark, so neither per-commit
-    // durability nor a frozen WAL buys anything.
     db.pragma('synchronous = OFF');
+  }
+  if (profile === 'wal-ckpt') {
+    // litestream owns checkpointing in the replication manager, so its
+    // `wal_autocheckpoint = 0` has to be undone deliberately.
     db.pragma('wal_autocheckpoint = 1000');
   }
 }
@@ -598,10 +664,10 @@ function newProcessor(db: Database): ChangeProcessor {
 }
 
 /** Creates a fresh replica with the bench schema, via the real DDL path. */
-function createReplica(durability: Durability, testName: string): Replica {
+function createReplica(profile: PragmaProfile, testName: string): Replica {
   const file = new DbFile(testName);
   const db = file.connect(lc);
-  applyReplicaPragmas(db, durability);
+  applyReplicaPragmas(db, profile);
   initReplicationState(db, ['zero_logical_log_bench'], versionToLexi(0));
 
   const processor = newProcessor(db);
@@ -629,13 +695,13 @@ function createReplica(durability: Durability, testName: string): Replica {
 /** Opens a replica restored from a base file; schema is already present. */
 function openRestoredReplica(
   templatePath: string,
-  durability: Durability,
+  profile: PragmaProfile,
   testName: string,
 ): Replica {
   const file = new DbFile(testName);
   copyFileSync(templatePath, file.path);
   const db = file.connect(lc);
-  applyReplicaPragmas(db, durability);
+  applyReplicaPragmas(db, profile);
   return replicaHandle(db, newProcessor(db), file);
 }
 
@@ -742,7 +808,7 @@ type BaseTemplate = {
  * base snapshot on disk, then replay log on top of it.
  */
 function buildBaseTemplate(rows: number): BaseTemplate {
-  const replica = createReplica('catchup', 'logical-log-apply-base');
+  const replica = createReplica('excl+cache', 'logical-log-apply-base');
   const liveIds = rows > 0 ? preloadBase(replica.processor, rows) : new Map();
   // Fold the WAL back into the main file so a plain file copy is complete.
   replica.db.pragma('wal_checkpoint(TRUNCATE)');
@@ -845,7 +911,7 @@ type CaseResult = {
   readonly name: string;
   readonly workload: Workload;
   readonly coalesce: number;
-  readonly durability: Durability;
+  readonly profile: PragmaProfile;
   readonly baseRows: number;
   readonly baseMB: number;
   readonly logMB: number;
@@ -905,7 +971,7 @@ function printResults(title: string, results: readonly CaseResult[]) {
   const header = [
     'workload'.padEnd(13),
     'coalesce'.padStart(8),
-    'durab'.padStart(11),
+    'pragmas'.padStart(12),
     'base MB'.padStart(9),
     'MB/s'.padStart(8),
     'changes/s'.padStart(11),
@@ -925,7 +991,7 @@ function printResults(title: string, results: readonly CaseResult[]) {
       [
         r.workload.padEnd(13),
         String(r.coalesce).padStart(8),
-        r.durability.padStart(11),
+        r.profile.padStart(12),
         fmt(r.baseMB, 0).padStart(9),
         fmt(total).padStart(8),
         Math.round(median(r.changesPerSecond)).toLocaleString().padStart(11),
@@ -943,7 +1009,7 @@ function printResults(title: string, results: readonly CaseResult[]) {
   const projHeader = [
     'workload'.padEnd(13),
     'coalesce'.padStart(8),
-    'durab'.padStart(11),
+    'pragmas'.padStart(12),
     'base MB'.padStart(9),
     ...PROJECTIONS.map(mb => `${fmt(mb, 0)} MB`.padStart(10)),
   ].join(' ');
@@ -955,7 +1021,7 @@ function printResults(title: string, results: readonly CaseResult[]) {
       [
         r.workload.padEnd(13),
         String(r.coalesce).padStart(8),
-        r.durability.padStart(11),
+        r.profile.padStart(12),
         fmt(r.baseMB, 0).padStart(9),
         ...PROJECTIONS.map(mb => duration(mb / mbps).padStart(10)),
       ].join(' '),
@@ -1064,7 +1130,7 @@ function buildFixture(
 /** Runs a small prefix through both paths so measurements start warm. */
 function warmUp(
   fixture: Fixture,
-  durability: Durability,
+  profile: PragmaProfile,
   entries: readonly string[],
 ) {
   // Cut on a commit boundary so the warm-up replica is never closed with a
@@ -1082,7 +1148,7 @@ function warmUp(
   parseAndValidate(slice);
   const replica = openRestoredReplica(
     fixture.basePath,
-    durability,
+    profile,
     'logical-log-apply-warmup',
   );
   try {
@@ -1096,16 +1162,16 @@ function runCase(
   fixture: Fixture,
   workload: Workload,
   coalesce: number,
-  durability: Durability,
+  profile: PragmaProfile,
 ): CaseResult {
-  const name = `${workload} coalesce=${coalesce} ${durability}`;
+  const name = `${workload} coalesce=${coalesce} ${profile}`;
   const log = must(fixture.logs.get(workload));
   const entries = replayEntries(log, coalesce);
   const logMB = log.bytes / BYTES_PER_MB;
 
   // One unrecorded pass so the first recorded sample is not paying for JIT
   // warm-up of the parse and apply paths.
-  warmUp(fixture, durability, entries);
+  warmUp(fixture, profile, entries);
 
   const applyMBPerSecond: number[] = [];
   const changesPerSecond: number[] = [];
@@ -1123,7 +1189,7 @@ function runCase(
 
     const replica = openRestoredReplica(
       fixture.basePath,
-      durability,
+      profile,
       'logical-log-apply-bench',
     );
     try {
@@ -1143,7 +1209,7 @@ function runCase(
     name,
     workload,
     coalesce,
-    durability,
+    profile,
     baseRows: fixture.baseRows,
     baseMB: fixture.baseMB,
     logMB,
@@ -1179,9 +1245,11 @@ describe('replicator/logical-log apply ceiling', () => {
     try {
       for (const workload of WORKLOADS) {
         for (const coalesce of COALESCE) {
-          rows.push(runCase(fixture, workload, coalesce, 'production'));
+          rows.push(runCase(fixture, workload, coalesce, 'rep-manager'));
         }
-        rows.push(runCase(fixture, workload, must(COALESCE.at(-1)), 'catchup'));
+        rows.push(
+          runCase(fixture, workload, must(COALESCE.at(-1)), 'excl+cache'),
+        );
       }
       const log = must(fixture.logs.get(must(WORKLOADS.at(-1))));
       fixtureLog = {log, entries: replayEntries(log, 1)};
@@ -1191,6 +1259,24 @@ describe('replicator/logical-log apply ceiling', () => {
     printResults('logical-log apply ceiling', rows);
     const sample = must(fixtureLog);
     reportCompressibility(sample.log, sample.entries);
+  });
+
+  // Each pragma the replication manager sets exists to protect a reader or a
+  // crash. Replay has neither, so this walks them off one at a time against a
+  // replica big enough for the difference to show.
+  test('pragma profile sweep', {timeout: TEST_TIMEOUT_MS}, () => {
+    const workload: Workload = must(WORKLOADS.at(-1));
+    const coalesce = must(COALESCE.at(-1));
+    const rows: CaseResult[] = [];
+    const fixture = buildFixture(BASE_ROWS, [workload]);
+    try {
+      for (const profile of PROFILES) {
+        rows.push(runCase(fixture, workload, coalesce, profile));
+      }
+    } finally {
+      fixture.close();
+    }
+    printResults('pragma profiles', rows);
   });
 
   // Apply throughput is not a constant: it falls as the replica grows, which
@@ -1203,8 +1289,9 @@ describe('replicator/logical-log apply ceiling', () => {
     for (const baseRows of BASE_SWEEP) {
       const fixture = buildFixture(baseRows, [workload]);
       try {
-        rows.push(runCase(fixture, workload, coalesce, 'production'));
-        rows.push(runCase(fixture, workload, coalesce, 'catchup'));
+        for (const profile of SIZE_SWEEP_PROFILES) {
+          rows.push(runCase(fixture, workload, coalesce, profile));
+        }
       } finally {
         fixture.close();
       }
