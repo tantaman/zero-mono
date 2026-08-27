@@ -398,8 +398,59 @@ each connection keeps its own page cache so the effective cache fragments.
 
 **SQLite writes do not parallelize within one database file.** They would across
 separate files — separate files mean separate write locks — so a per-table
-sharded replica is the version of this idea that could work, at the cost of
-every cross-table read.
+sharded replica is the version of this idea that could work. What that costs is
+**not** cross-table reads; see [§8.1](#81-would-a-file-per-table-work).
+
+### 8.1 Would a file per table work?
+
+> **Correction.** An earlier version of this document put the cost of sharding
+> at "every cross-table read". That is wrong. Zero joins in IVM, not in SQL:
+> `TableSource` only ever emits `SELECT … FROM <one table>` (`packages/zqlite/src/table-source.ts`),
+> `Join` is an IVM operator (`packages/zql/src/ivm/join.ts`), and the only SQL
+> `JOIN`s in zqlite are against `pragma_*` introspection tables. **SQLite never
+> joins across replica tables**, so splitting them across files costs nothing on
+> the query side.
+
+**The prize, measured.** Partitioning by table across separate files, 24 MB log,
+977 MB base:
+
+| Partitioning | 1 writer | 2 writers | 4 writers |
+| --- | --- | --- | --- |
+| **by table** (the actual proposal) | 13.2 MB/s | **22.7 (1.72×)** | — |
+| by PK hash (perfectly balanced, for contrast) | 13.2 | 24.2 (1.83×) | 39.7 (3.0×) |
+
+Per-table sharding captures most of the available parallelism *when tables are
+balanced* — the fixture splits writes 45/55. It is bounded by
+`1 / (largest table's share of writes)`, so a schema where one table takes 90%
+of the writes would get ~1.1×, not 1.7×. **Measure the real distribution before
+counting on this.**
+
+**Where the coupling actually is: snapshots, not joins.** `Snapshotter`
+(`services/view-syncer/snapshotter.ts`) holds a `BEGIN CONCURRENT` snapshot of
+*the* database and, at that snapshot, reads `_zero.changeLog2` for the diff
+since the last version, then applies those changes to an older snapshot for IVM
+and rolls back. Three things in that model assume one file:
+
+1. **Cross-table snapshot atomicity.** A pipeline joining `issue × comment` in
+   IVM still needs both read at the *same* version. With N files the replicator
+   could have advanced one to `W+1` while another sits at `W`, so a ViewSyncer
+   would have to open all N snapshots and retry until their `stateVersion`s
+   agree — a miniature distributed-snapshot problem.
+2. **The change log** is read across all tables with
+   `ORDER BY stateVersion, pos`. Per-file logs are probably fine, since IVM
+   feeds each `TableSource` separately, but the ordering guarantee within a
+   version needs to be thought through rather than assumed.
+3. **The replicator's transaction stops being atomic.** Today one upstream
+   transaction is one SQLite commit across every table it touches. With N files
+   it is N commits, and a crash leaves them at different versions.
+
+**The asymmetry that makes this worth considering.** (3) is a real problem for
+the *serving* replica and a non-problem for the *backup* one: the replication
+manager's replica serves no queries and holds no snapshots, and files landing at
+different watermarks is exactly the situation the S3-log design already recovers
+from — replay each file from its own watermark. So the hard part lives entirely
+on the serving side. The catch is that the serving replica is restored *from*
+the backup, so either both shard or the restore merges N files into one.
 
 ### Is it a global lock? No — measured
 

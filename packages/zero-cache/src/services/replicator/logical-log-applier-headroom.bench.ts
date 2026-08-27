@@ -84,7 +84,17 @@
 // The conclusion those share: SQLite writes do not parallelize within one
 // database file. They would across separate files -- separate files mean
 // separate write locks -- so a replica sharded per table is the version of
-// this idea that could work, at the cost of every cross-table read.
+// this idea that could work. Measured, partitioning by table across separate
+// files: 13.2 -> 22.7 MB/s over 1/2 writers (1.72x), against 1.83x for a
+// perfectly balanced hash partition. The bound is 1/(largest table's share of
+// writes), not core count.
+//
+// What sharding costs is *not* cross-table reads: Zero joins in IVM, not in
+// SQL -- `TableSource` only emits single-table queries and `Join` is an IVM
+// operator -- so SQLite never joins across replica tables. The coupling is in
+// `Snapshotter`, which holds one `BEGIN CONCURRENT` snapshot per database and
+// reads the change log at that snapshot. See LOGICAL_LOG_REPLAY_BENCHMARK.md
+// section 8.1.
 //
 //   pnpm --filter zero-cache run bench logical-log-applier-headroom
 //
