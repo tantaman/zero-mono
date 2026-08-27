@@ -84,6 +84,7 @@ static void run_once(sqlite3 *db, const char *sql) {
  * write amplification is visible rather than inferred. */
 static void proc_io(long long *rd, long long *wr) {
   *rd = *wr = -1;
+  /* Linux only. Elsewhere this stays -1 and the I/O line is simply omitted. */
   FILE *f = fopen("/proc/self/io", "r");
   if (!f) return;
   char k[64]; long long v;
@@ -131,7 +132,9 @@ int main(int argc, char **argv) {
   if (fstat(fd, &st) != 0) { perror("fstat"); return 1; }
   const uint8_t *map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
   if (map == MAP_FAILED) { perror("mmap"); return 1; }
+#ifdef MADV_WILLNEED
   madvise((void *)map, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+#endif
 
   if (memcmp(map, "ZLOG0001", 8) != 0) { fprintf(stderr, "bad magic\n"); return 1; }
   uint32_t stride, nrec, arena_off;

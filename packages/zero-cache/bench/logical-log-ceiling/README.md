@@ -20,28 +20,67 @@ number.
 It is built against the same amalgamation and the same compile-time defines as
 `@rocicorp/zero-sqlite3`, so it is not measuring a different SQLite.
 
-## Running
+## Running it
+
+From the repo root, after `pnpm install`:
 
 ```bash
-# 1. Build the base replica and export a zero-parse binary log.
-#    ROWS controls replica size; LOG_MB the amount of log to replay.
-ROWS=2000000 LOG_MB=24 node export.ts
-
-# 2. Build and run the C harness against a copy of the base.
-make
-cp "$TMPDIR/zero-logical-log-ceiling/base.db" work.db
-./apply work.db "$TMPDIR/zero-logical-log-ceiling/log.bin"
-
-# 3. Apply the *same* log through the best TypeScript applier, for comparison.
-node jsref.ts
+pnpm --filter zero-cache run bench:ceiling             # 2M-row replica, 24 MB log
+pnpm --filter zero-cache run bench:ceiling 200000 12   # smaller, for a first look
 ```
 
-Both harnesses print the same checksum over the resulting replica — row counts,
-id and timestamp length sums, and distinct `_0_version` values per table, plus
-the final watermark. **They must match.** If they do not, the two paths did
-different work and the timings are not comparable.
+That builds both harnesses, generates a base replica and a log, and runs every
+variant against the same input: the C ceiling, deferred index rebuild, secondary
+indexes dropped, and the best TypeScript applier — followed by the key-scheme
+comparison. Roughly 5 minutes and ~3 GB of disk at the default size; well under
+a minute at the smaller one.
 
-## Results on a 4 vCPU Xeon @ 2.80 GHz
+Requirements: a C compiler, node, and `pnpm install` already run. Linux and
+macOS both work.
+
+Knobs:
+
+```bash
+ROWS=4000000 LOG_MB=96 pnpm --filter zero-cache run bench:ceiling
+WORKLOADS="mixed" pnpm --filter zero-cache run bench:ceiling
+CEILING_DIR=/dev/shm/zllc pnpm --filter zero-cache run bench:ceiling   # see below
+```
+
+To drive the pieces individually, see `run.sh` — it is short, and each step is
+`node export.ts`, `./apply`, `node jsref.ts`, `./keys`.
+
+**Every variant prints a checksum over the resulting replica and the runner
+fails loudly if they disagree.** That guard is not decoration: it has already
+caught the reference applier silently replaying a *different* log than the C
+harness because it regenerated one from its own defaults.
+
+## Is it just a slow disk?
+
+Worth ruling out, and it is ruled out here — but check it on your own hardware,
+because the answer depends on the machine:
+
+- `/proc/self/io` over the measured region (Linux; the harness prints it)
+  reports **0 bytes read** from storage and ~17 MB written for a 24 MB log.
+  The replica is entirely in the OS page cache and there is no block-level
+  write amplification.
+- Putting the replica on tmpfs is worth **~10%**.
+- `PRAGMA mmap_size`, which removes the read syscalls entirely, is worth ~8%.
+  `PRAGMA cache_size` from 64 MB to 4 GB is flat.
+
+To check directly, point the harness at a RAM disk and compare:
+
+```bash
+CEILING_DIR=/dev/shm/zllc pnpm --filter zero-cache run bench:ceiling      # Linux
+# macOS: diskutil erasevolume HFS+ RAM $(hdiutil attach -nomount ram://8388608)
+CEILING_DIR=/Volumes/RAM/zllc pnpm --filter zero-cache run bench:ceiling
+```
+
+If the numbers barely move, the workload is CPU-bound on your machine too. What
+*will* differ is single-core speed — these numbers come from a shared 2.80 GHz
+cloud vCPU, and a modern laptop or desktop core should be materially faster.
+The ratios between variants are what travel.
+
+## Reference results (4 vCPU Xeon @ 2.80 GHz)
 
 Applying a 24 MB log (42,890 changes, `mixed` workload, 256 logical
 transactions per commit) with `journal_mode=OFF`, `synchronous=OFF`,

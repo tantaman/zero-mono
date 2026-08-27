@@ -13,7 +13,8 @@ const DIR = process.env.CEILING_DIR ?? `${tmpdir()}/zero-logical-log-ceiling`;
 const ROWS = Number(process.env.ROWS ?? 2_000_000);
 const j = JSON.parse(readFileSync(`${DIR}/base.db.ids.json`, 'utf8'));
 const live = new Map<Table, readonly string[]>([['issue', j.issue], ['comment', j.comment]]);
-const log = generateLog('mixed', Number(process.env.LOG_MB ?? 24) * 1048576, 0xc0ffee, 0,
+const WORKLOAD = (process.env.WORKLOAD ?? 'mixed') as Parameters<typeof generateLog>[0];
+const log = generateLog(WORKLOAD, Number(process.env.LOG_MB ?? 24) * 1048576, 0xc0ffee, 0,
   Math.ceil(ROWS / 20_000) + 16, live);
 const entries = replayEntries(log, Number(process.env.COALESCE ?? 256));
 

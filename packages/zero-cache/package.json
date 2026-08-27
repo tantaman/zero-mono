@@ -22,6 +22,7 @@
     "check-format": "oxfmt --check .",
     "lint": "oxlint --quiet --config ../../oxlint.config.ts",
     "bench": "vitest run --config vitest.config.bench.ts",
+    "bench:ceiling": "bash bench/logical-log-ceiling/run.sh",
     "bench:bmf": "BENCH_OUTPUT_FORMAT=json pnpm run bench 2>&1 | node ../shared/src/tool/mitata-json-to-bmf.ts",
     "bench:bmf:silent": "pnpm run bench:bmf --silent",
     "bench:pg": "vitest run --config vitest.config.bench.pg.ts",
