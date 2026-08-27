@@ -286,6 +286,59 @@ Three things fall out of that:
   6.2 µs fixed cost at 12 MB). That is the irreducible part, and it is why
   replica size dominates every other lever.
 
+### Why not 100 MiB/s? Because it is per-change B-tree work
+
+Instrumenting the C harness per operation, against the 977 MB replica:
+
+| Workload | µs/change | MB/s | insert | update | delete |
+| --- | --- | --- | --- | --- | --- |
+| insert-heavy | 9.8 | 60 | 6.8 µs | 32.9 µs | 23.2 µs |
+| mixed | 19.8 | 28 | 7.3 µs | 30.4 µs | 20.6 µs |
+| update-heavy | 27.7 | 21 | 8.9 µs | 29.7 µs | 20.1 µs |
+
+Per-operation cost barely moves across workloads; only the *mix* does. Two
+things follow.
+
+**It is not I/O.** `/proc/self/io` over the measured region reports **0 MB
+read** — the whole replica is in the OS page cache — and ~17 MB written for a
+24 MB log, so there is no block-level write amplification either. `mmap_size`
+is worth ~8% and `cache_size` nothing. What is left is CPU inside SQLite.
+
+**Updates cost ~4× inserts.** An insert appends at the table's right edge and
+adds one random index entry. An update descends the key index, descends the
+table, reads the old row, rewrites it at a different length (which can split or
+defragment the page), and then rewrites every index whose columns changed.
+
+At 587 bytes/change, **7 µs/insert is ~84 MB/s-equivalent and 30 µs/update is
+~20 MB/s**. So 100+ MiB/s is reachable for inserts and not for updates, and the
+mixed number is just the weighted average.
+
+### The secondary indexes cost about half of everything
+
+| | with `issue_modified_idx` + `comment_issue_idx` | primary keys only |
+| --- | --- | --- |
+| overall | 19.1 µs/change | **9.9 µs/change** |
+| insert | 7.7 µs | **2.5 µs** (3.1×) |
+| update | 28.7 µs | **15.8 µs** (1.8×) |
+| delete | 18.9 µs | **11.2 µs** (1.7×) |
+
+Every update in this workload changes `modified`, which is indexed, so each one
+does a delete-plus-insert at a random position in a ~900k-entry index. At
+2.5 µs an insert is **~237 MB/s-equivalent** — the 250 MB/s intuition is right,
+for inserts against a table carrying only its key.
+
+The replica carries whatever indexes upstream has, so this is not a knob
+zero-cache turns. It is worth knowing that **an upstream index on a
+frequently-mutated column roughly doubles replay cost**, and worth measuring per
+schema.
+
+> **Correction.** An earlier run of this harness reported that dropping the
+> secondary indexes changed nothing. That was a bug in the harness, not a
+> result: the `ZLOG_DROP_SECONDARY` flag was declared but the `DROP INDEX`
+> statements were never wired in, so the flag was a silent no-op. The numbers
+> above come from dropping the indexes outside the harness and were reproduced
+> after fixing it.
+
 ### Correction: the profile over-attributed cost to SQLite
 
 §5 reports a CPU profile splitting the baseline ~41% "native SQLite". The C

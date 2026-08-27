@@ -72,7 +72,8 @@ if (!existsSync(BASE)) {
   live.set('issue', j.issue); live.set('comment', j.comment);
 }
 
-const log = generateLog('mixed', LOG_MB * 1048576, 0xc0ffee, 0,
+const WORKLOAD = (process.env.WORKLOAD ?? 'mixed') as Parameters<typeof generateLog>[0];
+const log = generateLog(WORKLOAD, LOG_MB * 1048576, 0xc0ffee, 0,
   Math.ceil(ROWS / 20_000) + 16, live);
 const entries = replayEntries(log, COALESCE);
 

@@ -80,14 +80,49 @@ static void run_once(sqlite3 *db, const char *sql) {
   }
 }
 
+/* Actual bytes this process moved to and from the filesystem, so page-level
+ * write amplification is visible rather than inferred. */
+static void proc_io(long long *rd, long long *wr) {
+  *rd = *wr = -1;
+  FILE *f = fopen("/proc/self/io", "r");
+  if (!f) return;
+  char k[64]; long long v;
+  while (fscanf(f, "%63[^:]: %lld\n", k, &v) == 2) {
+    if (!strcmp(k, "read_bytes")) *rd = v;
+    else if (!strcmp(k, "write_bytes")) *wr = v;
+  }
+  fclose(f);
+}
+
 static double now_ms(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
 }
 
+/* Variants, to decompose where the remaining time goes. Each removes work the
+ * apply path does today but arguably need not:
+ *   ZLOG_NO_KEY_IN_UPDATE=1  omit the key column from UPDATE ... SET. Setting
+ *                            it forces unique-index maintenance on every update
+ *                            even though the value never changes.
+ *   ZLOG_PLAIN_INSERT=1      plain INSERT instead of INSERT OR REPLACE, which
+ *                            has to probe every unique index before inserting.
+ *   ZLOG_DROP_SECONDARY=1    drop the non-key indexes. Not a real option -- the
+ *                            replica carries upstream's indexes -- but it
+ *                            bounds what index maintenance is costing.
+ */
+static int envflag(const char *name) {
+  const char *v = getenv(name);
+  return v && *v && strcmp(v, "0") != 0;
+}
+
 int main(int argc, char **argv) {
   if (argc < 3) { fprintf(stderr, "usage: apply <db> <log.bin>\n"); return 2; }
+  int no_key_in_update = envflag("ZLOG_NO_KEY_IN_UPDATE");
+  int plain_insert = envflag("ZLOG_PLAIN_INSERT");
+  int drop_secondary = envflag("ZLOG_DROP_SECONDARY");
+  const char *mmap_mb = getenv("ZLOG_MMAP_MB");
+  const char *cache_mb = getenv("ZLOG_CACHE_MB");
 
   int fd = open(argv[2], O_RDONLY);
   if (fd < 0) { perror("open log"); return 1; }
@@ -112,6 +147,22 @@ int main(int argc, char **argv) {
   run_once(db, "PRAGMA journal_mode = OFF");
   run_once(db, "PRAGMA synchronous = OFF");
   run_once(db, "PRAGMA busy_timeout = 30000");
+  char pg[128];
+  if (mmap_mb && *mmap_mb) {
+    snprintf(pg, sizeof pg, "PRAGMA mmap_size = %lld",
+             atoll(mmap_mb) * 1048576LL);
+    run_once(db, pg);
+  }
+  if (drop_secondary) {
+    /* Bounds what non-key index maintenance costs. Not a real option -- the
+     * replica carries upstream's indexes. */
+    run_once(db, "DROP INDEX IF EXISTS issue_modified_idx");
+    run_once(db, "DROP INDEX IF EXISTS comment_issue_idx");
+  }
+  if (cache_mb && *cache_mb) {
+    snprintf(pg, sizeof pg, "PRAGMA cache_size = -%lld", atoll(cache_mb) * 1024LL);
+    run_once(db, pg);
+  }
 
   /* Column order matches what the JS appliers bind, so the resulting replica
    * is byte-for-byte comparable. */
@@ -124,10 +175,14 @@ int main(int argc, char **argv) {
     "\"open\"=?,\"creatorID\"=?,\"assigneeID\"=?,\"created\"=?,\"modified\"=?,"
     "\"visibility\"=?,\"_0_version\"=? WHERE \"id\"=?");
   sqlite3_stmt *del_i = prep(db, "DELETE FROM \"issue\" WHERE \"id\"=?");
-  sqlite3_stmt *ins_c = prep(db,
+  sqlite3_stmt *ins_c = prep(db, plain_insert ?
+    "INSERT INTO \"comment\" (\"id\",\"issueID\",\"creatorID\",\"created\","
+    "\"body\",\"_0_version\") VALUES (?,?,?,?,?,?)" :
     "INSERT OR REPLACE INTO \"comment\" (\"id\",\"issueID\",\"creatorID\",\"created\","
     "\"body\",\"_0_version\") VALUES (?,?,?,?,?,?)");
-  sqlite3_stmt *upd_c = prep(db,
+  sqlite3_stmt *upd_c = prep(db, no_key_in_update ?
+    "UPDATE \"comment\" SET \"issueID\"=?,\"creatorID\"=?,\"created\"=?,"
+    "\"body\"=?,\"_0_version\"=? WHERE \"id\"=?" :
     "UPDATE \"comment\" SET \"id\"=?,\"issueID\"=?,\"creatorID\"=?,\"created\"=?,"
     "\"body\"=?,\"_0_version\"=? WHERE \"id\"=?");
   sqlite3_stmt *del_c = prep(db, "DELETE FROM \"comment\" WHERE \"id\"=?");
@@ -138,7 +193,12 @@ int main(int argc, char **argv) {
 
   const char *ver = NULL; int ver_len = 0;
   long applied = 0;
+  /* Per-op accounting: a mixed log hides which operation actually costs. */
+  double op_ms[6] = {0}; long op_n[6] = {0};
+  double commit_ms = 0;
 
+  long long rd0, wr0, rd1, wr1;
+  proc_io(&rd0, &wr0);
   double t0 = now_ms();
   for (uint32_t i = 0; i < nrec; i++) {
     const uint8_t *r = recs + (size_t)i * STRIDE;
@@ -154,6 +214,7 @@ int main(int argc, char **argv) {
       continue;
     }
     if (op == OP_COMMIT) {
+      double c0 = now_ms();
       Str w; memcpy(&w, r + 8, sizeof w);
       sqlite3_reset(setv);
       sqlite3_bind_text(setv, 1, (const char *)(g_arena + w.off), (int)w.len,
@@ -161,31 +222,34 @@ int main(int argc, char **argv) {
       if (sqlite3_step(setv) != SQLITE_DONE) die(db, "setv");
       sqlite3_reset(commit);
       if (sqlite3_step(commit) != SQLITE_DONE) die(db, "commit");
+      commit_ms += now_ms() - c0;
       continue;
     }
+    double o0 = now_ms();
 
     if (table == 0) {                       /* issue: 6 strings, 4 ints @56 */
       if (op == OP_DELETE) {
         sqlite3_reset(del_i);
         bind_str(del_i, 1, r, 0, nulls);
         if (sqlite3_step(del_i) != SQLITE_DONE) die(db, "del issue");
-        applied++;
+        applied++; op_ms[op] += now_ms() - o0; op_n[op]++;
         continue;
       }
       sqlite3_stmt *s = (op == OP_INSERT) ? ins_i : upd_i;
+      int d = (op == OP_UPDATE && no_key_in_update) ? 1 : 0;
       sqlite3_reset(s);
-      bind_str(s, 1, r, 0, nulls);                     /* id */
-      sqlite3_bind_int64(s, 2, get_int(r, 56, 0));     /* shortID */
-      bind_str(s, 3, r, 1, nulls);                     /* title */
-      bind_str(s, 4, r, 2, nulls);                     /* description */
-      sqlite3_bind_int64(s, 5, get_int(r, 56, 1));     /* open */
-      bind_str(s, 6, r, 3, nulls);                     /* creatorID */
-      bind_str(s, 7, r, 4, nulls);                     /* assigneeID */
-      sqlite3_bind_int64(s, 8, get_int(r, 56, 2));     /* created */
-      sqlite3_bind_int64(s, 9, get_int(r, 56, 3));     /* modified */
-      bind_str(s, 10, r, 5, nulls);                    /* visibility */
-      sqlite3_bind_text(s, 11, ver, ver_len, SQLITE_STATIC);
-      if (op == OP_UPDATE) bind_str(s, 12, r, 0, nulls);
+      if (!d) bind_str(s, 1, r, 0, nulls);             /* id */
+      sqlite3_bind_int64(s, 2 - d, get_int(r, 56, 0)); /* shortID */
+      bind_str(s, 3 - d, r, 1, nulls);                 /* title */
+      bind_str(s, 4 - d, r, 2, nulls);                 /* description */
+      sqlite3_bind_int64(s, 5 - d, get_int(r, 56, 1)); /* open */
+      bind_str(s, 6 - d, r, 3, nulls);                 /* creatorID */
+      bind_str(s, 7 - d, r, 4, nulls);                 /* assigneeID */
+      sqlite3_bind_int64(s, 8 - d, get_int(r, 56, 2)); /* created */
+      sqlite3_bind_int64(s, 9 - d, get_int(r, 56, 3)); /* modified */
+      bind_str(s, 10 - d, r, 5, nulls);                /* visibility */
+      sqlite3_bind_text(s, 11 - d, ver, ver_len, SQLITE_STATIC);
+      if (op == OP_UPDATE) bind_str(s, 12 - d, r, 0, nulls);
       if (sqlite3_step(s) != SQLITE_DONE) die(db, "issue");
       if (op == OP_UPDATE && sqlite3_changes(db) == 0) {
         sqlite3_reset(ins_i);
@@ -207,18 +271,19 @@ int main(int argc, char **argv) {
         sqlite3_reset(del_c);
         bind_str(del_c, 1, r, 0, nulls);
         if (sqlite3_step(del_c) != SQLITE_DONE) die(db, "del comment");
-        applied++;
+        applied++; op_ms[op] += now_ms() - o0; op_n[op]++;
         continue;
       }
       sqlite3_stmt *s = (op == OP_INSERT) ? ins_c : upd_c;
+      int d = (op == OP_UPDATE && no_key_in_update) ? 1 : 0;
       sqlite3_reset(s);
-      bind_str(s, 1, r, 0, nulls);                     /* id */
-      bind_str(s, 2, r, 1, nulls);                     /* issueID */
-      bind_str(s, 3, r, 2, nulls);                     /* creatorID */
-      sqlite3_bind_int64(s, 4, get_int(r, 40, 0));     /* created */
-      bind_str(s, 5, r, 3, nulls);                     /* body */
-      sqlite3_bind_text(s, 6, ver, ver_len, SQLITE_STATIC);
-      if (op == OP_UPDATE) bind_str(s, 7, r, 0, nulls);
+      if (!d) bind_str(s, 1, r, 0, nulls);             /* id */
+      bind_str(s, 2 - d, r, 1, nulls);                 /* issueID */
+      bind_str(s, 3 - d, r, 2, nulls);                 /* creatorID */
+      sqlite3_bind_int64(s, 4 - d, get_int(r, 40, 0)); /* created */
+      bind_str(s, 5 - d, r, 3, nulls);                 /* body */
+      sqlite3_bind_text(s, 6 - d, ver, ver_len, SQLITE_STATIC);
+      if (op == OP_UPDATE) bind_str(s, 7 - d, r, 0, nulls);
       if (sqlite3_step(s) != SQLITE_DONE) die(db, "comment");
       if (op == OP_UPDATE && sqlite3_changes(db) == 0) {
         sqlite3_reset(ins_c);
@@ -232,8 +297,11 @@ int main(int argc, char **argv) {
       }
     }
     applied++;
+    op_ms[op] += now_ms() - o0;
+    op_n[op]++;
   }
   double ms = now_ms() - t0;
+  proc_io(&rd1, &wr1);
 
   /* Same fingerprint the JS benchmark computes, so the two can be compared. */
   char buf[512]; int n = 0;
@@ -259,8 +327,23 @@ int main(int argc, char **argv) {
   n += snprintf(buf + n, sizeof buf - n, " v:%s", sqlite3_column_text(s, 0));
   sqlite3_finalize(s);
 
-  printf("applied=%ld  %.1f ms  %.2f us/change  checksum=%s\n",
-         applied, ms, ms * 1000.0 / (double)applied, buf);
+  printf("applied=%ld  %.1f ms  %.2f us/change", applied, ms,
+         ms * 1000.0 / (double)applied);
+  if (wr1 >= 0 && wr0 >= 0) {
+    printf("  io: read %.0f MB write %.0f MB", (rd1 - rd0) / 1048576.0,
+           (wr1 - wr0) / 1048576.0);
+  }
+  printf("\n");
+  static const struct {int op; const char *name;} OPS[] = {
+    {OP_INSERT, "insert"}, {OP_UPDATE, "update"}, {OP_DELETE, "delete"}};
+  for (unsigned k = 0; k < sizeof OPS / sizeof OPS[0]; k++) {
+    int o = OPS[k].op;
+    if (op_n[o])
+      printf("    %-7s n=%-7ld %7.1f ms  %6.2f us each\n", OPS[k].name, op_n[o],
+             op_ms[o], op_ms[o] * 1000.0 / (double)op_n[o]);
+  }
+  printf("    %-7s          %7.1f ms\n", "commit", commit_ms);
+  printf("    checksum=%s\n", buf);
   sqlite3_close(db);
   munmap((void *)map, st.st_size);
   close(fd);
