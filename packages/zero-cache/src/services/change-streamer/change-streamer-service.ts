@@ -17,6 +17,11 @@ import type {PostgresDB} from '../../types/pg.ts';
 import type {ShardID} from '../../types/shards.ts';
 import type {Source} from '../../types/streams.ts';
 import {Subscription} from '../../types/subscription.ts';
+import {
+  ArchiveWriter,
+  type ArchiveWriterOptions,
+  type ArchiveWriterState,
+} from '../backup/archive/archive-writer.ts';
 import type {
   ChangeSource,
   ChangeStream,
@@ -93,6 +98,12 @@ import {UpstreamAcker} from './upstream-acker.ts';
 export type BackupConfig = {
   backupURL: string;
   litestreamVersion: LitestreamVersion;
+  /**
+   * The format advertised to snapshot reservations (i.e. what subscribers
+   * restore from `backupURL`). Defaults to `litestream`; `archive` once
+   * backup mode `archive` makes the logical archive authoritative.
+   */
+  backupFormat?: 'litestream' | 'archive' | undefined;
 };
 
 export type SQLiteCatchupOptions = {
@@ -181,6 +192,17 @@ export type TuningOptions = StorerOptions & {
     | undefined;
   /** Supplied only in `serve` mode. A zero percentage keeps every read on PG. */
   sqliteChangeLogServe?: SQLiteChangeLogServeOptions | undefined;
+  /**
+   * Supplied when `backup.mode != litestream`, i.e. this is the gate on the
+   * archive writer. Absent, nothing writes the archive. `onDurable` is bound
+   * by the service, which routes the durable cursor to the acker.
+   */
+  archiveWriter?: Omit<ArchiveWriterOptions, 'onDurable'> | undefined;
+  /**
+   * Gates upstream ACKs on the durable archive cursor (backup mode
+   * `archive`). In `archive-dual` the cursor is tracked as a metric only.
+   */
+  trackArchiveForAcks?: boolean | undefined;
 };
 
 /**
@@ -412,6 +434,7 @@ class ChangeStreamerImpl implements ChangeStreamerService {
   readonly #replicationStatusPublisher: ReplicationStatusPublisher;
   readonly #sqliteCatchupOptions: SQLiteCatchupOptions | undefined;
   readonly #changeLogWriter: SQLiteChangeLogWriter | undefined;
+  readonly #archiveWriter: ArchiveWriter | undefined;
   readonly #purgeScheduler: SQLiteChangeLogPurgeScheduler | undefined;
   readonly #comparator: SQLiteChangeLogComparator | undefined;
   readonly #acker: UpstreamAcker;
@@ -612,7 +635,19 @@ class ChangeStreamerImpl implements ChangeStreamerService {
     this.#acker = new UpstreamAcker({
       trackPgChangeLog: true, // TODO: set false when retiring PG
       trackBackup: backupConfig?.litestreamVersion === 'v5',
+      trackArchive: opts.trackArchiveForAcks ?? false,
     });
+    // The archive writer is a fourth consumer of the committed stream,
+    // alongside the storer, the forwarder, and the SQLite change-log writer.
+    // Its contiguous durable cursor feeds the acker, which gates upstream
+    // ACKs on it in backup mode `archive` (and ignores it in `archive-dual`,
+    // where the cursor is a dual-run metric only).
+    this.#archiveWriter = opts.archiveWriter
+      ? new ArchiveWriter(lc, {
+          ...opts.archiveWriter,
+          onDurable: watermark => this.#acker.trackArchive(watermark),
+        })
+      : undefined;
     const replicaSource = opts.sqliteChangeLogCompare
       ? replicaInitializationSource(lc, opts.sqliteChangeLogCompare.replicaFile)
       : undefined;
@@ -707,6 +742,10 @@ class ChangeStreamerImpl implements ChangeStreamerService {
         // from the durable PG head. Commits observed only since process startup
         // are insufficient after a change-streamer restart.
         this.#lastForwardedCommitWatermark = lastWatermark;
+        // The archive reconciles against the same resume point, before
+        // `startStream`, so no change can arrive while it establishes its
+        // durable head and replay filter.
+        await this.#archiveWriter?.reconcile(lastWatermark);
         const stream = await this.#source.startStream(
           lastWatermark,
           backfillRequests,
@@ -788,6 +827,11 @@ class ChangeStreamerImpl implements ChangeStreamerService {
           // the watermark this stream would resume from. Never throws; a write
           // failure disables the writer rather than stopping replication.
           this.#changeLogWriter?.write(change, json);
+          // Same invariant as above: synchronous buffering in the same loop
+          // iteration, before anything that can advance the resume point.
+          // Never throws; failure handling depends on the backup mode (see
+          // ArchiveWriter's fail-stall vs fail-soft posture).
+          this.#archiveWriter?.write(change, json);
           const entry: WatermarkedChange = [watermark, change[1].tag, json];
           unflushedBytes += json.length;
           if (unflushedBytes < flushBytesThreshold) {
@@ -829,6 +873,17 @@ class ChangeStreamerImpl implements ChangeStreamerService {
               this.#state.signal,
             );
           }
+          // ... and the (authoritative) archive writer likewise, when its
+          // upload queue is saturated. The dual-mode writer never stalls the
+          // stream; it fails soft instead.
+          const archiveReady = this.#archiveWriter?.readyForMore();
+          if (archiveReady) {
+            await promiseOrAbort(
+              archiveReady,
+              stream.changes.signal,
+              this.#state.signal,
+            );
+          }
         }
       } catch (e) {
         err = e;
@@ -845,6 +900,7 @@ class ChangeStreamerImpl implements ChangeStreamerService {
         // so the next connection's reconciliation sees a head at or below its
         // resume watermark rather than a partial transaction.
         this.#changeLogWriter?.abort();
+        this.#archiveWriter?.abort();
         // A rollback ends the log's open transaction without a commit
         // notification; wake any purge batch waiting for that window.
         this.#purgeScheduler?.onWriterIdle();
@@ -1296,7 +1352,17 @@ class ChangeStreamerImpl implements ChangeStreamerService {
     this.#comparator?.stop();
     this.#sqliteCatchup?.close();
     this.#changeLogWriter?.close();
-    await Promise.allSettled([this.#storer.stop(), this.#source.stop()]);
+    await Promise.allSettled([
+      this.#storer.stop(),
+      this.#source.stop(),
+      // Seals and flushes buffered transactions (bounded); un-flushed ones
+      // are re-sent to the next incarnation since they were never ACKed.
+      this.#archiveWriter?.close() ?? promiseVoid,
+    ]);
+  }
+
+  archiveWriterState(): ArchiveWriterState | undefined {
+    return this.#archiveWriter?.state();
   }
 
   #recordForwardedTransactionBoundary(

@@ -109,7 +109,7 @@ export class SnapshotReservations {
       this.#lc.info?.(
         `reserving change-log entries since ${minWatermark} for ${taskID}`,
       );
-      res.confirm(this.#backupConfig.backupURL, replicaVersion, minWatermark);
+      res.confirm(this.#backupConfig, replicaVersion, minWatermark);
       // Measured from `open()`, not from the first confirmation attempt: what
       // matters is how long the follower waited before it could restore.
       litestreamSnapshotReservationConfirmDuration().recordMs(
@@ -173,12 +173,26 @@ class Reservation {
     return true;
   }
 
-  confirm(backupURL: string, replicaVersion: string, minWatermark: string) {
+  confirm(
+    {backupURL, backupFormat}: BackupConfig,
+    replicaVersion: string,
+    minWatermark: string,
+  ) {
     if (this.#watermark === null) {
       if (this.#downstream.active) {
         this.#downstream.push([
           'status',
-          {tag: 'status', backupURL, replicaVersion, minWatermark},
+          {
+            tag: 'status',
+            backupURL,
+            replicaVersion,
+            minWatermark,
+            // Only sent when it differs from the default, so litestream-mode
+            // messages stay byte-identical to what older servers send.
+            ...(backupFormat && backupFormat !== 'litestream'
+              ? {backupFormat}
+              : {}),
+          },
         ]);
       }
       this.#watermark = minWatermark;

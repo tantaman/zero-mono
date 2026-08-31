@@ -9,6 +9,12 @@ import type {
 type Opts = {
   trackPgChangeLog: boolean;
   trackBackup: boolean;
+  /**
+   * Gates ACKs on the durable archive cursor (backup mode `archive`). Not
+   * set in `archive-dual`, where the would-be archive cursor is exported as
+   * a metric only.
+   */
+  trackArchive?: boolean | undefined;
 };
 
 /**
@@ -18,11 +24,13 @@ type Opts = {
  *   but nevertheless need to be ACKed)
  * - PG change-log commits
  * - backup watermarks
+ * - the durable logical-archive cursor
  *
- * and sends upstream ACKs accordingly. When both the PG change-log
- * and backup watermarks are being considered for upstream ACKs
- * (i.e. RMv1.5), only watermarks that have been reached by both
- * stores are acked.
+ * and sends upstream ACKs accordingly. When multiple stores are
+ * being considered for upstream ACKs (e.g. RMv1.5 tracking both the
+ * PG change-log and backup watermarks, or backup mode `archive`
+ * additionally gating on the archive cursor), only watermarks that
+ * have been reached by every tracked store are acked.
  *
  * The UpstreamAcker also takes into account that an upstream
  * connection can be disconnected and {@link reset()}. In this case,
@@ -32,22 +40,25 @@ type Opts = {
 export class UpstreamAcker {
   readonly #trackPgChangeLog: boolean;
   readonly #trackBackup: boolean;
+  readonly #trackArchive: boolean;
 
   #pgChangeLogWatermark = '';
   #backupWatermark = '';
+  #archiveWatermark = '';
 
   #upstream: Sink<ChangeSourceUpstream> | undefined;
   #lastTx = '';
   #lastStatus = '';
   #lastAck = '';
 
-  constructor({trackPgChangeLog, trackBackup}: Opts) {
+  constructor({trackPgChangeLog, trackBackup, trackArchive = false}: Opts) {
     assert(
-      trackPgChangeLog || trackBackup,
-      `At least one of trackPgChangeLog or trackBackup must be true`,
+      trackPgChangeLog || trackBackup || trackArchive,
+      `At least one of trackPgChangeLog, trackBackup, or trackArchive must be true`,
     );
     this.#trackPgChangeLog = trackPgChangeLog;
     this.#trackBackup = trackBackup;
+    this.#trackArchive = trackArchive;
   }
 
   reset(upstream: Sink<ChangeSourceUpstream>) {
@@ -88,12 +99,24 @@ export class UpstreamAcker {
     this.#maybeAck();
   }
 
+  trackArchive(durableWatermark: string) {
+    // Watermarks should never move backwards, but use max() defensively.
+    this.#archiveWatermark = max(durableWatermark, this.#archiveWatermark);
+    this.#maybeAck();
+  }
+
   #maybeAck() {
-    const currentWatermark = !this.#trackBackup
-      ? this.#pgChangeLogWatermark
-      : !this.#trackPgChangeLog
-        ? this.#backupWatermark
-        : min(this.#pgChangeLogWatermark, this.#backupWatermark);
+    const tracked: string[] = [];
+    if (this.#trackPgChangeLog) {
+      tracked.push(this.#pgChangeLogWatermark);
+    }
+    if (this.#trackBackup) {
+      tracked.push(this.#backupWatermark);
+    }
+    if (this.#trackArchive) {
+      tracked.push(this.#archiveWatermark);
+    }
+    const currentWatermark = min(...(tracked as [string, ...string[]]));
     if (currentWatermark > this.#lastAck) {
       this.#upstream?.push([
         'status',

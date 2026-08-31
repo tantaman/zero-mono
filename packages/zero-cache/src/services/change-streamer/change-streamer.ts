@@ -1,6 +1,7 @@
 import type {Enum} from '../../../../shared/src/enum.ts';
 import * as v from '../../../../shared/src/valita.ts';
 import type {ParsedJSON, Source} from '../../types/streams.ts';
+import type {ArchiveWriterState} from '../backup/archive/archive-writer.ts';
 import {
   changeStreamDataSchema,
   type ChangeStreamData,
@@ -261,4 +262,11 @@ export interface ChangeStreamerService
    *   changes (e.g. the replication_slot) to advance.
    */
   trackBackupWatermark(watermark: string): void;
+
+  /**
+   * The live state of the logical-archive writer, when one is configured
+   * (backup mode `archive-dual` or `archive`), for the dual-run gauges the
+   * server registers. `undefined` in mode `litestream`.
+   */
+  archiveWriterState?(): ArchiveWriterState | undefined;
 }

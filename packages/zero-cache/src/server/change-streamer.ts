@@ -11,6 +11,8 @@ import {registerSQLiteCorruptionDiagnosticTarget} from '../db/sqlite-corruption.
 import {warmupConnections} from '../db/warmup.ts';
 import {initEventSink, publishCriticalEvent} from '../observability/events.ts';
 import {getOrCreateGauge} from '../observability/metrics.ts';
+import {createObjectStore} from '../services/backup/object-store/create-object-store.ts';
+import type {ObjectStore} from '../services/backup/object-store/object-store.ts';
 import {initializeCustomChangeSource} from '../services/change-source/custom/change-source.ts';
 import {initializePostgresChangeSource} from '../services/change-source/pg/change-source.ts';
 import {createBackupCleanupMonitor} from '../services/change-streamer/backup-cleanup-monitor-factory.ts';
@@ -35,6 +37,7 @@ import {
   ReplicationStatusPublisher,
 } from '../services/replicator/replication-status.ts';
 import {sqliteFileBytes} from '../services/replicator/sqlite-change-log-observability.ts';
+import {versionFromLexi} from '../types/lexi-version.ts';
 import {connectPgClient} from '../types/pg.ts';
 import {
   childWorker,
@@ -79,6 +82,7 @@ export default async function runWorker(
     autoReset,
     replicationLag,
     litestream,
+    backup,
     upstream,
     change,
     replica,
@@ -158,6 +162,24 @@ export default async function runWorker(
     }).addCallback(async o =>
       o.observe(await sqliteFileBytes(lc, changeLogFile)),
     );
+  }
+
+  // The logical backup archive (staged rollout; see the --backup-mode flag).
+  // The store is created once; the writer's lineage (replicaVersion) is only
+  // known per-initialization below.
+  let archiveStore: ObjectStore | undefined;
+  if (backup.mode !== 'litestream') {
+    const archiveURL = must(
+      backup.archiveURL,
+      '--backup-archive-url is required when --backup-mode is not litestream',
+    );
+    lc.info?.(`backup mode ${backup.mode}: archiving to ${archiveURL}`);
+    archiveStore = await createObjectStore(archiveURL, {
+      // The archive shares the litestream bucket's S3 configuration; only
+      // the URL (bucket/prefix) is deliberately distinct.
+      endpoint: litestream.endpoint,
+      region: litestream.region,
+    });
   }
 
   let waitForFirstBackupBeforeServing = false;
@@ -276,6 +298,20 @@ export default async function runWorker(
                   retentionMs: sqliteChangeLogRetentionMs,
                 }
               : undefined,
+          // The presence of this option is the archive writer's gate. In
+          // `archive-dual` the writer fails soft and only the dual-run
+          // metrics depend on it; in `archive` it is authoritative and its
+          // durable cursor gates upstream ACKs (trackArchiveForAcks).
+          archiveWriter: archiveStore
+            ? {
+                store: archiveStore,
+                replicaVersion: subscriptionState.replicaVersion,
+                authoritative: backup.mode === 'archive',
+                segmentTargetBytes: backup.segmentTargetBytes,
+                sealIntervalMs: backup.segmentSealIntervalSeconds * 1000,
+              }
+            : undefined,
+          trackArchiveForAcks: backup.mode === 'archive',
         },
         setTimeout,
       );
@@ -320,6 +356,10 @@ export default async function runWorker(
   }
   // impossible: upstream must have advanced in order for replication to be stuck.
   assert(changeStreamer, `resetting replica did not advance replicaVersion`);
+
+  if (archiveStore) {
+    registerArchiveGauges(changeStreamer);
+  }
 
   const processes = new ProcessManager(lc, parent);
   if (backupURL) {
@@ -389,6 +429,61 @@ export default async function runWorker(
   } finally {
     await processes.shutdown();
   }
+}
+
+/**
+ * The dual-run health gauges for the logical backup archive: the durable
+ * cursor's lag behind the stream (the ack-vs-archive-cursor delta once mode
+ * `archive` gates ACKs on it), buffered bytes, upload-queue depth, and
+ * whether the writer is still enabled. These are the signals the canary
+ * procedure watches before promoting `archive-dual` to `archive`.
+ */
+function registerArchiveGauges(changeStreamer: ChangeStreamerService) {
+  const state = () => changeStreamer.archiveWriterState?.();
+  getOrCreateGauge('replica', 'backup_archive.cursor_lag_versions', {
+    description:
+      'How far the durable archive cursor trails the last committed ' +
+      'watermark the writer has seen, in version (LSN) units.',
+  }).addCallback(o => {
+    const s = state();
+    if (s?.durableWatermark && s.lastBufferedWatermark) {
+      o.observe(
+        Number(
+          versionFromLexi(s.lastBufferedWatermark) -
+            versionFromLexi(s.durableWatermark),
+        ),
+      );
+    }
+  });
+  getOrCreateGauge('replica', 'backup_archive.buffered_bytes', {
+    description:
+      'Uncompressed bytes buffered in the archive writer (open segment ' +
+      'plus upload queue).',
+    unit: 'By',
+  }).addCallback(o => {
+    const s = state();
+    if (s) {
+      o.observe(s.bufferedBytes);
+    }
+  });
+  getOrCreateGauge('replica', 'backup_archive.queued_segments', {
+    description: 'Sealed segments awaiting upload.',
+  }).addCallback(o => {
+    const s = state();
+    if (s) {
+      o.observe(s.queuedSegments);
+    }
+  });
+  getOrCreateGauge('replica', 'backup_archive.writer_enabled', {
+    description:
+      'One while the archive writer is running; zero once it has failed ' +
+      'soft (archive-dual only) or closed.',
+  }).addCallback(o => {
+    const s = state();
+    if (s) {
+      o.observe(s.enabled ? 1 : 0);
+    }
+  });
 }
 
 // fork()
