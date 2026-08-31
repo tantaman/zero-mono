@@ -65,7 +65,7 @@ export class InMemoryObjectStore implements ObjectStore {
 // A wire-conformant relation, i.e. what the change-streamer serializes. The
 // segment decoder validates against the protocol schema, which is stricter
 // than the shapes some internal test helpers produce.
-const RELATION = {
+export const WIRE_RELATION = {
   schema: 'public',
   name: 'issues',
   rowKey: {columns: ['issueID']},
@@ -89,7 +89,11 @@ export function wireTransaction(watermark: string, rows = 1): WireTransaction {
   for (let i = 0; i < rows; i++) {
     parsed.push([
       'data',
-      {tag: 'insert', relation: RELATION, new: {issueID: `${watermark}-${i}`}},
+      {
+        tag: 'insert',
+        relation: WIRE_RELATION,
+        new: {issueID: `${watermark}-${i}`},
+      },
     ]);
   }
   parsed.push(['commit', {tag: 'commit'}, {watermark}]);
