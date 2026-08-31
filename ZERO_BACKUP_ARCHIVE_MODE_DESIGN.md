@@ -1,10 +1,10 @@
 # Backup Archive Mode: Implementation Plan
 
-|                   |                                                          |
-| ----------------- | -------------------------------------------------------- |
-| **Status**        | Proposed                                                 |
-| **Companions**    | Logical Change Archive and SQLite Base Backups; Initial Sync and Base Bootstrap |
-| **Last updated**  | August 31, 2026                                          |
+|                  |                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------- |
+| **Status**       | Proposed                                                                        |
+| **Companions**   | Logical Change Archive and SQLite Base Backups; Initial Sync and Base Bootstrap |
+| **Last updated** | August 31, 2026                                                                 |
 
 ## Purpose
 
@@ -62,11 +62,11 @@ backup: {
 
 ### Mode semantics
 
-| Mode           | Archive writer | Base builder | PG ACK gated on | Restore source | GC  | Litestream |
-| -------------- | -------------- | ------------ | --------------- | -------------- | --- | ---------- |
-| `litestream`   | off            | off          | today's rules   | litestream     | n/a | authoritative (unchanged) |
-| `archive-dual` | on             | on           | today's rules (archive cursor exported as metric only) | litestream | off | authoritative |
-| `archive`      | on             | on           | archive durable cursor | archive (base + tail) | on  | optional safety net while `litestream.backupURL` remains set |
+| Mode           | Archive writer | Base builder | PG ACK gated on                                        | Restore source        | GC  | Litestream                                                   |
+| -------------- | -------------- | ------------ | ------------------------------------------------------ | --------------------- | --- | ------------------------------------------------------------ |
+| `litestream`   | off            | off          | today's rules                                          | litestream            | n/a | authoritative (unchanged)                                    |
+| `archive-dual` | on             | on           | today's rules (archive cursor exported as metric only) | litestream            | off | authoritative                                                |
+| `archive`      | on             | on           | archive durable cursor                                 | archive (base + tail) | on  | optional safety net while `litestream.backupURL` remains set |
 
 Mapping to the companion document's rollout plan: `archive-dual` is Phases 1-3
 (dual-write, base production, restore drills via tooling), `archive` is Phase 4
@@ -217,7 +217,7 @@ Write an `ArchiveChangeSource` that reads sealed segments from S3 and presents
 the same `Downstream` stream the change-streamer's subscribe API produces. The
 base builder is then `IncrementalSyncer` + write-worker + `ChangeProcessor`
 **unchanged** — the determinism requirement (bases contain exactly what the
-applier would produce) is satisfied because it *is* the applier.
+applier would produce) is satisfied because it _is_ the applier.
 
 - Spawn it as a new optional worker on the `server/shadow-syncer.ts` template
   (register in `server/worker-urls.ts`, gate in `server/main.ts` on

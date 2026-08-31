@@ -1,38 +1,12 @@
 import {createHash} from 'node:crypto';
 import {zstdCompressSync} from 'node:zlib';
 import {describe, expect, test} from 'vitest';
-import type {ChangeStreamData} from '../../change-source/protocol/current/downstream.ts';
+import {wireTransaction as tx} from '../test-utils.ts';
 import {
   decodeSegment,
   encodeSegment,
   SegmentFormatError,
 } from './segment-format.ts';
-
-// Wire-conformant messages, i.e. what the change-streamer serializes: the
-// decoder validates against the protocol schema, which is stricter than the
-// shapes internal test helpers produce.
-const relation = {
-  schema: 'public',
-  name: 'issues',
-  rowKey: {columns: ['issueID']},
-};
-
-function tx(
-  watermark: string,
-  rows = 1,
-): {watermark: string; messages: string[]; parsed: ChangeStreamData[]} {
-  const parsed: ChangeStreamData[] = [
-    ['begin', {tag: 'begin'}, {commitWatermark: watermark}],
-  ];
-  for (let i = 0; i < rows; i++) {
-    parsed.push([
-      'data',
-      {tag: 'insert', relation, new: {issueID: `${watermark}-${i}`}},
-    ]);
-  }
-  parsed.push(['commit', {tag: 'commit'}, {watermark}]);
-  return {watermark, messages: parsed.map(m => JSON.stringify(m)), parsed};
-}
 
 describe('backup/archive/segment-format', () => {
   test('round trip', () => {
