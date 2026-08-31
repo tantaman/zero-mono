@@ -12,11 +12,16 @@ The companion documents specify a backup architecture in which the committed
 logical change stream is archived to S3 and SQLite bases are produced by an
 independent builder, replacing Litestream as the canonical backup mechanism.
 
-This document maps that architecture onto the existing `zero-cache` codebase as
-a **separate, opt-in mode**: all existing code stays in place and continues to
-be the default, a single hidden config flag selects the new behavior, and a
-canary deployment opts in by setting one environment variable on its
-replication-manager. Nothing changes for deployments that do not set the flag.
+This document does two things. It fixes the **end state**: the
+replication-manager becomes a **gateway** that owns the replication slot and
+the committed stream but holds **no replica** — every SQLite replica in the
+fleet is materialized by the backup producer (the base builder) or restored
+from one of its published bases. And it maps the path there onto the existing
+`zero-cache` codebase as a **separate, opt-in mode**: all existing code stays
+in place and continues to be the default, a single hidden config flag selects
+the new behavior, and a canary deployment opts in by setting one environment
+variable on its replication-manager. Nothing changes for deployments that do
+not set the flag.
 
 The short version: the codebase already has every seam this design needs. The
 team has run a staged, config-gated dual-write rollout of exactly this shape
@@ -24,7 +29,76 @@ once before (`--change-streamer-sqlite-change-log-mode`), the upstream ACK
 already supports gating on backup durability via a `min()` over multiple
 tracked stores (`UpstreamAcker`), and restore is already behind a small result
 contract that a second implementation can slot into. The new system is ~90%
-additive code in a new directory, touching existing code at five bounded seams.
+additive code in a new directory, touching existing code at six bounded seams.
+
+## The end state: a gateway replication-manager
+
+The replication-manager's replica exists today because Litestream needs a
+physical SQLite file to back up: the backup-replicator worker applies the
+stream to it, and litestream ships its pages. Make the backup logical and that
+file loses its reason to live on the RM. The end state removes it entirely.
+
+**The replication-manager is a gateway.** It owns the replication slot,
+archives the committed stream (the archive writer), persists the stream for
+catchup (the PG and SQLite change logs), serves subscriptions, and coordinates
+snapshots and purging. It holds no replica: no replica file, no
+backup-replicator worker, no litestream process, and no restore step at
+startup. Its durable state is the change DB, the change logs, and the archive.
+
+**The backup producer is the only component that materializes SQLite.** At
+lineage genesis it performs initial sync and publishes the result as the first
+base (per the Initial Sync and Base Bootstrap companion); thereafter it tails
+the archive through the real apply path and publishes bases on the
+replay-budget cadence. Its own recovery is a restore of its own newest base
+(discard-and-rebuild), so even the producer's working file is
+producer-derived.
+
+**Every other replica is a restore of a producer base.** View-syncers restore
+base + tail and then catch up live over their subscription, exactly as they
+restore from litestream today — only the format changes. A single-node
+deployment composes gateway and view-syncer in one process; the serving
+replica it holds is a consumer-restored replica, not a gateway artifact.
+
+What makes the replica removable:
+
+- **Resume.** The stream's resume point never actually came from the replica:
+  the change-streamer resumes from the change-log head
+  (`ChangeLogInitializer` / the storer's start-stream parameters), and the
+  replica's subscription state supplies generation identity plus a
+  cross-check. That identity (`replicaVersion`, publications) is already
+  duplicated in the change DB (`ensureReplicationConfig` reconciles them) and
+  the upstream `replicas` table. The gateway reads identity and resume from
+  those, with the durable archive cursor — S3 authoritative, change-DB copy
+  as a cache — as the floor that ACK gating (`trackArchive`) makes safe:
+  nothing above it is ever acknowledged, so Postgres re-sends whatever the
+  archive lacks.
+- **Backup production.** The replica's real job — being the thing that gets
+  backed up — moves wholesale to the producer, which _is_ the applier reading
+  the archived envelopes. Determinism improves: there is exactly one
+  materialization path, and its output is checksummed and published.
+- **Genesis.** An empty archive no longer falls through to an RM-resident
+  initial sync. The gateway records the new lineage (a fresh
+  `replicaVersion`) and begins archiving from the slot's consistent point;
+  the producer performs the table copy and publishes the first base.
+  Readiness gating keys off the first durable segment plus the first complete
+  base, so nothing serves from a lineage that cannot yet be restored.
+- **The SQLite change log stands alone.** It is named after and seeded beside
+  the replica file today purely as a convention; its identity (generation,
+  replicaID) comes from subscription state, which the gateway carries in the
+  change DB.
+
+What this deletes from the RM: the backup-replicator worker, the litestream
+subprocesses, restore-before-serving at startup (faster failover, near-zero
+local state), and the per-change SQLite write amplification of applying the
+stream locally. What it deletes from the system: the divergence class between
+"the replica that gets backed up" and "the replica that gets restored" — they
+are the same artifact by construction.
+
+The modes below stage toward this. Mode `archive` first changes _authority_
+(the archive gates ACKs and serves restores) while the RM still runs its
+replica and litestream as a safety net; retiring the replica is the final
+transition, taken only after the producer has been the sole source of
+restores through a full soak period.
 
 ## The mode flag
 
@@ -73,6 +147,14 @@ Mapping to the companion document's rollout plan: `archive-dual` is Phases 1-3
 (change of authority), and unsetting `litestream.backupURL` under `archive` is
 Phase 5 (Litestream removal). The exit criteria in the companion document gate
 each transition; the flag makes each transition a config change, not a deploy.
+
+The end state adds one more transition inside mode `archive`: once litestream
+is gone (Phase 5) and the producer has served every restore through a soak
+period, the RM stops spawning the backup-replicator and litestream entirely
+and initializes from the change DB and archive alone — the **gateway cutover**
+(Phase 6). This is a deployment change, not a new flag value: `archive`
+describes authority, and the gateway is what `archive` looks like with the
+transitional scaffolding removed.
 
 Validation and role handling follow existing house style:
 
@@ -202,22 +284,30 @@ local config). The companion document's "start the durable path concurrently
 with the accelerated path and promote whichever verifies first" fits inside
 this one function without the callers knowing.
 
-Two existing behaviors carry over for free:
+The RM call site is transitional: it exists while the RM still keeps a replica
+(Phases 4-5) and is deleted at the gateway cutover, after which only consumers
+restore — the view-syncers and the producer's own discard-and-rebuild.
 
-- `no_backup` on the RM falls through to initial sync, which gives the archive
-  mode sane empty-bucket behavior with no new code.
+Two existing behaviors carry over for free during the transition:
+
+- `no_backup` on the RM falls through to initial sync, which gives the
+  transitional archive mode sane empty-bucket behavior with no new code. After
+  the gateway cutover this path is gone: an empty archive is handled by
+  producer genesis (initial sync → first base), not by an RM-resident sync.
 - The post-restore `prepare()` step (`workers/replicator.ts`) already forces
   `journal_mode = delete` and then the target journal mode on restored files,
   which handles the "base built with `journal_mode = OFF` carries file format
   1" promotion requirement from the companion document.
 
-### 5. Base builder → a new worker that reuses the apply path wholesale
+### 5. Base producer → a new worker that reuses the apply path wholesale
 
 Write an `ArchiveChangeSource` that reads sealed segments from S3 and presents
 the same `Downstream` stream the change-streamer's subscribe API produces. The
-base builder is then `IncrementalSyncer` + write-worker + `ChangeProcessor`
+base producer is then `IncrementalSyncer` + write-worker + `ChangeProcessor`
 **unchanged** — the determinism requirement (bases contain exactly what the
-applier would produce) is satisfied because it _is_ the applier.
+applier would produce) is satisfied because it _is_ the applier. In the end
+state this worker is the **only** thing in the system that materializes a
+SQLite replica from Postgres data; everything else restores its output.
 
 - Spawn it as a new optional worker on the `server/shadow-syncer.ts` template
   (register in `server/worker-urls.ts`, gate in `server/main.ts` on
@@ -235,6 +325,13 @@ applier would produce) is satisfied because it _is_ the applier.
   the builder worker. Discard-and-rebuild is just "delete file, run
   `archiveRestore` from the latest complete base, resume tailing" — its own
   restore path, as the companion document requires.
+- At lineage genesis the producer owns initial sync: the table copy lands in
+  the producer's working file and is published as the first base. The
+  "promote a live replica" cutover (freeze the backup-replicator's file,
+  verify, publish) exists only for **migrating** deployments that already
+  have a litestream-era replica — it seeds the first base without a
+  from-scratch build, and disappears with the backup-replicator at the
+  gateway cutover.
 - The accelerated live-base restore is a request/response between the restore
   coordinator and this worker (publish `intent.json`, upload chunks, publish
   `complete.json`), reusing the same publication code as the periodic base.
@@ -248,6 +345,19 @@ a minimal interface (immutable put-if-absent, get, list, head) with S3 and
 filesystem backends. The `file://` backend is what makes full restore-drill
 integration tests and local development possible, matching litestream's own
 file-URL support.
+
+### 7. Gateway initialization → identity and resume without a replica
+
+`initializePostgresChangeSource` currently restores (or initial-syncs) the
+replica to obtain `subscriptionState` before the streamer starts. The gateway
+cutover replaces that read: generation identity and publications come from the
+change DB (`ensureReplicationConfig` already reconciles them) and the upstream
+`replicas` table; the resume watermark comes from the change-log head as it
+does today; and the durable archive cursor — S3 authoritative, change-DB copy
+as a cache — is the floor below which nothing needs re-sending and above which
+ACK gating guarantees Postgres still has everything. This is the one seam that
+does not exist yet as a seam: it is the work that unlocks deleting the replica
+from the RM, and it lands last.
 
 ## New code layout
 
@@ -272,7 +382,7 @@ packages/zero-cache/src/services/backup/
 packages/zero-cache/src/server/base-builder.ts   // worker entry point
 ```
 
-Existing files touched (the five seams plus config):
+Existing files touched (the seams plus config):
 
 - `config/zero-config.ts`, `config/normalize.ts` — the flag and validation.
 - `services/change-streamer/change-streamer-service.ts` — wire `ArchiveWriter`,
@@ -282,10 +392,15 @@ Existing files touched (the five seams plus config):
   watermark producer.
 - `services/change-streamer/snapshot.ts` — optional `backupFormat` field.
 - `services/change-source/pg/change-source.ts`, `server/replicator.ts` —
-  restore-path selection.
-- `server/main.ts`, `server/worker-urls.ts` — the builder worker.
+  restore-path selection (transitional), then gateway initialization: identity
+  and resume without a replica.
+- `server/main.ts`, `server/worker-urls.ts` — the producer worker.
+- `server/change-streamer.ts` — archive store construction and dual-run
+  gauges; at the gateway cutover, stop spawning the backup-replicator and
+  litestream.
 
-Everything under `services/litestream/` is untouched.
+Everything under `services/litestream/` is untouched until the gateway
+cutover deletes its RM usage.
 
 ## Delivery sequence
 
@@ -313,6 +428,11 @@ throughout.
    valuable on their own; the replicator already threads
    `upstreamCommitTimeMs` through version-ready notifications for lag
    computation. Can ship at any point.
+7. **Gateway cutover.** Retire the RM replica: initialize identity and resume
+   from the change DB and archive (seam 7), move lineage genesis into the
+   producer, stop spawning the backup-replicator and litestream, and delete
+   the RM restore call site. Gated on the producer having served every
+   restore — drills and real — through a full soak of mode `archive`.
 
 ## Codebase findings that feed back into the companion documents
 
@@ -339,7 +459,9 @@ answer there.
 "promote a live replica" path requires the atomic applied-cursor invariant;
 that is how the replicator works today (data and `_zero.replicationState`
 commit in one transaction), so the cheap first-base path is safe and should be
-the default cutover.
+the default cutover for migrating deployments. In the end state it is
+migration-only scaffolding: fresh lineages genesis in the producer, and the
+path disappears with the backup-replicator.
 
 **Gating the slot ACK on backup durability is not new.** The litestream-v5
 path already does it (`UpstreamAcker` with `trackBackup`), including the
@@ -371,6 +493,9 @@ complete base.
   fallback with the live producer failed mid-upload, per the exit criteria.
 - Dual-run comparison in `archive-dual`: the drill tool from step 3 run on a
   schedule, plus the ack-vs-archive-cursor metric.
+- Gateway cutover: cold-start the RM with no replica file against a populated
+  archive and change DB, and against an empty bucket (producer genesis),
+  asserting identical streaming behavior in both.
 - The existing `.pg.test.ts` multi-config vitest setup covers the
   PG-integration variants; no new test infrastructure is needed.
 
@@ -404,9 +529,23 @@ complete base.
 3. Do we store archive continuity metadata (highest contiguous cursor) only in
    S3 pointer objects, or also in the change DB next to `replicationState`?
    Proposed: S3 is authoritative (survives RM loss); the change DB copy is a
-   cache.
+   cache. Note that at the gateway cutover this stops being an optimization
+   question — the archive cursor becomes part of how a replica-free RM
+   initializes, so the pointer discipline is load-bearing.
 4. Chunk size and parallelism defaults for base upload/download, to be set
    from drill measurements.
 5. Whether `archive-dual` should also exercise view-syncer restores from the
    archive on an opt-in sub-flag (a `compare`-style read percentage, as
    `sqliteChangeLogMode` did) before `archive` flips the default.
+6. Genesis coordination between the gateway and the producer: the initial
+   table copy must happen at the slot's consistent snapshot, which today is
+   visible only to the session that created the slot. Options: the gateway
+   exports the snapshot (`pg_export_snapshot`) and holds the creating
+   transaction open while the producer copies; or a one-shot bootstrap job
+   performs slot creation + copy and hands the slot to the gateway. The
+   bootstrap companion owns this; the gateway cutover depends on the answer.
+7. Single-node and dev topology: the combined process needs a serving replica
+   and is a consumer of it, but with no separate producer node, does dev mode
+   run the producer in-process against a `file://` archive, or keep a local
+   direct-apply path as a permanent exception? Proposed: producer in-process —
+   one materialization path everywhere is most of the point.
