@@ -26,11 +26,23 @@ export async function createObjectStore(
       return new FsObjectStore(fileURLToPath(parsed));
     case 's3:': {
       // Loaded lazily so that deployments in litestream mode (the default)
-      // never pay for the AWS SDK.
-      const [{S3Client}, {S3ObjectStore}] = await Promise.all([
-        import('@aws-sdk/client-s3'),
-        import('./s3-object-store.ts'),
-      ]);
+      // never pay for the AWS SDK — which is also not a declared dependency
+      // of the published zero package; a deployment that opts into an s3://
+      // archive installs it.
+      let s3;
+      try {
+        s3 = await Promise.all([
+          import('@aws-sdk/client-s3'),
+          import('./s3-object-store.ts'),
+        ]);
+      } catch (e) {
+        throw new Error(
+          `an s3:// archive URL requires the @aws-sdk/client-s3 package, ` +
+            `which is not installed`,
+          {cause: e},
+        );
+      }
+      const [{S3Client}, {S3ObjectStore}] = s3;
       const {endpoint, region} = options;
       const client = new S3Client({
         ...(endpoint ? {endpoint, forcePathStyle: true} : {}),
