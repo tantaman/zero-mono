@@ -126,6 +126,32 @@ export function assertNormalized(
       config.litestream.vfsQueryExecutable,
     '--litestream-backup-using-v5 requires --litestream-vfs-query-executable to be specified',
   );
+  const {backup} = config;
+  assert(
+    backup.mode === 'litestream' || backup.archiveURL,
+    '--backup-archive-url is required when --backup-mode is not litestream',
+  );
+  assert(
+    !backup.gcEnabled || backup.mode === 'archive',
+    '--backup-gc-enabled requires --backup-mode=archive',
+  );
+  assert(
+    Number.isSafeInteger(backup.gcRetainBases) && backup.gcRetainBases >= 2,
+    '--backup-gc-retain-bases must be an integer of at least 2',
+  );
+  for (const [flag, value] of [
+    ['segment-target-bytes', backup.segmentTargetBytes],
+    ['segment-seal-interval-seconds', backup.segmentSealIntervalSeconds],
+    ['base-max-replay-seconds', backup.baseMaxReplaySeconds],
+    ['base-max-interval-hours', backup.baseMaxIntervalHours],
+    ['base-chunk-bytes', backup.baseChunkBytes],
+    ['gc-pitr-hours', backup.gcPitrHours],
+  ] as const) {
+    assert(
+      Number.isFinite(value) && value > 0,
+      `--backup-${flag} must be a positive number`,
+    );
+  }
   assert(config.change.db, 'missing --change-db');
   assert(config.cvr.db, 'missing --cvr-db');
   assertNotUndefined(config.numSyncWorkers, 'missing --num-sync-workers');

@@ -1216,6 +1216,124 @@ export const zeroOptions = {
     },
   },
 
+  // The staged rollout of the logical backup archive, which replaces litestream
+  // as the canonical backup mechanism. All flags are hidden while experimental;
+  // modes are cumulative in the manner of
+  // --change-streamer-sqlite-change-log-mode. Only the replication-manager acts
+  // on these flags; they are accepted (and unread) on other roles because a
+  // multi-node fleet is configured from one shared environment.
+  backup: {
+    mode: {
+      type: v
+        .literalUnion('litestream', 'archive-dual', 'archive')
+        .default('litestream'),
+      desc: [
+        `Selects the backup mechanism. {bold litestream} is today's behavior.`,
+        `{bold archive-dual} additionally writes the committed logical change`,
+        `stream to the archive at {bold --backup-archive-url} and exports`,
+        `dual-run metrics, with litestream remaining authoritative.`,
+        `{bold archive} makes the archive authoritative: upstream ACKs are gated`,
+        `on the durable archive cursor, and restores are served from the archive.`,
+      ],
+      hidden: true,
+    },
+
+    archiveURL: {
+      type: v.string().optional(),
+      desc: [
+        `The location of the logical change archive: an {bold s3://} URL, or a`,
+        `{bold file://} URL for local development and tests. Deliberately distinct`,
+        `from {bold --litestream-backup-url} so that a dual-run writes to a`,
+        `separate prefix or bucket.`,
+      ],
+      hidden: true,
+    },
+
+    segmentTargetBytes: {
+      type: v.number().default(16 * 1024 * 1024),
+      desc: [
+        `The target (uncompressed) size at which an archive log segment is sealed`,
+        `and uploaded.`,
+      ],
+      hidden: true,
+    },
+
+    segmentSealIntervalSeconds: {
+      type: v.number().default(30),
+      desc: [
+        `The maximum time a non-empty archive log segment stays open before it is`,
+        `sealed and uploaded regardless of size. This bounds the archive's RPO.`,
+      ],
+      hidden: true,
+    },
+
+    baseMaxReplaySeconds: {
+      type: v.number().default(300),
+      desc: [
+        `The primary base-production trigger: a new SQLite base is published when`,
+        `the estimated time to replay the archived tail from the newest base`,
+        `exceeds this budget.`,
+      ],
+      hidden: true,
+    },
+
+    baseMaxIntervalHours: {
+      type: v.number().default(12),
+      desc: [
+        `The fallback base-production trigger, used when replay telemetry is`,
+        `unhealthy: a new base is published at least this often.`,
+      ],
+      hidden: true,
+    },
+
+    baseChunkBytes: {
+      type: v.number().default(64 * 1024 * 1024),
+      desc: [
+        `The size of the chunks in which a SQLite base is uploaded to and`,
+        `downloaded from the archive.`,
+      ],
+      hidden: true,
+    },
+
+    baseIntegrityCheck: {
+      type: v.literalUnion('full', 'quick').default('full'),
+      desc: [
+        `The SQLite integrity check ({bold integrity_check} or {bold quick_check})`,
+        `run on a frozen base before it is published.`,
+      ],
+      hidden: true,
+    },
+
+    gcEnabled: {
+      type: v.boolean().default(false),
+      desc: [
+        `Enables garbage collection of archived bases and log segments. Only`,
+        `honored in {bold --backup-mode=archive}, where the archive is`,
+        `authoritative and its own retention rules apply.`,
+      ],
+      hidden: true,
+    },
+
+    gcRetainBases: {
+      type: v.number().default(2),
+      desc: [
+        `The minimum number of newest complete bases retained by garbage`,
+        `collection. Must be at least 2, so that a base publication failure can`,
+        `never leave fewer than one usable base.`,
+      ],
+      hidden: true,
+    },
+
+    gcPitrHours: {
+      type: v.number().default(24),
+      desc: [
+        `The point-in-time-recovery window: garbage collection retains the bases`,
+        `and log segments needed to restore to any point within this many hours.`,
+      ],
+      hidden: true,
+    },
+  },
+
   storageDBTmpDir: {
     type: v.string().optional(),
     desc: [

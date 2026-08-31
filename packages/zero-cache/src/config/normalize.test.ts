@@ -30,6 +30,18 @@ function configWith(litestream: Partial<ZeroConfig['litestream']>): ZeroConfig {
       vfsPollIntervalMs: 15_000,
       ...litestream,
     },
+    backup: {
+      mode: 'litestream',
+      segmentTargetBytes: 16 * 1024 * 1024,
+      segmentSealIntervalSeconds: 30,
+      baseMaxReplaySeconds: 300,
+      baseMaxIntervalHours: 12,
+      baseChunkBytes: 64 * 1024 * 1024,
+      baseIntegrityCheck: 'full',
+      gcEnabled: false,
+      gcRetainBases: 2,
+      gcPitrHours: 24,
+    },
   } as unknown as ZeroConfig;
 }
 
@@ -208,6 +220,66 @@ describe('config/normalize SQLite change log', () => {
     config.changeStreamer.sqliteChangeLogColdReadPercent = 5;
 
     expect(() => assertNormalized(config)).not.toThrow();
+  });
+});
+
+describe('config/normalize backup archive mode', () => {
+  test('litestream mode requires no archive URL', () => {
+    expect(() => assertNormalized(configWith({}))).not.toThrow();
+  });
+
+  test.each(['archive-dual', 'archive'] as const)(
+    'mode %s requires an archive URL',
+    mode => {
+      const config = configWith({});
+      config.backup.mode = mode;
+      expect(() => assertNormalized(config)).toThrow(
+        '--backup-archive-url is required when --backup-mode is not litestream',
+      );
+
+      config.backup.archiveURL = 's3://bucket/archive';
+      expect(() => assertNormalized(config)).not.toThrow();
+    },
+  );
+
+  test('gc is only allowed when the archive is authoritative', () => {
+    const config = configWith({});
+    config.backup.mode = 'archive-dual';
+    config.backup.archiveURL = 's3://bucket/archive';
+    config.backup.gcEnabled = true;
+    expect(() => assertNormalized(config)).toThrow(
+      '--backup-gc-enabled requires --backup-mode=archive',
+    );
+
+    config.backup.mode = 'archive';
+    expect(() => assertNormalized(config)).not.toThrow();
+  });
+
+  test('gc must retain at least two bases', () => {
+    for (const retainBases of [0, 1, 1.5]) {
+      const config = configWith({});
+      config.backup.gcRetainBases = retainBases;
+      expect(() => assertNormalized(config)).toThrow(
+        '--backup-gc-retain-bases must be an integer of at least 2',
+      );
+    }
+  });
+
+  test('tuning values must be positive', () => {
+    for (const flag of [
+      'segmentTargetBytes',
+      'segmentSealIntervalSeconds',
+      'baseMaxReplaySeconds',
+      'baseMaxIntervalHours',
+      'baseChunkBytes',
+      'gcPitrHours',
+    ] as const) {
+      const config = configWith({});
+      config.backup[flag] = 0;
+      expect(() => assertNormalized(config)).toThrow(
+        'must be a positive number',
+      );
+    }
   });
 });
 
