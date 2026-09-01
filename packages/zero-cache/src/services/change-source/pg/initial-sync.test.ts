@@ -83,6 +83,73 @@ describe('makeDownloadStatements', () => {
       /FROM "public"\."t" TABLESAMPLE BERNOULLI\(50\) WHERE a > 10/,
     );
   });
+
+  test('cursor adds ORDER BY to the select but not the totals', () => {
+    const stmts = makeDownloadStatements(
+      spec(),
+      ['a', 'b'],
+      undefined,
+      undefined,
+      undefined,
+      {orderBy: 'ORDER BY "a","b"'},
+    );
+    expect(stmts.select).toBe(
+      `SELECT "a","b" FROM "public"."t"  ORDER BY "a","b"`,
+    );
+    expect(stmts.getTotalRows).toBe(
+      `SELECT COUNT(*) AS "totalRows" FROM "public"."t" `,
+    );
+    expect(stmts.getTotalRows).not.toMatch(/ORDER BY/);
+    expect(stmts.getTotalBytes).not.toMatch(/ORDER BY/);
+  });
+
+  test('cursor where participates in select and totals', () => {
+    const stmts = makeDownloadStatements(
+      spec(),
+      ['a', 'b'],
+      undefined,
+      undefined,
+      undefined,
+      {orderBy: 'ORDER BY "a"', where: '("a") > (5)'},
+    );
+    expect(stmts.select).toBe(
+      `SELECT "a","b" FROM "public"."t" WHERE ("a") > (5) ORDER BY "a"`,
+    );
+    // Totals reflect the remaining rows on a resumed backfill.
+    expect(stmts.getTotalRows).toBe(
+      `SELECT COUNT(*) AS "totalRows" FROM "public"."t" WHERE ("a") > (5)`,
+    );
+    expect(stmts.getTotalBytes).toMatch(/WHERE \("a"\) > \(5\)$/);
+  });
+
+  test('cursor where is ANDed with parenthesized row filters', () => {
+    const stmts = makeDownloadStatements(
+      spec({p1: {rowFilter: 'a > 10'}, p2: {rowFilter: 'b < 5'}}),
+      ['a'],
+      undefined,
+      undefined,
+      undefined,
+      {orderBy: 'ORDER BY "a"', where: '("a") > (7)'},
+    );
+    expect(stmts.select).toBe(
+      `SELECT "a" FROM "public"."t" WHERE (a > 10 OR b < 5) AND ("a") > (7) ORDER BY "a"`,
+    );
+    expect(stmts.getTotalRows).toMatch(
+      /WHERE \(a > 10 OR b < 5\) AND \("a"\) > \(7\)$/,
+    );
+  });
+
+  test('absent cursor leaves legacy output byte-identical', () => {
+    const filtered = makeDownloadStatements(
+      spec({p1: {rowFilter: 'a > 10'}, p2: {rowFilter: 'b < 5'}}),
+      ['a'],
+    );
+    // No parentheses are added around OR-joined row filters when there is
+    // no cursor, preserving the exact SQL emitted before cursors existed.
+    expect(filtered.select).toBe(
+      `SELECT "a" FROM "public"."t" WHERE a > 10 OR b < 5`,
+    );
+  });
 });
 
 describe('getInitialDownloadState', () => {

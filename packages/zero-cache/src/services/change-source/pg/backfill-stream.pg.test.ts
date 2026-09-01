@@ -228,6 +228,135 @@ describe('backfill-stream', () => {
   });
 
   test.each([
+    {mode: 'binary', textCopy: false},
+    {mode: 'text', textCopy: true},
+  ])(`resumed table backfill ($mode)`, async ({textCopy}) => {
+    const stream = streamBackfill(
+      lc,
+      upstreamURI,
+      {slot: SLOT_NAME, publications: ['the_pub']},
+      // The row key columns are ['id2', 'id1'].
+      {...tableBackfillRequest, resumeAfter: [6, 5]},
+      {textCopy},
+    );
+    const results = [];
+    for await (const msg of stream) {
+      results.push(msg);
+    }
+
+    const arr = (vals: unknown[]) => (textCopy ? vals : JSON.stringify(vals));
+
+    // Only rows strictly after (id2, id1) = (6, 5), with totals reflecting
+    // the remaining rows.
+    expect(results).toMatchObject([
+      {
+        tag: 'backfill',
+        watermark: expect.any(String),
+        relation: {
+          schema: 'public',
+          name: 'foo',
+          rowKey: {columns: ['id2', 'id1']},
+        },
+        columns: ['a', 'c', 'b'],
+        rowValues: [
+          [7, 6n, '6666666666', arr([6, 7, '8', {e: 9}]), '{"d" : 6}'],
+          [8, 7n, '7777777777', arr([7, 8, '9', {e: 10}]), '{"d" : 7}'],
+          [9, 8n, '8888888888', arr([8, 9, '10', {e: 11}]), '{"d" : 8}'],
+          [10, 9n, '9999999999', arr([9, 10, '11', {e: 12}]), '{"d" : 9}'],
+          [
+            11,
+            10n,
+            '10101010101010101010',
+            arr([10, 11, '12', {e: 13}]),
+            '{"d" : 10}',
+          ],
+        ],
+        status: {rows: 5, totalRows: 5, totalBytes: expect.any(Number)},
+      },
+      {
+        tag: 'backfill-completed',
+        status: {rows: 5, totalRows: 5, totalBytes: expect.any(Number)},
+      },
+    ]);
+  });
+
+  test('unsupported resumeAfter restarts from the beginning', async () => {
+    const stream = streamBackfill(
+      lc,
+      upstreamURI,
+      {slot: SLOT_NAME, publications: ['the_pub']},
+      {...columnBackfillRequest, resumeAfter: [null, 2]},
+    );
+    const results = [];
+    for await (const msg of stream) {
+      results.push(msg);
+    }
+    expect(results).toMatchObject([
+      {
+        tag: 'backfill',
+        status: {rows: 10, totalRows: 10, totalBytes: expect.any(Number)},
+      },
+      {
+        tag: 'backfill-completed',
+        status: {rows: 10, totalRows: 10, totalBytes: expect.any(Number)},
+      },
+    ]);
+  });
+
+  test('resumed backfill with a text key compares bytewise', async () => {
+    await upstream.unsafe(/*sql*/ `
+      CREATE TABLE qux(id TEXT PRIMARY KEY, n INT);
+      ALTER PUBLICATION the_pub ADD TABLE qux;
+      INSERT INTO qux (id, n) VALUES ('a', 1), ('B', 2), ('c', 3);
+    `);
+    const {tables} = await getPublicationInfo(upstream, ['the_pub']);
+    const quxSpec = must(tables.find(t => t.name === 'qux'));
+    const bf: BackfillRequest = {
+      table: {
+        schema: 'public',
+        name: 'qux',
+        metadata: {
+          schemaOID: must(quxSpec.schemaOID),
+          relationOID: quxSpec.oid,
+          rowKey: {id: {attNum: quxSpec.columns.id.pos}},
+        },
+      },
+      columns: {n: {attNum: quxSpec.columns.n.pos}},
+      resumeAfter: ['B'],
+    };
+
+    const results = [];
+    for await (const msg of streamBackfill(
+      lc,
+      upstreamURI,
+      {slot: SLOT_NAME, publications: ['the_pub']},
+      bf,
+    )) {
+      results.push(msg);
+    }
+
+    // In COLLATE "C" (bytewise) order, 'B' (0x42) sorts before both 'a'
+    // (0x61) and 'c' (0x63), so resuming after 'B' returns 'a' and 'c'
+    // regardless of the database's default (possibly locale-aware) collation.
+    expect(results).toMatchObject([
+      {
+        tag: 'backfill',
+        relation: {schema: 'public', name: 'qux', rowKey: {columns: ['id']}},
+        columns: ['n'],
+        rowValues: [
+          ['a', 1],
+          ['c', 3],
+        ],
+        status: {rows: 2, totalRows: 2, totalBytes: expect.any(Number)},
+      },
+      {
+        tag: 'backfill-completed',
+        status: {rows: 2, totalRows: 2, totalBytes: expect.any(Number)},
+      },
+    ]);
+  });
+
+  test.each([
     ['Rename unrelated column', 'ALTER TABLE foo RENAME a TO z'],
     ['Rename unrelated table', 'ALTER TABLE bar RENAME TO baz'],
   ])('Compatible backfill request: %s', async (_name, sqlStmts) => {

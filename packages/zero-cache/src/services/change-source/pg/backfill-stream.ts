@@ -20,6 +20,7 @@ import {getTypeParsers} from '../../../db/pg-type-parser.ts';
 import type {PublishedTableSpec} from '../../../db/specs.ts';
 import {importSnapshot, TransactionPool} from '../../../db/transaction-pool.ts';
 import {connectPgClient, pgClient, type PostgresDB} from '../../../types/pg.ts';
+import {id} from '../../../types/sql.ts';
 import {SchemaIncompatibilityError} from '../common/backfill-manager.ts';
 import type {
   BackfillCompleted,
@@ -35,6 +36,7 @@ import {
 import {
   makeBinarySelectExprs,
   makeDownloadStatements,
+  type DownloadCursor,
   type DownloadStatements,
 } from './initial-sync.ts';
 import {toStateVersionString} from './lsn.ts';
@@ -69,6 +71,79 @@ const POSTGRES_COPY_CHUNK_SIZE = 64 * 1024;
 // identifiers like "limit" won't match because they lack the surrounding
 // whitespace.
 const SAMPLE_OR_LIMIT_RE = /\sTABLESAMPLE\s+BERNOULLI\b|\sLIMIT\s+\d/i;
+
+/**
+ * Thrown when a `resumeAfter` row key cannot be encoded as a SQL comparison
+ * (e.g. NULL or non-primitive key values, or a key-length mismatch). Callers
+ * fall back to restarting the backfill from the beginning, which is always
+ * correct since backfills are idempotent.
+ */
+export class BackfillResumeUnsupportedError extends Error {
+  readonly name = 'BackfillResumeUnsupportedError';
+}
+
+// Text-family types are ordered with COLLATE "C" so that the emission order
+// (and any resume point derived from it) is bytewise and thus stable across
+// locale settings and glibc/ICU collation changes. Non-collatable types
+// (numerics, uuid, timestamps, etc.) already have a locale-independent order.
+const COLLATABLE_TYPE_RE =
+  /^(text|citext|name|character( varying)?|varchar|bpchar|char)$/;
+
+/**
+ * Builds the {@link DownloadCursor} that makes backfill emission ordered by
+ * the table's row key (so that the last row durably applied downstream is a
+ * meaningful resumption point) and, when `resumeAfter` is given, restricted
+ * to rows strictly after that key.
+ */
+export function backfillCursor(
+  table: PublishedTableSpec,
+  keyColumns: readonly string[],
+  resumeAfter?: readonly JSONValue[] | undefined,
+): DownloadCursor {
+  const keyExprs = keyColumns.map(col =>
+    COLLATABLE_TYPE_RE.test(table.columns[col].dataType)
+      ? /*sql*/ `${id(col)} COLLATE "C"`
+      : id(col),
+  );
+  const orderBy = /*sql*/ `ORDER BY ${keyExprs.join(',')}`;
+  if (resumeAfter === undefined) {
+    return {orderBy};
+  }
+  if (resumeAfter.length !== keyColumns.length) {
+    throw new BackfillResumeUnsupportedError(
+      `resumeAfter has ${resumeAfter.length} values for ` +
+        `${keyColumns.length} key columns`,
+    );
+  }
+  // Row-value comparison expands to the lexicographic comparison over the
+  // key columns, matching the ORDER BY (the explicit COLLATE on the column
+  // side determines each element's comparison collation).
+  const literals = resumeAfter.map(keyValueLiteral);
+  return {
+    orderBy,
+    where: /*sql*/ `(${keyExprs.join(',')}) > (${literals.join(',')})`,
+  };
+}
+
+function keyValueLiteral(val: JSONValue): string {
+  switch (typeof val) {
+    case 'string':
+      // E'...' literals with doubled backslashes and quotes are safe
+      // regardless of the server's standard_conforming_strings setting.
+      return `E'${val.replaceAll('\\', '\\\\').replaceAll("'", "''")}'`;
+    case 'number':
+      if (Number.isFinite(val)) {
+        return String(val);
+      }
+      break;
+    case 'boolean':
+      return val ? 'true' : 'false';
+  }
+  throw new BackfillResumeUnsupportedError(
+    `cannot resume from key value of type ` +
+      `${val === null ? 'null' : typeof val}`,
+  );
+}
 
 /**
  * Streams a series of `backfill` messages (ending with `backfill-complete`)
@@ -111,7 +186,32 @@ export async function* streamBackfill(
     // Note: validateSchema ensures that the rowKey and columns are disjoint
     const {relation, columns} = backfill;
     const cols = [...relation.rowKey.columns, ...columns];
-    const stmts = makeDownloadStatements(tableSpec, cols);
+
+    // Rows are always emitted in row-key order so that an interrupted
+    // backfill can be resumed strictly after the last row that was durably
+    // applied downstream.
+    let cursor: DownloadCursor;
+    try {
+      cursor = backfillCursor(
+        tableSpec,
+        relation.rowKey.columns,
+        bf.resumeAfter,
+      );
+    } catch (e) {
+      if (!(e instanceof BackfillResumeUnsupportedError)) {
+        throw e;
+      }
+      lc.warn?.(`restarting backfill from the beginning: ${e.message}`);
+      cursor = backfillCursor(tableSpec, relation.rowKey.columns);
+    }
+    const stmts = makeDownloadStatements(
+      tableSpec,
+      cols,
+      undefined,
+      undefined,
+      undefined,
+      cursor,
+    );
 
     if (textCopy) {
       const types = await getTypeParsers(db, {returnJsonAsString: true});
@@ -135,6 +235,7 @@ export async function* streamBackfill(
         undefined,
         undefined,
         makeBinarySelectExprs(tableSpec, cols),
+        cursor,
       );
 
       yield* stream(

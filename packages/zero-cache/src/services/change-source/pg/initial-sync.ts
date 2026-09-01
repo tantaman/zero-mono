@@ -812,24 +812,47 @@ export function makeBinarySelectExprs(
   });
 }
 
+/**
+ * Ordered (and optionally resumed) emission for backfills: an `ORDER BY`
+ * over the row key and, on resume, a strictly-after row comparison ANDed
+ * with any publication row filters. Absent for initial sync, whose copies
+ * are deliberately unordered.
+ */
+export type DownloadCursor = {
+  /** A full `ORDER BY ...` clause. */
+  orderBy: string;
+  /** An extra condition ANDed with any publication row filters. */
+  where?: string | undefined;
+};
+
 export function makeDownloadStatements(
   table: PublishedTableSpec,
   cols: string[],
   sampleRate?: number | undefined,
   maxRowsPerTable?: number | undefined,
   selectExprs?: string[] | undefined,
+  cursor?: DownloadCursor | undefined,
 ): DownloadStatements {
   const filterConditions = Object.values(table.publications)
     .map(({rowFilter}) => rowFilter)
     .filter(f => !!f); // remove nulls
-  const where =
+  let where =
     filterConditions.length === 0
       ? ''
       : /*sql*/ `WHERE ${filterConditions.join(' OR ')}`;
+  if (cursor?.where) {
+    where =
+      filterConditions.length === 0
+        ? /*sql*/ `WHERE ${cursor.where}`
+        : /*sql*/ `WHERE (${filterConditions.join(' OR ')}) AND ${cursor.where}`;
+  }
   const sample = tableSampleClause(sampleRate);
   const limit = limitClause(maxRowsPerTable);
+  // Note: a resume cursor participates in `fromTable`, so the totals
+  // reported for a resumed backfill reflect the remaining rows.
   const fromTable = /*sql*/ `FROM ${id(table.schema)}.${id(table.name)}${sample} ${where}`;
-  const select = /*sql*/ `SELECT ${(selectExprs ?? cols.map(id)).join(',')} ${fromTable}${limit}`;
+  const orderBy = cursor === undefined ? '' : ` ${cursor.orderBy}`;
+  const select = /*sql*/ `SELECT ${(selectExprs ?? cols.map(id)).join(',')} ${fromTable}${orderBy}${limit}`;
   if (limit) {
     // With LIMIT, wrap counts/sums in a subquery so they reflect the
     // capped rowset rather than the full (sampled) table.

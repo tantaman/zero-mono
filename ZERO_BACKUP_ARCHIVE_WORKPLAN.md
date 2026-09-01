@@ -189,6 +189,22 @@ oracle layer 1 extended over producer-built bases.
 
 Depends on M2 (readiness and restores need bases to exist).
 
+Status: items 1–3 are landed on this branch. Item 4 landed its ordered
+emission and resume plumbing: backfill COPYs are always `ORDER BY` the
+row key (text-family columns `COLLATE "C"` so the order is bytewise and
+stable across locale/ICU changes), `backfillRequestSchema` gained an
+optional `resumeAfter` key, and `streamBackfill` restricts a resumed copy
+to rows strictly after that key (reported totals reflect the remaining
+rows; unsupported key values fall back to a full restart, which is always
+correct since backfills are idempotent). The remaining piece — the
+durable last-emitted-PK progress mark in the cookie state and
+`backfillRequestsFrom` resuming from it — requires a coordinated
+`cookieOps` fold change across all three stores (PG `cdc.backfilling`,
+the SQLite change-log cookie state, and the replica's
+`_zero.backfilling`, the last of which bumps the replica schema version
+and therefore touches litestream deployments too) and `.pg.test.ts`
+validation; deferred to its own PR. Item 5 remains.
+
 1. **Gateway initialization** (L). In mode `archive`,
    `initializePostgresChangeSource` neither restores nor initial-syncs:
    identity and publications from the change DB
