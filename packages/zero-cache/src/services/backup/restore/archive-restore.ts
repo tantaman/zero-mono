@@ -47,6 +47,14 @@ export type ArchiveRestoreOptions = {
    * correctness.
    */
   chunkCacheDir?: string | undefined;
+  /**
+   * Bounds the restore at a commit watermark: only bases at or below it are
+   * candidates, and tail replay stops at `min(archive head, upTo)`. This is
+   * the point-in-time knob used by the drill tool to align a scratch restore
+   * with a pinned reference replica; production restores leave it unset and
+   * replay to the contiguous archived head.
+   */
+  upTo?: string | undefined;
 };
 
 const DEFAULT_DOWNLOAD_CONCURRENCY = 4;
@@ -98,9 +106,15 @@ export async function archiveRestore(
     if (replicaVersion === undefined) {
       return 'no_backup';
     }
-    const cursors = await listCompleteBaseCursors(store, replicaVersion);
+    const {upTo} = options;
+    const cursors = (
+      await listCompleteBaseCursors(store, replicaVersion)
+    ).filter(cursor => upTo === undefined || cursor <= upTo);
     if (cursors.length === 0) {
-      lc.info?.(`no complete base found for lineage ${replicaVersion}`);
+      lc.info?.(
+        `no complete base found for lineage ${replicaVersion}` +
+          (upTo === undefined ? '' : ` at or below ${upTo}`),
+      );
       return 'no_backup';
     }
 
@@ -141,6 +155,7 @@ export async function archiveRestore(
       replicaFile,
       manifest,
       options.mode ?? 'backup',
+      upTo,
     );
     lc.info?.(
       `restored base ${manifest.replicaVersion}/${manifest.cursor} and ` +
@@ -172,7 +187,7 @@ async function newestLineage(store: ObjectStore): Promise<string | undefined> {
 }
 
 /** Complete base cursors, newest first. */
-async function listCompleteBaseCursors(
+export async function listCompleteBaseCursors(
   store: ObjectStore,
   replicaVersion: string,
 ): Promise<string[]> {
@@ -308,6 +323,7 @@ async function replayTail(
   replicaFile: string,
   manifest: BaseManifest,
   mode: 'backup' | 'serving' = 'backup',
+  upTo?: string | undefined,
 ): Promise<string> {
   const {replicaVersion, cursor} = manifest;
   const db = new Database(lc, replicaFile);
@@ -321,9 +337,12 @@ async function replayTail(
     }
 
     const segments = await listLogSegments(store, replicaVersion);
-    const target = contiguousHeadFrom(segments, cursor);
-    if (target === cursor) {
-      return target;
+    const head = contiguousHeadFrom(segments, cursor);
+    // upTo can fall mid-segment; iterateMessages filters by commit
+    // watermark, so replay still stops exactly at a transaction boundary.
+    const target = upTo !== undefined && upTo < head ? upTo : head;
+    if (target <= cursor) {
+      return cursor;
     }
 
     let failure: unknown;

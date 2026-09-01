@@ -252,6 +252,21 @@ Exit criteria: the gateway-boot tests from the design's Testing section
    scratch path and runs the oracle layer-3 comparator against a live
    replica (mirror `sqlite-change-log-comparator`); scheduled in the
    archive world.
+
+   *Landed on this branch* as `zero-archive-drill`. Alignment is
+   pin-then-restore: a read transaction freezes the live replica at its
+   watermark W, the drill briefly waits for the archive's durable head to
+   reach W (bounded; a stall reports `archive-behind`), then restores a
+   scratch replica point-in-time via a new `upTo` option on
+   `archiveRestore` (base selection ≤ W, tail replay bounded at W —
+   mid-segment works because replay filters by commit watermark) and
+   diffs the two logically: per-table column signatures plus an
+   order-independent 128-bit sum of per-row content hashes (physical row
+   order and rowids may differ between materializations; logical content
+   may not). Runtime-history bookkeeping (`_zero.changeLog*`,
+   `_zero.runtimeEvents`, wall-clock'd config/state rows) is excluded by
+   default; identity and watermark are checked exactly instead. Exit code
+   0 only on `match`, so scheduling it is a cron job.
 2. **Ledger workload** (M): oracle layer 2 in `apps/zero-throughput` —
    per-table count + order-independent hash maintained inside each
    Postgres transaction; a self-consistency checker runnable against any

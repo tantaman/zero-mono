@@ -130,6 +130,51 @@ describe('backup/restore/archive-restore', () => {
     }
   });
 
+  test('upTo bounds base selection and tail replay', async () => {
+    await streamHistoryThroughBase(); // base at '05', segments through '09'
+    source.apply(transaction('0b', insert('e', 'five')));
+    await source.publishBase(); // a newer base at '0b', past the bound
+    await source.flushArchive();
+
+    const result = await archiveRestore(
+      lc,
+      store,
+      restoreFile,
+      {replicaVersion: '02', minWatermark: '07'},
+      {upTo: '07'},
+    );
+    expect(result).toBe('success');
+
+    const restored = new Database(lc, restoreFile);
+    try {
+      // The '0b' base was skipped (it is past the bound), and replay from
+      // the '05' base stopped exactly at '07': t09 and t0b are absent.
+      expect(getSubscriptionState(new StatementRunner(restored))).toMatchObject(
+        {replicaVersion: '02', watermark: '07'},
+      );
+      expect(rows(restored)).toEqual([
+        {issueID: 'a', val: 'one-updated', ['_0_version']: '07'},
+        {issueID: 'c', val: 'three', ['_0_version']: '05'},
+      ]);
+    } finally {
+      restored.close();
+    }
+  });
+
+  test('upTo below every complete base is no_backup', async () => {
+    await streamHistoryThroughBase(); // base at '05'
+    expect(
+      await archiveRestore(
+        lc,
+        store,
+        restoreFile,
+        {replicaVersion: '02', minWatermark: '03'},
+        {upTo: '03'},
+      ),
+    ).toBe('no_backup');
+    expect(existsSync(restoreFile)).toBe(false);
+  });
+
   test('an empty archive is no_backup', async () => {
     expect(
       await archiveRestore(lc, store, restoreFile, {
