@@ -401,6 +401,12 @@ which only ever failed outside the unit tests:
   rejected on replay. The synthetic transactions the tests build carry only
   the schema-declared fields, which is why this was invisible until a real
   upstream produced a segment.
+- **Replay silently rounded large integers.** The same `parseLine` used plain
+  `JSON.parse` where the wire uses `BigIntJSON.parse`, so an int8 past 2^53
+  came back off the archive as the nearest double — no error, just a wrong
+  number in a replica that claimed to match upstream. Found by the
+  real-Postgres round-trip test below, not by the zbugs run, whose seed data
+  has no such values.
 
 What the run then demonstrated: genesis (2,089 rows, 13 tables) performed by
 the producer at the gateway's exported snapshot; the first base published and
@@ -415,6 +421,34 @@ this work: `http-service.ts` binds `::`, so every test and every worker that
 listens fails on a host without IPv6; and `view-syncer/inspect-handler.ts`
 uses a `using` declaration, which needs the Node 24 that CI runs (`.nvmrc`
 and `engines` both say 22).
+
+### The test gaps behind those four
+
+Worth stating plainly, because the suites were green through all of them and
+none was a chaos-coverage problem — `ChaosObjectStore` injects I/O faults, and
+fault injection perturbs timing and I/O outcomes, never payload shape or
+process startup order. All four defects were on the happy path:
+
+- **The archive subsystem had no `.pg.test.ts` at all.** 19 files and 179
+  tests, every one built on `wireTransaction`, which constructs only the
+  fields the protocol schema names. Both decoder bugs lived in the gap
+  between that fixture and what a real change source puts on the wire.
+  Closed by `archive/archive-round-trip.pg.test.ts`, which runs genuine
+  pgoutput through writer → seal → replay → restore and compares the result
+  against Postgres.
+- **`integration.pg.test.ts` boots the real process tree, but had no archive
+  variant.** Its matrix was entirely litestream, so the archive-mode process
+  tree was never booted by a test — which is where the startup deadlock
+  lived, next to a harness that would have caught it. Closed by a single-node
+  archive variant; reverting the fix makes it hang.
+- **Genesis was tested at the store level only** — offers round-tripping,
+  heartbeats timing out. The protocol, not the participants. The gateway's
+  post-handoff bookkeeping had no test, which is where the `replicas` bug
+  was. Closed by `change-source.archive-genesis.pg.test.ts`.
+
+The generalizable lesson is fixture fidelity: a suite built from
+schema-declared fields cannot see anything that depends on what the change
+source actually emits, and it stays green while doing so.
 
 ### Still outstanding
 
