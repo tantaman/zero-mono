@@ -43,13 +43,11 @@ async function until(cond: () => boolean) {
 describe('backup/archive/archive-writer', () => {
   let store: InMemoryObjectStore;
   let durable: string[];
-  let disabled: number;
   let timers: ReturnType<typeof fakeTimers>;
 
   beforeEach(() => {
     store = new InMemoryObjectStore();
     durable = [];
-    disabled = 0;
     timers = fakeTimers();
   });
 
@@ -57,11 +55,9 @@ describe('backup/archive/archive-writer', () => {
     return new ArchiveWriter(lc, {
       store,
       replicaVersion: '02',
-      authoritative: false,
       segmentTargetBytes: 1, // seal at every commit unless overridden
       sealIntervalMs: 30_000,
       onDurable: watermark => durable.push(watermark),
-      onDisabled: () => disabled++,
       setTimeoutFn: timers.setTimeoutFn,
       clearTimeoutFn: timers.clearTimeoutFn,
       ...opts,
@@ -251,7 +247,7 @@ describe('backup/archive/archive-writer', () => {
     expect(writer.enabled).toBe(true);
   });
 
-  test('authoritative: retries uploads with backoff until success', async () => {
+  test('retries failed uploads with backoff until success (fail-stall)', async () => {
     let failures = 3;
     store.beforePut = () => {
       if (failures > 0) {
@@ -259,50 +255,28 @@ describe('backup/archive/archive-writer', () => {
         throw new Error('injected upload failure');
       }
     };
-    const writer = newWriter({authoritative: true});
+    const writer = newWriter();
     await writer.reconcile('02');
     writeTransaction(writer, '03');
 
+    // The durable cursor stalls across the failures — nothing is reported
+    // durable until the upload lands.
+    expect(durable).toEqual([]);
     // Each failed attempt schedules a backoff timer; fire them as they come.
     for (let i = 0; i < 3; i++) {
       await until(() => timers.scheduled.size === 1);
+      expect(durable).toEqual([]);
       timers.fire();
     }
     await until(() => durable.length === 1);
     expect(durable).toEqual(['03']);
     expect(writer.enabled).toBe(true);
-    expect(disabled).toBe(0);
   });
 
-  test('dual: fails soft after bounded upload attempts', async () => {
-    store.beforePut = () => {
-      throw new Error('injected upload failure');
-    };
-    const writer = newWriter({authoritative: false});
-    await writer.reconcile('02');
-    writeTransaction(writer, '03');
-
-    for (let i = 0; i < 4; i++) {
-      await until(() => timers.scheduled.size === 1);
-      timers.fire();
-    }
-    await until(() => !writer.enabled);
-    expect(disabled).toBe(1);
-    expect(durable).toEqual([]);
-    expect(writer.state().bufferedBytes).toBe(0);
-
-    // Disabled writers ignore further writes.
-    writeTransaction(writer, '05');
-    expect(writer.state().bufferedBytes).toBe(0);
-  });
-
-  test('authoritative: applies back-pressure while uploads are stalled', async () => {
+  test('applies back-pressure while uploads are stalled', async () => {
     const gate = resolver();
     store.beforePut = () => gate.promise;
-    const writer = newWriter({
-      authoritative: true,
-      maxBufferedBytes: 10,
-    });
+    const writer = newWriter({maxBufferedBytes: 10});
     await writer.reconcile('02');
     expect(writer.readyForMore()).toBeUndefined();
 
@@ -315,26 +289,6 @@ describe('backup/archive/archive-writer', () => {
     gate.resolve();
     await until(() => released);
     await until(() => durable.length === 2);
-  });
-
-  test('dual: never applies back-pressure; overflowing the buffer fails soft', async () => {
-    const gate = resolver();
-    store.beforePut = () => gate.promise;
-    // Room for one buffered transaction but not two.
-    const txBytes = wireTransaction('03').messages.reduce(
-      (sum, m) => sum + m.length,
-      0,
-    );
-    const writer = newWriter({maxBufferedBytes: txBytes + 5});
-    await writer.reconcile('02');
-
-    writeTransaction(writer, '03');
-    expect(writer.enabled).toBe(true);
-    expect(writer.readyForMore()).toBeUndefined();
-    writeTransaction(writer, '05');
-    expect(writer.enabled).toBe(false);
-    expect(disabled).toBe(1);
-    gate.resolve();
   });
 
   test('close seals and flushes buffered transactions', async () => {
@@ -350,10 +304,10 @@ describe('backup/archive/archive-writer', () => {
     expect(writer.enabled).toBe(false);
   });
 
-  test('writes before reconcile are refused', () => {
-    const writer = newWriter({authoritative: false});
-    writeTransaction(writer, '03');
-    expect(writer.enabled).toBe(false);
-    expect(disabled).toBe(1);
+  test('a write before reconcile is a stream-invariant violation', () => {
+    // The throw propagates to the stream loop, whose retry path reconnects
+    // and reconciles.
+    const writer = newWriter();
+    expect(() => writeTransaction(writer, '03')).toThrow('before reconcile()');
   });
 });

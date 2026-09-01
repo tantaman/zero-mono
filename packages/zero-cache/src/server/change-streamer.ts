@@ -164,11 +164,11 @@ export default async function runWorker(
     );
   }
 
-  // The logical backup archive (staged rollout; see the --backup-mode flag).
-  // The store is created once; the writer's lineage (replicaVersion) is only
-  // known per-initialization below.
+  // The logical backup archive (see the --backup-mode flag). The store is
+  // created once; the writer's lineage (replicaVersion) is only known
+  // per-initialization below.
   let archiveStore: ObjectStore | undefined;
-  if (backup.mode !== 'litestream') {
+  if (backup.mode === 'archive') {
     const archiveURL = must(
       backup.archiveURL,
       '--backup-archive-url is required when --backup-mode is not litestream',
@@ -298,20 +298,17 @@ export default async function runWorker(
                   retentionMs: sqliteChangeLogRetentionMs,
                 }
               : undefined,
-          // The presence of this option is the archive writer's gate. In
-          // `archive-dual` the writer fails soft and only the dual-run
-          // metrics depend on it; in `archive` it is authoritative and its
-          // durable cursor gates upstream ACKs (trackArchiveForAcks).
+          // The presence of this option is the archive writer's gate. The
+          // archive is authoritative whenever configured (fail-stall), and
+          // its durable cursor gates upstream ACKs.
           archiveWriter: archiveStore
             ? {
                 store: archiveStore,
                 replicaVersion: subscriptionState.replicaVersion,
-                authoritative: backup.mode === 'archive',
                 segmentTargetBytes: backup.segmentTargetBytes,
                 sealIntervalMs: backup.segmentSealIntervalSeconds * 1000,
               }
             : undefined,
-          trackArchiveForAcks: backup.mode === 'archive',
         },
         setTimeout,
       );
@@ -432,11 +429,10 @@ export default async function runWorker(
 }
 
 /**
- * The dual-run health gauges for the logical backup archive: the durable
- * cursor's lag behind the stream (the ack-vs-archive-cursor delta once mode
- * `archive` gates ACKs on it), buffered bytes, upload-queue depth, and
- * whether the writer is still enabled. These are the signals the canary
- * procedure watches before promoting `archive-dual` to `archive`.
+ * The health gauges for the logical backup archive: the durable cursor's lag
+ * behind the stream (which is also how far ACKs are being held back),
+ * buffered bytes, and upload-queue depth. These are the signals the flip
+ * runbook watches on a newly-flipped stack.
  */
 function registerArchiveGauges(changeStreamer: ChangeStreamerService) {
   const state = () => changeStreamer.archiveWriterState?.();
@@ -472,16 +468,6 @@ function registerArchiveGauges(changeStreamer: ChangeStreamerService) {
     const s = state();
     if (s) {
       o.observe(s.queuedSegments);
-    }
-  });
-  getOrCreateGauge('replica', 'backup_archive.writer_enabled', {
-    description:
-      'One while the archive writer is running; zero once it has failed ' +
-      'soft (archive-dual only) or closed.',
-  }).addCallback(o => {
-    const s = state();
-    if (s) {
-      o.observe(s.enabled ? 1 : 0);
     }
   });
 }

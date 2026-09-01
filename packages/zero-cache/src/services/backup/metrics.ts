@@ -30,16 +30,7 @@ export function backupArchiveGaps() {
     'backup_archive.gaps',
     'Discontinuities observed in the archived cursor range: a non-contiguous ' +
       'segment listing at reconcile time, or a stream resume point past the ' +
-      'durable archive head. Should be zero; nonzero is the dual-run signal ' +
-      'that the archive could not serve a restore across the gap.',
-  );
-}
-
-export function backupArchiveWriterDisabled() {
-  return getOrCreateCounter(
-    'replica',
-    'backup_archive.writer_disabled',
-    'Times the archive writer failed soft and disabled itself, which only ' +
-      'happens in archive-dual mode where litestream remains authoritative.',
+      'durable archive head. Should be zero; nonzero means the archive ' +
+      'cannot serve a restore across the gap.',
   );
 }

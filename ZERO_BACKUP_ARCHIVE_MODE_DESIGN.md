@@ -16,20 +16,20 @@ This document does two things. It fixes the **end state**: the
 replication-manager becomes a **gateway** that owns the replication slot and
 the committed stream but holds **no replica** — every SQLite replica in the
 fleet is materialized by the backup producer (the base builder) or restored
-from one of its published bases. And it maps the path there onto the existing
-`zero-cache` codebase as a **separate, opt-in mode**: all existing code stays
-in place and continues to be the default, a single hidden config flag selects
-the new behavior, and a canary deployment opts in by setting one environment
-variable on its replication-manager. Nothing changes for deployments that do
-not set the flag.
+from one of its published bases. And it maps it onto the existing `zero-cache`
+codebase as a **separate, whole-world mode**: all existing code stays in place
+and remains the default, and a single config value flips a stack between the
+two worlds. There is **no dual-write mode** — a stack is in the litestream
+world or the archive world, never both. Rollback is the config flipped back
+plus a resync. Nothing changes for stacks that do not flip.
 
 The short version: the codebase already has every seam this design needs. The
-team has run a staged, config-gated dual-write rollout of exactly this shape
-once before (`--change-streamer-sqlite-change-log-mode`), the upstream ACK
-already supports gating on backup durability via a `min()` over multiple
-tracked stores (`UpstreamAcker`), and restore is already behind a small result
-contract that a second implementation can slot into. The new system is ~90%
-additive code in a new directory, touching existing code at six bounded seams.
+upstream ACK already supports gating on backup durability via a `min()` over
+multiple tracked stores (`UpstreamAcker`), restore is already behind a small
+result contract that a second implementation can slot into, and resync — the
+rollback mechanism — is an existing, exercised code path. The new system is
+~90% additive code in a new directory, touching existing code at six bounded
+seams.
 
 ## Goals
 
@@ -50,6 +50,15 @@ end system is:
 5. **Initial sync through S3.** Postgres is table-copied once per lineage —
    by the producer — and every other node syncs from S3. No fleet-sized
    fan-in on the upstream database, ever.
+
+And the rollout model:
+
+6. **A per-stack config flip, no dual writes.** A stack is flipped into the
+   archive world by one value in its Flux-managed configuration; forward is
+   a resync into S3 (producer genesis), rollback is the value flipped back
+   and a resync into the litestream world. The safety story is cheap,
+   symmetric rollback — not a dual-run. See "Rollout: one value per stack,
+   reconciled by Flux".
 
 Two cross-cutting constraints shape every mechanism below:
 
@@ -125,11 +134,11 @@ stream locally. What it deletes from the system: the divergence class between
 "the replica that gets backed up" and "the replica that gets restored" — they
 are the same artifact by construction.
 
-The modes below stage toward this. Mode `archive` first changes _authority_
-(the archive gates ACKs and serves restores) while the RM still runs its
-replica and litestream as a safety net; retiring the replica is the final
-transition, taken only after the producer has been the sole source of
-restores through a full soak period.
+Mode `archive` **is** this world. There is no intermediate mode in which the
+RM keeps its replica with litestream as a safety net: the safety net is that
+flipping the value back and resyncing returns the stack to the litestream
+world wholesale. Confidence comes from restore drills and from flipping
+low-stakes stacks first, not from a dual run.
 
 ## Streaming and memory discipline
 
@@ -148,9 +157,9 @@ nothing proportional to the transaction. Sealing finalizes the spool file
 which streams it to the store — multipart above the part threshold — without
 loading it. The durable cursor still advances only at fully-uploaded commits,
 so ACK semantics are unchanged. _The current `archive-writer.ts` buffers the
-open segment and the upload queue in memory, bounded only by back-pressure /
-fail-soft; replacing that with the spool is required work, tracked in the
-delivery sequence._
+open segment and the upload queue in memory, bounded only by back-pressure;
+replacing that with the spool is required work, tracked in the delivery
+sequence._
 
 **Transactions larger than a segment: parts.** A segment normally seals at a
 commit boundary, but a transaction larger than the target size must not force
@@ -186,18 +195,15 @@ buffer into its loop.
 
 ## The mode flag
 
-A new `backup` option group in `packages/zero-cache/src/config/zero-config.ts`,
-modeled on `changeStreamer.sqliteChangeLogMode` (hidden, enum-valued, cumulative
-semantics, cross-flag validation in `assertNormalized`):
+A new `backup` option group in `packages/zero-cache/src/config/zero-config.ts`
+(hidden while experimental, cross-flag validation in `assertNormalized`):
 
 ```ts
 backup: {
   // hidden: true while experimental
-  mode: v.literalUnion('litestream', 'archive-dual', 'archive')
-        .default('litestream'),
+  mode: v.literalUnion('litestream', 'archive').default('litestream'),
 
-  // s3://... or file://... - deliberately distinct from litestream.backupURL
-  // so dual-run writes to a separate prefix/bucket.
+  // s3://... or file://... - deliberately distinct from litestream.backupURL.
   archiveURL: v.string().optional(),
 
   segmentTargetBytes,          // default 16 MiB
@@ -211,7 +217,8 @@ backup: {
   },
 
   gc: {
-    enabled,                   // only honored in mode 'archive'
+    enabled,                   // default true; an emergency off switch.
+                               // Only read in mode 'archive'.
     retainBases,               // >= 2
     pitrHours,
   },
@@ -220,37 +227,51 @@ backup: {
 
 ### Mode semantics
 
-| Mode           | Archive writer | Base builder | PG ACK gated on                                        | Restore source        | GC  | Litestream                                                   |
-| -------------- | -------------- | ------------ | ------------------------------------------------------ | --------------------- | --- | ------------------------------------------------------------ |
-| `litestream`   | off            | off          | today's rules                                          | litestream            | n/a | authoritative (unchanged)                                    |
-| `archive-dual` | on             | on           | today's rules (archive cursor exported as metric only) | litestream            | off | authoritative                                                |
-| `archive`      | on             | on           | archive durable cursor                                 | archive (base + tail) | on  | optional safety net while `litestream.backupURL` remains set |
+Two worlds, one value:
 
-Mapping to the companion document's rollout plan: `archive-dual` is Phases 1-3
-(dual-write, base production, restore drills via tooling), `archive` is Phase 4
-(change of authority), and unsetting `litestream.backupURL` under `archive` is
-Phase 5 (Litestream removal). The exit criteria in the companion document gate
-each transition; the flag makes each transition a config change, not a deploy.
+| Mode         | World                                                                                                                                                                             |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `litestream` | Today's system, unchanged: RM + backup-replicator + litestream, litestream restores, RM initial sync.                                                                             |
+| `archive`    | The gateway world, whole: archive writer (fail-stall), ACKs gated on the durable archive cursor, base producer (genesis + daily bases + accelerated restore), S3 restores, GC on. |
 
-The end state adds one more transition inside mode `archive`: once litestream
-is gone (Phase 5) and the producer has served every restore through a soak
-period, the RM stops spawning the backup-replicator and litestream entirely
-and initializes from the change DB and archive alone — the **gateway cutover**
-(Phase 6). This is a deployment change, not a new flag value: `archive`
-describes authority, and the gateway is what `archive` looks like with the
-transitional scaffolding removed.
+### Flipping forward, flipping back
+
+**Forward** (`litestream` → `archive`): the stack starts a **new lineage**.
+The gateway takes the slot at a fresh generation and the producer performs
+initial sync through S3 (genesis → first base); view-syncers restore from S3
+once readiness (first durable segment + first complete base) clears. The cost
+is one resync — the same cost as any resync today — which is what makes the
+flip safe to do per stack, low-stakes stacks first. Nothing migrates: the old
+litestream backups and replicas are simply no longer consulted. (If forward
+resync cost ever bites for very large stacks, seeding the first base from the
+last litestream replica is a possible accelerator — extra machinery,
+deliberately not on the critical path.)
+
+**Rollback** (`archive` → `litestream`): flip the value back and the existing
+code does the rest. The RM boots in the litestream world, attempts a
+litestream restore, and finds either nothing or a backup from a **stale
+generation** — which the existing `replicaVersion` validation rejects
+(`invalid_replica`) — so it falls through to the existing auto-reset → initial
+sync path: a fresh generation, a fresh slot, a fresh litestream backup
+lineage. No manual database surgery, no new rollback code; rollback correct-
+ness rests on machinery that runs in production today. The abandoned archive
+lineage is inert (nothing reads it) and is reclaimed out of band.
+
+Because both directions are resyncs into the target world, there is no state
+that must survive the flip, no window in which both systems write, and no
+compatibility matrix between worlds.
 
 Validation and role handling follow existing house style:
 
 - Cross-flag asserts in `packages/zero-cache/src/config/normalize.ts`
-  (`assertNormalized`), next to the litestream-v5 dependency asserts:
-  `mode !== 'litestream'` requires `archiveURL`; `gc.enabled` requires
-  `mode === 'archive'`; `retainBases >= 2`.
+  (`assertNormalized`): `mode === 'archive'` requires `archiveURL`;
+  `retainBases >= 2`. `gc.enabled` defaults on and is simply unread outside
+  mode `archive`.
 - Flags reaching a node that is not the replication-manager warn-and-continue
   rather than fail (the pattern documented in `server/main.ts`), because a
   multi-node fleet is configured from one shared environment.
-- The flag stays `hidden: true` during rollout so the `--help` snapshot test
-  (`config/zero-config.test.ts`) does not churn.
+- The flag stays `hidden: true` during development so the `--help` snapshot
+  test (`config/zero-config.test.ts`) does not churn.
 
 ### Why view-syncers do not need the flag
 
@@ -265,10 +286,10 @@ backupFormat?: 'litestream' | 'archive'
 ```
 
 The view-syncer restores in whatever format the RM advertises. This is what
-makes the canary story clean: flip the flag on one deployment's
-replication-manager and every view-syncer in that deployment follows
-automatically. No cross-node flag coordination, and mixed fleets during deploys
-remain correct. Protocol version negotiation already exists
+makes the per-stack flip clean: flip the value on a stack and every
+view-syncer in that stack follows the replication-manager automatically. No
+cross-node flag coordination, and mixed pods during a Flux reconcile remain
+correct. Protocol version negotiation already exists
 (`change-streamer-http.ts`) if a breaking change is ever needed; this one is
 not breaking.
 
@@ -297,11 +318,11 @@ which satisfies the companion document's requirement to archive the exact
 envelopes the applier consumes, by construction.
 
 One deliberate difference from the SQLite change-log writer: that writer is
-fail-soft (disables itself on error, replication continues). The archive writer
-in mode `archive` must be **fail-stall**: on upload failure the durable cursor
-stops advancing, PG feedback stops advancing, and WAL-retention alerts fire, as
-the companion document requires. In `archive-dual` a stalled archive only
-degrades the dual-run metrics.
+fail-soft (disables itself on error, replication continues), because it is a
+cache. The archive writer is authoritative and therefore **fail-stall**,
+always: on upload failure the durable cursor stops advancing, PG feedback
+stops advancing, and WAL-retention alerts fire, as the companion document
+requires. With no dual mode there is no fail-soft variant to maintain.
 
 Object names are deterministic from stream identity and cursor interval
 (`log/v1/<stream-id>/<start>-<end>.zst` under the archive prefix), so upload
@@ -318,11 +339,11 @@ tracked watermark:
 
 - Add `trackArchive: boolean` and a `trackArchive(watermark)` method, driven by
   the archive writer's contiguous-durable callback.
-- `archive-dual`: `trackArchive: false`. Export the would-be archive cursor and
-  its lag behind the actual ACK as metrics — this is the dual-run validation
-  signal for Phase 1.
-- `archive`: `trackArchive: true`. During the soak period the litestream-v5
-  gate can stay on as well; `min()` over all tracked stores is strictly safe.
+- Mode `archive` sets `trackArchive: true`, unconditionally — the archive is
+  authoritative from the moment the stack flips. The cursor's lag behind the
+  last committed watermark is exported as the primary archive-health metric.
+- Mode `litestream` is unchanged (`trackArchive: false`; the v5 backup gate
+  where configured).
 
 Note that the litestream-v5 path already established the precedent of gating
 the replication slot on backup durability, so mode `archive` introduces a new
@@ -363,24 +384,21 @@ sync on `no_backup`. The new `archiveRestore()` implements the same contract:
 4. Replay the logical tail from the archive to the target cursor.
 5. Set serving SQLite configuration and promote atomically.
 
-Mode selects the implementation at the two existing call sites: the
-replication-manager (`selectAndRestoreReplica` in
-`services/change-source/pg/change-source.ts`) and the view-syncer
-(`server/replicator.ts`, driven by the advertised `backupFormat` rather than
-local config). The companion document's "start the durable path concurrently
-with the accelerated path and promote whichever verifies first" fits inside
-this one function without the callers knowing.
+In the archive world the contract's callers are consumers only: the
+view-syncer (`server/replicator.ts`, driven by the advertised `backupFormat`
+rather than local config) and the producer's own discard-and-rebuild. The
+replication-manager's litestream restore call site
+(`selectAndRestoreReplica` in `services/change-source/pg/change-source.ts`)
+belongs to the litestream world and is simply not exercised in mode `archive`
+— the gateway holds no replica to restore. The companion document's "start
+the durable path concurrently with the accelerated path and promote whichever
+verifies first" fits inside `archiveRestore()` without the callers knowing.
 
-The RM call site is transitional: it exists while the RM still keeps a replica
-(Phases 4-5) and is deleted at the gateway cutover, after which only consumers
-restore — the view-syncers and the producer's own discard-and-rebuild.
+Two existing behaviors carry over for free:
 
-Two existing behaviors carry over for free during the transition:
-
-- `no_backup` on the RM falls through to initial sync, which gives the
-  transitional archive mode sane empty-bucket behavior with no new code. After
-  the gateway cutover this path is gone: an empty archive is handled by
-  producer genesis (initial sync → first base), not by an RM-resident sync.
+- An empty archive is handled by producer genesis (initial sync → first
+  base), with view-syncer readiness gated until the first base is complete —
+  the same shape as today's `waitForBackupBeforeServing`.
 - The post-restore `prepare()` step (`workers/replicator.ts`) already forces
   `journal_mode = delete` and then the target journal mode on restored files,
   which handles the "base built with `journal_mode = OFF` carries file format
@@ -413,12 +431,12 @@ SQLite replica from Postgres data; everything else restores its output.
   `archiveRestore` from the latest complete base, resume tailing" — its own
   restore path, as the companion document requires.
 - At lineage genesis the producer owns initial sync: the table copy lands in
-  the producer's working file and is published as the first base. The
-  "promote a live replica" cutover (freeze the backup-replicator's file,
-  verify, publish) exists only for **migrating** deployments that already
-  have a litestream-era replica — it seeds the first base without a
-  from-scratch build, and disappears with the backup-replicator at the
-  gateway cutover.
+  the producer's working file and is published as the first base. This is
+  also the forward-flip path — flipping a stack into the archive world _is_ a
+  genesis. (Seeding the first base from a frozen litestream-era replica —
+  "promote a live replica" — remains a possible accelerator for very large
+  stacks, but is deliberately not built until forward-resync cost proves to
+  need it.)
 - The accelerated live-base restore is a request/response between the restore
   coordinator and this worker (publish `intent.json`, upload chunks, publish
   `complete.json`), reusing the same publication code as the periodic base.
@@ -437,15 +455,15 @@ possible, matching litestream's own file-URL support.
 ### 7. Gateway initialization → identity and resume without a replica
 
 `initializePostgresChangeSource` currently restores (or initial-syncs) the
-replica to obtain `subscriptionState` before the streamer starts. The gateway
-cutover replaces that read: generation identity and publications come from the
-change DB (`ensureReplicationConfig` already reconciles them) and the upstream
-`replicas` table; the resume watermark comes from the change-log head as it
-does today; and the durable archive cursor — S3 authoritative, change-DB copy
-as a cache — is the floor below which nothing needs re-sending and above which
-ACK gating guarantees Postgres still has everything. This is the one seam that
-does not exist yet as a seam: it is the work that unlocks deleting the replica
-from the RM, and it lands last.
+replica to obtain `subscriptionState` before the streamer starts. Mode
+`archive` replaces that read: generation identity and publications come from
+the change DB (`ensureReplicationConfig` already reconciles them) and the
+upstream `replicas` table; the resume watermark comes from the change-log head
+as it does today; and the durable archive cursor — S3 authoritative, change-DB
+copy as a cache — is the floor below which nothing needs re-sending and above
+which ACK gating guarantees Postgres still has everything. This is the one
+seam that does not exist yet as a seam, and with no intermediate mode it is on
+the critical path: an archive-world RM never has a replica to read.
 
 ## New code layout
 
@@ -483,51 +501,53 @@ Existing files touched (the seams plus config):
   restore-path selection (transitional), then gateway initialization: identity
   and resume without a replica.
 - `server/main.ts`, `server/worker-urls.ts` — the producer worker.
-- `server/change-streamer.ts` — archive store construction and dual-run
-  gauges; at the gateway cutover, stop spawning the backup-replicator and
-  litestream.
+- `server/change-streamer.ts` — archive store construction and health
+  gauges; in mode `archive`, no backup-replicator and no litestream in the
+  process tree.
 
-Everything under `services/litestream/` is untouched until the gateway
-cutover deletes its RM usage.
+Everything under `services/litestream/` is untouched; it is simply not
+exercised by a stack in the archive world.
 
 ## Delivery sequence
 
-Each step is independently shippable and `litestream` mode stays green
-throughout.
+With no dual mode, every step lands **dark** behind `mode: 'archive'` —
+`litestream` mode stays green throughout, and nothing activates until a stack
+flips. The sequence orders the build; the flip of the first real stack waits
+for all of it.
 
 1. **Flag + object store + segment format.** Config declaration and
    validation, the object-store abstraction with both backends, the versioned
    segment format with round-trip and corruption tests. No behavior change.
-2. **Archive writer under `archive-dual`.** Wired into the change-streamer,
-   with metrics: contiguous durable archive cursor, archive lag, and the
-   ack-vs-archive-cursor delta. This is companion Phase 1's dual-write.
+2. **Archive writer.** Wired into the change-streamer as a fail-stall
+   consumer, with the health metrics: contiguous durable archive cursor,
+   cursor lag, buffered/spooled bytes.
 3. **Archive reader + restore + drill tooling.** `ArchiveChangeSource`,
    `archiveRestore`, and a drill/compare tool that restores into a scratch
-   path and diffs logical content against the live replica — mirror the
-   `sqlite-change-log-comparator` pattern. Companion Phase 2.
+   path and diffs logical content against a reference replica — mirror the
+   `sqlite-change-log-comparator` pattern.
 4. **Streaming retrofit.** Replace the writer's in-memory open segment and
    upload queue with the disk spool (truncate-on-rollback, streaming
    checksum, streaming/multipart upload), add `getStream`/`putStream` to the
    object store, add the streaming replay decoder, and define the part
    scheme for transactions larger than a segment. Gated by the memory
-   ceiling test below; must land before `archive-dual` is exposed to
-   production-scale transactions.
-5. **Base producer worker.** Publication protocol on the daily cadence with
-   the replay-budget early trigger, clean-shutdown marker,
-   discard-and-rebuild, and first-base bootstrap via the "promote a live
-   replica" cutover for migrating deployments. Companion Phases 2-3.
-6. **Mode `archive`.** `trackArchive` in the acker, the snapshot-protocol
-   field, purge-floor rekeying, GC, accelerated live-base restore. Companion
-   Phase 4.
-7. **Convergence metrics** (`zero_apply_*`). Orthogonal to the mode flag and
+   ceiling test below; must land before any production stack flips.
+5. **Base producer worker.** Genesis initial sync (the forward-flip path),
+   publication on the daily cadence with the replay-budget early trigger,
+   clean-shutdown marker, discard-and-rebuild, GC, and the accelerated
+   live-base restore.
+6. **Gateway initialization + consumer restore path.** Identity and resume
+   without a replica (seam 7), the snapshot-protocol `backupFormat`
+   advertising, the view-syncer restore selection, purge-floor rekeying, and
+   the archive-mode process tree (no backup-replicator, no litestream, plus
+   the producer worker). This completes mode `archive` as a whole world.
+7. **Flux machinery + flip runbook.** The one-value overlay, pre-provisioned
+   bucket/IAM, mode-aware alerts, and the forward/rollback runbooks,
+   exercised end to end on a scratch stack (flip forward, flip back) before
+   any real stack flips.
+8. **Convergence metrics** (`zero_apply_*`). Orthogonal to the mode flag and
    valuable on their own; the replicator already threads
    `upstreamCommitTimeMs` through version-ready notifications for lag
    computation. Can ship at any point.
-8. **Gateway cutover.** Retire the RM replica: initialize identity and resume
-   from the change DB and archive (seam 7), move lineage genesis into the
-   producer, stop spawning the backup-replicator and litestream, and delete
-   the RM restore call site. Gated on the producer having served every
-   restore — drills and real — through a full soak of mode `archive`.
 
 ## Codebase findings that feed back into the companion documents
 
@@ -550,13 +570,12 @@ discard-and-rebuild. It **does** matter for the bootstrap document's per-table
 filtered catchup: DDL interleaved with the catchup window needs an explicit
 answer there.
 
-**The Litestream-cutover precondition already holds in production.** The
-"promote a live replica" path requires the atomic applied-cursor invariant;
-that is how the replicator works today (data and `_zero.replicationState`
-commit in one transaction), so the cheap first-base path is safe and should be
-the default cutover for migrating deployments. In the end state it is
-migration-only scaffolding: fresh lineages genesis in the producer, and the
-path disappears with the backup-replicator.
+**The "promote a live replica" precondition already holds in production.**
+The path requires the atomic applied-cursor invariant; that is how the
+replicator works today (data and `_zero.replicationState` commit in one
+transaction). With the flip-and-resync rollout it is no longer on any
+critical path — forward flips are geneses — but it remains the known-safe
+accelerator if forward-resync cost on very large stacks ever demands one.
 
 **Gating the slot ACK on backup durability is not new.** The litestream-v5
 path already does it (`UpstreamAcker` with `trackBackup`), including the
@@ -607,16 +626,22 @@ committed stream is already correct.
 
 - Unit: segment format round-trip, corruption/gap/overlap rejection, manifest
   discipline, GC cutoff computation.
-- Integration (fs object store): full loop — initial sync → dual-write →
-  freeze/publish → delete replica → `archiveRestore` → logical diff against
-  the source. Crash injection at every publication boundary (segment upload,
-  intent, chunk, manifest, pointer), unclean builder shutdown, and restore
-  fallback with the live producer failed mid-upload, per the exit criteria.
-- Dual-run comparison in `archive-dual`: the drill tool from step 3 run on a
-  schedule, plus the ack-vs-archive-cursor metric.
-- Gateway cutover: cold-start the RM with no replica file against a populated
+- Integration (fs object store): full loop — apply-and-archive a stream
+  through the real change processor → freeze/publish → delete replica →
+  `archiveRestore` → logical diff against the source. Crash injection at
+  every publication boundary (segment upload, intent, chunk, manifest,
+  pointer), unclean builder shutdown, and restore fallback with the live
+  producer failed mid-upload, per the exit criteria.
+- Restore drills on a schedule in the archive world: the drill tool from
+  step 3 restoring into a scratch path and diffing against a live consumer —
+  this replaces the confidence a dual run would have provided.
+- Gateway boot: cold-start the RM with no replica file against a populated
   archive and change DB, and against an empty bucket (producer genesis),
   asserting identical streaming behavior in both.
+- Flip drills: on a scratch stack, flip forward (genesis through S3) and
+  back (forced resync into the litestream world), asserting convergence and
+  bounded unavailability in both directions — the rollback path is only a
+  safety net if it is exercised.
 - Memory ceiling: archive, replay, and restore a synthetic multi-GB
   transaction (and a multi-GB base) under a fixed `--max-old-space-size` far
   below the payload size. This is the acceptance test for the streaming
@@ -625,20 +650,59 @@ committed stream is already correct.
 - The existing `.pg.test.ts` multi-config vitest setup covers the
   PG-integration variants; no new test infrastructure is needed.
 
-## Canary procedure
+## Rollout: one value per stack, reconciled by Flux
 
-1. Deploy a stack with `ZERO_BACKUP_MODE=archive-dual` and
-   `ZERO_BACKUP_ARCHIVE_URL` pointing at a prefix distinct from the litestream
-   bucket path. Litestream remains authoritative; blast radius is extra S3
-   writes and one extra worker.
-2. Watch the dual-run signals: contiguous-cursor gaps (should be zero),
-   archive lag vs ACK, the daily base cadence and its early-trigger rate,
-   gateway resident memory under bulk-write load, and drill results.
-3. Promote the canary to `ZERO_BACKUP_MODE=archive` once the companion
-   document's Phase 4 criteria hold. Litestream keeps running as the safety
-   net until `litestream.backupURL` is unset.
-4. Roll back at any point by reverting the env var; `litestream` mode is
-   untouched by any of this code.
+The fleet is GitOps-managed by Flux, and the flip is more than an env var:
+the two worlds have different infrastructure shapes. The machinery exists to
+collapse that difference back into **one value in the stack's values file**
+(`backupMode: litestream | archive`), from which everything else derives, so
+that a flip — in either direction — is a single git commit that Flux
+reconciles.
+
+**What the overlay renders per mode.** In `litestream`, today's shape,
+untouched. In `archive`: `ZERO_BACKUP_MODE=archive` and
+`ZERO_BACKUP_ARCHIVE_URL` on every zero-cache workload; the producer
+Deployment; a spool volume (ephemeral/emptyDir is sufficient — the spool is
+re-derivable from the slot) on the gateway and per-xid spool space sized per
+the streaming discipline; litestream containers, env, and the
+backup-replicator absent. One value, one template conditional — never two
+flags that can disagree.
+
+**Pre-provisioned, inert infrastructure.** The archive bucket/prefix and its
+IAM role (IRSA) are provisioned for every stack **in both worlds**, ahead of
+any flip: an idle bucket costs nothing, and keeping provisioning off the
+flip's critical path is what makes the flip a config change rather than an
+infrastructure project. Likewise the litestream bucket remains provisioned
+while a stack is in the archive world; rollback does not wait on Terraform.
+
+**Reconcile-window tolerance.** Flux applies manifests in no useful order,
+and pods of both shapes can briefly coexist during a flip. The application
+absorbs this rather than the pipeline sequencing it: an archive-mode gateway
+boots without the producer present (readiness gates on the first base), a
+litestream-mode process ignores archive resources entirely, and
+`assertNormalized` rejects internally inconsistent env combinations so a
+half-templated overlay fails loudly at pod start instead of running in a
+mixed state. Only one process can hold the replication slot, so the two
+worlds cannot both stream regardless of pod overlap.
+
+**Forward runbook.** Commit `backupMode: archive` for the stack → Flux
+reconciles → gateway starts a new lineage and the producer performs genesis →
+readiness clears on the first durable segment + first complete base →
+view-syncers restore from S3. Watch: archive cursor lag, base cadence and
+early-trigger rate, gateway resident memory under bulk-write load, drill
+results. Flip dev and staging stacks first; the blast radius of any flip is
+one stack's resync.
+
+**Rollback runbook.** Revert the commit → Flux restores the litestream shape
+→ the RM rejects the stale-generation state and resyncs through the existing
+auto-reset path (see "Flipping forward, flipping back"). The abandoned
+archive lineage is left in place and reclaimed out of band once the stack is
+confirmed healthy — never deleted as part of the rollback itself.
+
+**Mode-aware observability.** Alerts follow the value: litestream stall
+alerts apply in one world, archive cursor-lag / base-staleness / GC alerts in
+the other, and the flip commit flips the alert set with it — a stack must
+never sit in a world whose backup alerts are watching the other one.
 
 ## Open implementation questions
 
@@ -648,22 +712,22 @@ committed stream is already correct.
    synchronous framing into the disk spool with async streaming upload, and
    `readyForMore`-style back-pressure keyed to spool-plus-queue bytes on
    disk rather than heap.
-2. Where does the builder's live tail come from in `archive-dual` — polling
-   sealed segments (simple, adds seal-interval latency to base freshness) or a
+2. Where does the producer's live tail come from — polling sealed segments
+   (simple, adds seal-interval latency to base freshness) or a
    change-streamer subscription with archive catchup (fresher, more wiring)?
    Proposed: sealed-segment polling first; the freshness bound equals the seal
-   interval, which is acceptable for base production.
+   interval, which is acceptable for daily base production.
 3. Do we store archive continuity metadata (highest contiguous cursor) only in
    S3 pointer objects, or also in the change DB next to `replicationState`?
    Proposed: S3 is authoritative (survives RM loss); the change DB copy is a
-   cache. Note that at the gateway cutover this stops being an optimization
-   question — the archive cursor becomes part of how a replica-free RM
-   initializes, so the pointer discipline is load-bearing.
+   cache. This is load-bearing, not an optimization: the archive cursor is
+   part of how a replica-free RM initializes.
 4. Chunk size and parallelism defaults for base upload/download, to be set
    from drill measurements.
-5. Whether `archive-dual` should also exercise view-syncer restores from the
-   archive on an opt-in sub-flag (a `compare`-style read percentage, as
-   `sqliteChangeLogMode` did) before `archive` flips the default.
+5. Cleanup of abandoned lineages: a rollback (and any resync) strands a
+   lineage in the bucket. Proposed: a bucket lifecycle rule or an out-of-band
+   sweep that deletes lineages other than the current generation after a
+   retention delay — never as part of the flip itself.
 6. Genesis coordination between the gateway and the producer: the initial
    table copy must happen at the slot's consistent snapshot, which today is
    visible only to the session that created the slot. Options: the gateway

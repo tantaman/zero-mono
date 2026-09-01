@@ -132,10 +132,6 @@ export function assertNormalized(
     '--backup-archive-url is required when --backup-mode is not litestream',
   );
   assert(
-    !backup.gcEnabled || backup.mode === 'archive',
-    '--backup-gc-enabled requires --backup-mode=archive',
-  );
-  assert(
     Number.isSafeInteger(backup.gcRetainBases) && backup.gcRetainBases >= 2,
     '--backup-gc-retain-bases must be an integer of at least 2',
   );

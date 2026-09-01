@@ -265,8 +265,8 @@ export interface ChangeStreamerService
 
   /**
    * The live state of the logical-archive writer, when one is configured
-   * (backup mode `archive-dual` or `archive`), for the dual-run gauges the
-   * server registers. `undefined` in mode `litestream`.
+   * (backup mode `archive`), for the health gauges the server registers.
+   * `undefined` in mode `litestream`.
    */
   archiveWriterState?(): ArchiveWriterState | undefined;
 }

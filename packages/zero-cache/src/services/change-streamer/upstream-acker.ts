@@ -10,9 +10,8 @@ type Opts = {
   trackPgChangeLog: boolean;
   trackBackup: boolean;
   /**
-   * Gates ACKs on the durable archive cursor (backup mode `archive`). Not
-   * set in `archive-dual`, where the would-be archive cursor is exported as
-   * a metric only.
+   * Gates ACKs on the durable archive cursor. Set in backup mode `archive`,
+   * where the logical archive is authoritative.
    */
   trackArchive?: boolean | undefined;
 };

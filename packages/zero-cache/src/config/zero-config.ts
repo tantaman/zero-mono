@@ -1216,24 +1216,22 @@ export const zeroOptions = {
     },
   },
 
-  // The staged rollout of the logical backup archive, which replaces litestream
-  // as the canonical backup mechanism. All flags are hidden while experimental;
-  // modes are cumulative in the manner of
-  // --change-streamer-sqlite-change-log-mode. Only the replication-manager acts
-  // on these flags; they are accepted (and unread) on other roles because a
-  // multi-node fleet is configured from one shared environment.
+  // The logical backup archive, which replaces litestream as the canonical
+  // backup mechanism. One value flips a stack between the two worlds; there
+  // is no dual-write mode, and rollback is the value flipped back plus a
+  // resync. All flags are hidden while experimental. Only the
+  // replication-manager acts on these flags; they are accepted (and unread)
+  // on other roles because a multi-node fleet is configured from one shared
+  // environment.
   backup: {
     mode: {
-      type: v
-        .literalUnion('litestream', 'archive-dual', 'archive')
-        .default('litestream'),
+      type: v.literalUnion('litestream', 'archive').default('litestream'),
       desc: [
-        `Selects the backup mechanism. {bold litestream} is today's behavior.`,
-        `{bold archive-dual} additionally writes the committed logical change`,
-        `stream to the archive at {bold --backup-archive-url} and exports`,
-        `dual-run metrics, with litestream remaining authoritative.`,
-        `{bold archive} makes the archive authoritative: upstream ACKs are gated`,
-        `on the durable archive cursor, and restores are served from the archive.`,
+        `Selects the backup world. {bold litestream} is today's behavior,`,
+        `unchanged. {bold archive} archives the committed logical change stream`,
+        `to {bold --backup-archive-url}, gates upstream ACKs on the durable`,
+        `archive cursor, and serves restores from the archive. Flipping a stack`,
+        `in either direction starts a new lineage via resync.`,
       ],
       hidden: true,
     },
@@ -1242,9 +1240,8 @@ export const zeroOptions = {
       type: v.string().optional(),
       desc: [
         `The location of the logical change archive: an {bold s3://} URL, or a`,
-        `{bold file://} URL for local development and tests. Deliberately distinct`,
-        `from {bold --litestream-backup-url} so that a dual-run writes to a`,
-        `separate prefix or bucket.`,
+        `{bold file://} URL for local development and tests. Deliberately`,
+        `distinct from {bold --litestream-backup-url}.`,
       ],
       hidden: true,
     },
@@ -1306,11 +1303,11 @@ export const zeroOptions = {
     },
 
     gcEnabled: {
-      type: v.boolean().default(false),
+      type: v.boolean().default(true),
       desc: [
-        `Enables garbage collection of archived bases and log segments. Only`,
-        `honored in {bold --backup-mode=archive}, where the archive is`,
-        `authoritative and its own retention rules apply.`,
+        `Garbage collection of archived bases and log segments; an emergency`,
+        `off switch. Only read in {bold --backup-mode=archive}, where the`,
+        `archive is authoritative and its own retention rules apply.`,
       ],
       hidden: true,
     },

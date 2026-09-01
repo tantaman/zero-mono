@@ -193,16 +193,13 @@ export type TuningOptions = StorerOptions & {
   /** Supplied only in `serve` mode. A zero percentage keeps every read on PG. */
   sqliteChangeLogServe?: SQLiteChangeLogServeOptions | undefined;
   /**
-   * Supplied when `backup.mode != litestream`, i.e. this is the gate on the
-   * archive writer. Absent, nothing writes the archive. `onDurable` is bound
-   * by the service, which routes the durable cursor to the acker.
+   * Supplied in backup mode `archive`, i.e. this is the gate on the archive
+   * writer. Absent, nothing writes the archive. `onDurable` is bound by the
+   * service, which routes the durable cursor to the acker: a configured
+   * archive is authoritative, so its presence alone gates upstream ACKs on
+   * the durable archive cursor.
    */
   archiveWriter?: Omit<ArchiveWriterOptions, 'onDurable'> | undefined;
-  /**
-   * Gates upstream ACKs on the durable archive cursor (backup mode
-   * `archive`). In `archive-dual` the cursor is tracked as a metric only.
-   */
-  trackArchiveForAcks?: boolean | undefined;
 };
 
 /**
@@ -635,13 +632,12 @@ class ChangeStreamerImpl implements ChangeStreamerService {
     this.#acker = new UpstreamAcker({
       trackPgChangeLog: true, // TODO: set false when retiring PG
       trackBackup: backupConfig?.litestreamVersion === 'v5',
-      trackArchive: opts.trackArchiveForAcks ?? false,
+      trackArchive: opts.archiveWriter !== undefined,
     });
     // The archive writer is a fourth consumer of the committed stream,
     // alongside the storer, the forwarder, and the SQLite change-log writer.
-    // Its contiguous durable cursor feeds the acker, which gates upstream
-    // ACKs on it in backup mode `archive` (and ignores it in `archive-dual`,
-    // where the cursor is a dual-run metric only).
+    // It is authoritative whenever configured: its contiguous durable cursor
+    // feeds the acker, which gates upstream ACKs on it.
     this.#archiveWriter = opts.archiveWriter
       ? new ArchiveWriter(lc, {
           ...opts.archiveWriter,
@@ -829,8 +825,10 @@ class ChangeStreamerImpl implements ChangeStreamerService {
           this.#changeLogWriter?.write(change, json);
           // Same invariant as above: synchronous buffering in the same loop
           // iteration, before anything that can advance the resume point.
-          // Never throws; failure handling depends on the backup mode (see
-          // ArchiveWriter's fail-stall vs fail-soft posture).
+          // Fail-stall posture: an upload failure stalls the durable cursor
+          // (and therefore ACKs) rather than throwing here; only a
+          // stream-invariant violation throws, and the loop's retry path
+          // reconnects and reconciles.
           this.#archiveWriter?.write(change, json);
           const entry: WatermarkedChange = [watermark, change[1].tag, json];
           unflushedBytes += json.length;
@@ -873,9 +871,9 @@ class ChangeStreamerImpl implements ChangeStreamerService {
               this.#state.signal,
             );
           }
-          // ... and the (authoritative) archive writer likewise, when its
-          // upload queue is saturated. The dual-mode writer never stalls the
-          // stream; it fails soft instead.
+          // ... and the archive writer likewise, when its upload queue is
+          // saturated: replication waits for the archive rather than
+          // outrunning it (fail-stall).
           const archiveReady = this.#archiveWriter?.readyForMore();
           if (archiveReady) {
             await promiseOrAbort(

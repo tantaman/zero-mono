@@ -290,7 +290,6 @@ class SourceReplica {
     this.#writer = new ArchiveWriter(lc, {
       store,
       replicaVersion: '02',
-      authoritative: true,
       segmentTargetBytes: 1, // seal every transaction
       sealIntervalMs: 60_000,
     });
