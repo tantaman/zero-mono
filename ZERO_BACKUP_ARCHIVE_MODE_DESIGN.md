@@ -554,7 +554,9 @@ exercised by a stack in the archive world.
 With no dual mode, every step lands **dark** behind `mode: 'archive'` —
 `litestream` mode stays green throughout, and nothing activates until a stack
 flips. The sequence orders the build; the flip of the first real stack waits
-for all of it.
+for all of it. The PR-level breakdown, with proposed resolutions for the
+open implementation choices each step carries, is in
+`ZERO_BACKUP_ARCHIVE_WORKPLAN.md`.
 
 1. **Flag + object store + segment format.** Config declaration and
    validation, the object-store abstraction with both backends, the versioned
