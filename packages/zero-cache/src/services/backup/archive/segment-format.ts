@@ -15,6 +15,7 @@ import {
   zstdCompressSync,
   zstdDecompressSync,
 } from 'node:zlib';
+import {BigIntJSON} from '../../../../../shared/src/bigint-json.ts';
 import * as v from '../../../../../shared/src/valita.ts';
 import {
   changeStreamDataSchema,
@@ -709,7 +710,16 @@ function parseLine<T>(
 ): T {
   let value: unknown;
   try {
-    value = JSON.parse(line ?? '');
+    // `BigIntJSON.parse`, not `JSON.parse`, for the same reason as
+    // MESSAGE_PARSE_MODE: this must decode the way the wire decodes. The
+    // writer stores what `serializeChangeStreamData` produced, which renders
+    // an int8 past 2^53 as a bare JSON number that only a bigint-aware
+    // parser can read back without rounding. Plain `JSON.parse` silently
+    // returned a rounded double, so a replica restored from the archive
+    // disagreed with upstream on every large integer. Values inside the safe
+    // range parse identically to `JSON.parse`, so the segment header (which
+    // has no bigints) is unaffected.
+    value = BigIntJSON.parse(line ?? '');
   } catch (e) {
     throw new SegmentFormatError(`segment ${what} is not JSON: ${e}`);
   }

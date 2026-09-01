@@ -92,6 +92,29 @@ describe('backup/archive/segment-format', () => {
     });
   });
 
+  // The writer stores what `serializeChangeStreamData` produced, which renders
+  // an int8 past 2^53 as a bare JSON number. Only a bigint-aware parse reads
+  // it back intact, which is what the wire does — plain `JSON.parse` rounds
+  // it to a double and the restored replica then disagrees with upstream.
+  test('preserves integers beyond the safe range', () => {
+    const big = 9007199254740993n; // 2^53 + 1
+    const lines = [
+      JSON.stringify(['begin', {tag: 'begin'}, {commitWatermark: '03'}]),
+      // Rendered the way BigIntJSON.stringify renders it: a bare number.
+      `["data",{"tag":"insert","relation":{"tag":"relation","schema":"public",` +
+        `"name":"t","rowKey":{"type":"default","columns":["id"]}},` +
+        `"new":{"id":"a","n":${big}}}]`,
+      JSON.stringify(['commit', {tag: 'commit'}, {watermark: '03'}]),
+    ];
+    const {data} = encodeSegmentRaw('02', '02', '03', 1, lines);
+
+    const decoded = decodeSegment(data);
+    const insert = decoded.transactions[0].messages[1][1] as unknown as {
+      new: {n: bigint};
+    };
+    expect(insert.new.n).toBe(big);
+  });
+
   test('rejects an empty segment', () => {
     expect(() =>
       encodeSegment({replicaVersion: '02', start: '02', transactions: []}),
