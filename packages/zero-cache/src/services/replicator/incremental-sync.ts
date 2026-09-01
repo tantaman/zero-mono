@@ -2,7 +2,10 @@ import type {LogContext} from '@rocicorp/logger';
 import {AbortError} from '../../../../shared/src/abort-error.ts';
 import type {Enum} from '../../../../shared/src/enum.ts';
 import {deleteLiteDB} from '../../db/delete-lite-db.ts';
-import {getOrCreateCounter} from '../../observability/metrics.ts';
+import {
+  getOrCreateCounter,
+  getOrCreateLatencyHistogram,
+} from '../../observability/metrics.ts';
 import type {Source} from '../../types/streams.ts';
 import type {DownloadStatus} from '../change-source/protocol/current.ts';
 import type {ChangeStreamData} from '../change-source/protocol/current/downstream.ts';
@@ -49,6 +52,23 @@ export class IncrementalSyncer {
     'replication',
     'events',
     'Number of replication events processed',
+  );
+
+  // Convergence metrics: every consumer of the change stream (serving
+  // replicas and the base producer alike, distinguished by the `mode`
+  // attribute) reports the same two signals, so replicas across worlds can
+  // be compared directly.
+  readonly #applyCommits = getOrCreateCounter(
+    'apply',
+    'commits',
+    'Transactions applied (committed) to the local replica.',
+  );
+  readonly #applyLag = getOrCreateLatencyHistogram(
+    'apply',
+    'lag',
+    'Time from a transaction committing upstream to it being applied to ' +
+      'the local replica. Crosses the upstream/local clock domain, like ' +
+      'zero.replication.total_lag.',
   );
 
   constructor(
@@ -230,6 +250,12 @@ export class IncrementalSyncer {
   #handleResult(lc: LogContext, result: CommitResult | null) {
     if (!result) {
       return;
+    }
+    this.#applyCommits.add(1, {mode: this.#mode});
+    if (result.upstreamCommitTimeMs !== undefined) {
+      this.#applyLag.recordMs(Date.now() - result.upstreamCommitTimeMs, {
+        mode: this.#mode,
+      });
     }
     if (result.completedBackfill) {
       // Publish the final status

@@ -13,6 +13,7 @@ import {metrics} from '@opentelemetry/api';
 export type Category =
   | 'replication' // postgres to replica
   | 'replica' // health of replica and litestream backup
+  | 'apply' // upstream commit to replica-applied (convergence across replicas)
   | 'sync' // replica to client
   | 'mutation'
   | 'server';

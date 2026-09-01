@@ -267,9 +267,16 @@ Exit criteria: the gateway-boot tests from the design's Testing section
 5. **Flip drills**: scratch stack forward and back under chaos, then the
    first low-stakes real stack.
 
-## Milestone 5 — Convergence metrics
+## Milestone 5 — Convergence metrics (landed, this branch)
 
 `zero_apply_*` lag metrics; independent of everything above, ship whenever.
+
+Landed as two instruments in `IncrementalSyncer` (so every consumer of the
+change stream reports them — serving replicas and the base producer alike,
+distinguished by a `mode` attribute): `zero.apply.commits` counts
+transactions applied to the local replica, and `zero.apply.lag` is a
+latency histogram of `now - upstreamCommitTimeMs` at apply time (the same
+clock-domain crossing as `zero.replication.total_lag`).
 
 ## Suggested PR sequence
 
