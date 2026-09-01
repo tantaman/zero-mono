@@ -498,11 +498,13 @@ replica to obtain `subscriptionState` before the streamer starts. Mode
 `archive` replaces that read: generation identity and publications come from
 the change DB (`ensureReplicationConfig` already reconciles them) and the
 upstream `replicas` table; the resume watermark comes from the change-log head
-as it does today; and the durable archive cursor — S3 authoritative, change-DB
-copy as a cache — is the floor below which nothing needs re-sending and above
-which ACK gating guarantees Postgres still has everything. This is the one
-seam that does not exist yet as a seam, and with no intermediate mode it is on
-the critical path: an archive-world RM never has a replica to read.
+as it does today; outstanding backfills and their progress marks come from the
+change-DB cookie state (see "Backfills"); and the durable archive cursor — S3
+authoritative, change-DB copy as a cache — is the floor below which nothing
+needs re-sending and above which ACK gating guarantees Postgres still has
+everything. This is the one seam that does not exist yet as a seam, and with
+no intermediate mode it is on the critical path: an archive-world RM never has
+a replica to read.
 
 ## New code layout
 
@@ -577,9 +579,11 @@ for all of it.
    live-base restore.
 6. **Gateway initialization + consumer restore path.** Identity and resume
    without a replica (seam 7), the snapshot-protocol `backupFormat`
-   advertising, the view-syncer restore selection, purge-floor rekeying, and
-   the archive-mode process tree (no backup-replicator, no litestream, plus
-   the producer worker). This completes mode `archive` as a whole world.
+   advertising, the view-syncer restore selection, purge-floor rekeying,
+   resumable backfills (PK-ordered emission and the durable progress mark;
+   see "Backfills"), and the archive-mode process tree (no
+   backup-replicator, no litestream, plus the producer worker). This
+   completes mode `archive` as a whole world.
 7. **Chaos harness + Flux machinery + flip runbook.** The ledger workload
    and kill matrix (see Testing) run against a scratch stack with the oracle
    as judge; then the one-value overlay, pre-provisioned bucket/IAM,
@@ -664,6 +668,84 @@ every consumer are untouched by the protocol migration. The one component
 that learns v2 is the PG change source; everything downstream of the
 committed stream is already correct.
 
+## Backfills: durable, ordered, resumable
+
+Backfills (table/column copies streamed as `backfill` row-batch messages)
+are today quasi-ephemeral by design: they are not stored upstream — the
+whole point is to avoid tying up the WAL — so their state lives in the
+replication-manager's memory, a restart begins a fresh backfill, and with
+multiple RMs each runs its own backfill at its own pace. That last property
+is what produces the RMv2 inconsistency scenarios: a view-syncer bouncing
+between RMs mid-backfill can see a redundant backfill (benign), a backfill
+that never completes (it switched to an RM whose backfill already finished),
+or a gap between two independently-paced backfill streams.
+
+The archive model removes the structure that creates those scenarios rather
+than patching around them:
+
+**Backfills are already in the archive by construction.** `backfill` and
+`backfill-completed` are members of the archived envelope schema
+(`dataChangeSchema`), enclosed in ordinary stream transactions: segments
+carry them, the durable-cursor/ACK gating covers them, bases absorb them
+(the backfill-tracking state commits in the same SQLite transactions as the
+rows), and restore replays them. The property that motivated
+quasi-ephemerality — keep backfill out of the WAL — is preserved; the
+archive is durable storage the WAL never had to be.
+
+**One stream means there is no `b` vs `b'`.** The gateway owns the slot,
+its backfill batches enter the single committed stream, and the archive is
+the total order every consumer replays. A consumer that bounces across
+gateway incarnations replays the same archived backfill prefix by
+watermark. The divergence scenarios all require two independently-paced
+backfill streams to exist; in the archive world there is one.
+
+**Resumability is a gateway-restart concern, and the progress mark is the
+new piece.** Outstanding backfills are already re-derived at resume from
+durable change-log cookie state (`backfillRequestsFrom(resumePoint.cookies)`
+in the initializer) — but only as "restart from scratch". Resume-from-mark
+needs, per the RMv2 proposal:
+
+- **Ordered emission**: backfill batches emitted in primary-key order with
+  the upstream ordering matched to the replica's (`ORDER BY pk COLLATE
+"C"`), so "last emitted PK" is a valid cursor in both worlds and cleanly
+  partitions done from not-done.
+- **A durable progress mark**: extend the cookie state (whose authoritative
+  copy is in the change DB — which is what makes it available to a
+  replica-free gateway) with the last-emitted PK per backfill ID, committed
+  with the stream's transactions so the mark read at resume is always
+  consistent with the archived prefix. On restart the gateway re-issues the
+  backfill request from the mark, not from null. Overlap around the mark is
+  harmless: backfilled rows apply as upserts, and redundant batches are the
+  one scenario that was always benign.
+- The existing backfill-ID validity check (schema/table/column names must
+  still match) stays the guard for DDL landing mid-backfill: on mismatch,
+  restart that backfill from scratch — the safe degenerate case, and part
+  of the DDL-interleaving answer the findings section asks the bootstrap
+  companion for.
+
+**Consumers need no new protocol.** RMv2's "subscribers declare per-backfill
+progress marks at subscribe" exists because per-RM backfill streams are not
+watermark-aligned. In the archive world the watermark subsumes the PK mark:
+a base at cursor C carries in-replica backfill progress consistent with C,
+and catchup from C replays exactly the backfill messages after C, in order.
+A consumer too stale for the retained logs falls into the existing
+`WatermarkTooOld` → restore path — which is RMv2's option (a), now uniform
+with every other kind of staleness. Option (b) (restart from the
+subscriber's mark) survives only as the gateway's own resume rule above.
+
+**The streaming discipline was built for this.** Backfills are the largest
+streams in the system. Batches are bounded row groups inside ordinary
+transactions, so they flow through the writer's spool, span segments under
+the seal-by-size rule, and replay through the streaming decoder — no
+component holds O(table) anywhere, which is the same property that makes
+pgoutput v2 adoptable.
+
+Chaos owes this coverage explicitly: kill the gateway mid-backfill and
+assert resume-from-mark with the ledger oracle proving no gap and only
+idempotent overlap; restore a consumer from a base holding a partial
+backfill and assert the tail completes it; run the boundary oracle across
+backfill batches.
+
 ## Testing
 
 ### The oracle: replicas match Postgres at transaction boundaries
@@ -708,8 +790,9 @@ timing:
 
 - **Gateway**: mid-transaction (the abort/rollback path), mid-segment-seal,
   between upload and ACK (the deterministic-name idempotent-retry path),
-  during reconcile; plus repeated stream interrupts to flex replay
-  filtering.
+  during reconcile, and mid-backfill (must resume from the durable progress
+  mark — no gap, only idempotent overlap); plus repeated stream interrupts
+  to flex replay filtering.
 - **Producer**: at every publication boundary (intent, chunk, manifest),
   mid-apply with the journal-off file (must discard-and-rebuild, never
   resume in place), and during an accelerated live-base upload with a
@@ -910,3 +993,8 @@ backup alerts are watching the other one.
    budget: the spool directory needs sizing guidance and a disk-full posture
    (fail-stall in mode `archive`, like an upload failure), since the
    streaming discipline trades heap for disk.
+9. Backfill progress-mark cadence: committing the last-emitted PK with every
+   batch gives the tightest resume but a cookie write per batch; a periodic
+   mark (every N batches) trades a bounded re-emission window on restart for
+   less write amplification. Overlap is idempotent either way, so this is a
+   tuning question, not a correctness one.
