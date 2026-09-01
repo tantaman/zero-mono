@@ -18,10 +18,12 @@ import {
 } from '../../../../../shared/src/set-utils.ts';
 import * as v from '../../../../../shared/src/valita.ts';
 import {Database} from '../../../../../zqlite/src/db.ts';
+import * as Mode from '../../../db/mode-enum.ts';
 import {
   mapPostgresToLiteColumn,
   UnsupportedColumnDefaultError,
 } from '../../../db/pg-to-lite.ts';
+import {runTx} from '../../../db/run-transaction.ts';
 import type {
   ColumnSpec,
   PublishedIndexSpec,
@@ -123,9 +125,11 @@ import {
   getActiveReplicas,
   getInternalShardConfig,
   getReplicaAtVersion,
+  initReplica as recordInitialSyncOnReplica,
   internalPublicationPrefix,
   replicaIdentitiesForTablesWithoutPrimaryKeys,
   replicationSlotPrefix,
+  validatePublications,
   type BackupOptions,
   type InternalShardConfig,
   type Replica,
@@ -429,6 +433,7 @@ async function performGenesis(
   lc.info?.(`starting genesis with publications [${publications}]`);
 
   const replicaID = Date.now().toString();
+  let initialSchema: Awaited<ReturnType<typeof getPublicationInfo>> | undefined;
   const {slot} = await createReplicaAndSlot(
     lc,
     db,
@@ -441,6 +446,21 @@ async function performGenesis(
       const replicaVersion = toStateVersionString(
         createdSlot.consistent_point as LSN,
       );
+      // The schema the producer is about to copy, read at the very snapshot
+      // it will copy at. This is what `initialSchema` means, and reading it
+      // here — rather than after the handoff — is what makes it exact: the
+      // snapshot is importable for exactly the lifetime of this callback,
+      // and upstream DDL landing after the consistent point belongs to the
+      // replication stream, not to the initial sync.
+      initialSchema = await runTx(
+        db,
+        async tx => {
+          await tx.unsafe(`SET TRANSACTION SNAPSHOT '${snapshotID}'`);
+          return getPublicationInfo(tx, publications);
+        },
+        {mode: Mode.READONLY},
+      );
+      validatePublications(lc, initialSchema);
       await store.put(
         genesisOfferKey(replicaVersion),
         encodeGenesisOffer({
@@ -472,6 +492,20 @@ async function performGenesis(
   );
 
   const replicaVersion = toStateVersionString(slot.consistent_point as LSN);
+  // The genesis copy ran in the producer, so the producer's initial-sync
+  // deliberately left the upstream `replicas` record to the gateway (it owns
+  // the slot, and the row is only inserted once the copy has committed, by
+  // `createReplicaAndSlot` above). Record what was synced now: until this
+  // lands the row has a null `initialSyncContext`, which is precisely what
+  // marks a replica as not yet usable — `getReplicaAtVersion` filters it out.
+  await recordInitialSyncOnReplica(
+    db,
+    shard,
+    replicaID,
+    must(initialSchema, 'genesis captured no snapshot schema'),
+    context,
+  );
+
   const replica = await getReplicaAtVersion(
     lc,
     db,
