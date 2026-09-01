@@ -326,3 +326,16 @@ M2.4, then M3.1 → M3.2+M3.3 → M3.4 → M3.5, with M4.1/M4.2 startable any
 time after M0 and M4.3–M4.5 after M3. Each PR keeps `litestream` mode
 byte-identical and lands with its tests; the memory-ceiling and oracle
 tests are ratchets — once green, they stay in CI.
+
+## Branch status
+
+Everything this repository can carry is landed on this branch: M1, M2,
+M3, and M5 in full (with the deltas noted in each milestone's status
+block), plus M4's in-repo pieces — the drill tool (M4.1), the ledger
+workload and checker (M4.2), and the chaos `ObjectStore` wrapper
+(M4.3's wrapper). What remains needs infrastructure this environment
+does not have: the `.pg.test.ts` validation runs (CI has containers),
+the scratch-stack chaos orchestration and its first trigger-SQL run,
+the Flux machinery (fleet repo, M4.4), the flip drills (M4.5), and the
+follow-ups called out inline (the durable backfill progress mark, the
+fs-store CI drill, oracle layer 1 over producer bases).
