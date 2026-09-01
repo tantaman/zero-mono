@@ -202,7 +202,12 @@ describe('backup/archive/archive-reader', () => {
       const expected = [];
       for await (const tx of iterateTransactions(store, '02', '02', '0b')) {
         for (const message of tx.messages) {
-          expected.push({watermark: tx.watermark, message});
+          expected.push({
+            watermark: tx.watermark,
+            message,
+            // The archived JSON rides along, byte-exact.
+            json: JSON.stringify(message),
+          });
         }
       }
       expect(messages).toEqual(expected);

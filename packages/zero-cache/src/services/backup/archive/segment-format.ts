@@ -343,6 +343,12 @@ export function decodeSegment(data: Uint8Array): DecodedSegment {
 export type SegmentMessage = {
   watermark: string;
   message: ChangeStreamData;
+  /**
+   * The message's archived JSON — the exact text the change-streamer
+   * originally serialized, so consumers that re-forward the stream (the
+   * base producer's change source) never re-serialize.
+   */
+  json: string;
 };
 
 /**
@@ -489,7 +495,7 @@ export async function* decodeSegmentFile(
         );
       }
       current = watermark;
-      yield {watermark, message};
+      yield {watermark, message, json: line};
     } else if (current === undefined) {
       throw new SegmentFormatError(
         `message ${i}: ${type} outside of a transaction`,
@@ -506,7 +512,7 @@ export async function* decodeSegmentFile(
             `match begin watermark ${current}`,
         );
       }
-      yield {watermark: current, message};
+      yield {watermark: current, message, json: line};
       last = current;
       txCount++;
       current = undefined;
@@ -516,7 +522,7 @@ export async function* decodeSegmentFile(
         `message ${i}: rollback in a sealed segment`,
       );
     } else {
-      yield {watermark: current, message};
+      yield {watermark: current, message, json: line};
     }
   }
   if (header === undefined) {

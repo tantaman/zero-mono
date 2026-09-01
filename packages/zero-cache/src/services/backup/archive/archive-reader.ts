@@ -178,6 +178,32 @@ export async function* iterateMessages(
 }
 
 /**
+ * The end of the contiguous segment chain starting at `cursor`, i.e. how far
+ * the archive can catch a replica up from there. A trailing discontinuity
+ * bounds the result rather than failing it: nothing past a gap was ever
+ * reported durable, so the caller decides whether the reachable head
+ * suffices.
+ */
+export function contiguousHeadFrom(
+  segments: SegmentRef[],
+  cursor: string,
+): string {
+  let head = cursor;
+  for (const segment of segments) {
+    if (segment.end <= head) {
+      continue;
+    }
+    if (segment.start > head) {
+      break;
+    }
+    // segment.start <= head < segment.end: contiguous (the first segment may
+    // straddle the cursor).
+    head = segment.end;
+  }
+  return head;
+}
+
+/**
  * The interior parts of the chain `ref` completes — consecutive from part 1
  * — or an empty array for an ordinary segment. A broken sequence is a
  * continuity error: the final part exists, so its chain was fully uploaded,

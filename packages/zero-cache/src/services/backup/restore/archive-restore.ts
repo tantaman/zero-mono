@@ -12,7 +12,11 @@ import type {
 import {deleteChangeLogDB} from '../../replicator/change-log-db.ts';
 import {ChangeProcessor} from '../../replicator/change-processor.ts';
 import {getSubscriptionState} from '../../replicator/schema/replication-state.ts';
-import {iterateMessages, listLogSegments} from '../archive/archive-reader.ts';
+import {
+  contiguousHeadFrom,
+  iterateMessages,
+  listLogSegments,
+} from '../archive/archive-reader.ts';
 import {
   ARCHIVE_ROOT,
   baseChunkKey,
@@ -20,7 +24,6 @@ import {
   basePrefix,
   lineagesFromKeys,
   parseBaseCompleteKey,
-  type SegmentRef,
 } from '../archive/layout.ts';
 import {decodeBaseManifest, type BaseManifest} from '../base/manifest.ts';
 import type {ObjectStore} from '../object-store/object-store.ts';
@@ -318,29 +321,6 @@ async function replayTail(
   } finally {
     db.close();
   }
-}
-
-/**
- * The end of the contiguous segment chain starting at `cursor`, i.e. how far
- * this base can be caught up from the archive. A trailing discontinuity
- * bounds the target rather than failing it: nothing past a gap was ever
- * reported durable, so the caller's constraint check decides whether the
- * reachable head suffices.
- */
-function contiguousHeadFrom(segments: SegmentRef[], cursor: string): string {
-  let head = cursor;
-  for (const segment of segments) {
-    if (segment.end <= head) {
-      continue;
-    }
-    if (segment.start > head) {
-      break;
-    }
-    // segment.start <= head < segment.end: contiguous (the first segment may
-    // straddle the cursor).
-    head = segment.end;
-  }
-  return head;
 }
 
 function validateReplica(
