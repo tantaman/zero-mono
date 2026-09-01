@@ -167,7 +167,7 @@ export async function createReplicaAndSlot<T>(
   replicaID: string,
   failover: boolean,
   backupOptions: BackupOptions,
-  captureSnapshot: (snapshot: string) => Promise<T>,
+  captureSnapshot: (snapshot: string, slot: ReplicationSlot) => Promise<T>,
 ): Promise<ReplicationSlotResult<T>> {
   // Note: The replicationSession is closed by keepSlotActiveUntilTakenOver,
   // and only closed in this function if an error occurrs.
@@ -201,7 +201,10 @@ export async function createReplicaAndSlot<T>(
           slotName,
           failover,
         });
-        const capturedSnapshot = await captureSnapshot(slot.snapshot_name);
+        const capturedSnapshot = await captureSnapshot(
+          slot.snapshot_name,
+          slot,
+        );
         const initialSession = await keepSlotActiveUntilTakenOver(
           lc,
           replicationSession,

@@ -163,6 +163,25 @@ export async function markResetRequired(sql: PostgresDB, shard: ShardID) {
     SET "resetRequired" = true`;
 }
 
+/**
+ * Reads the stored replication identity, or `undefined` when the change DB
+ * has none (a fresh stack, or one whose change DB was recreated). In backup
+ * mode `archive` this is how a replica-free replication-manager initializes:
+ * the identity lives here and in the upstream `replicas` table, with no
+ * replica file to read it from.
+ */
+export async function getReplicationConfig(
+  db: PostgresDB,
+  shard: ShardID,
+): Promise<{replicaVersion: string; publications: string[]} | undefined> {
+  const schema = cdcSchema(shard);
+  const results = await db<
+    {replicaVersion: string; publications: string[]}[]
+  > /*sql*/ `
+    SELECT "replicaVersion", "publications" FROM ${db(schema)}."replicationConfig"`;
+  return results[0];
+}
+
 export async function ensureReplicationConfig(
   lc: LogContext,
   db: PostgresDB,

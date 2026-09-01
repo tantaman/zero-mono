@@ -14,7 +14,10 @@ import {getOrCreateGauge} from '../observability/metrics.ts';
 import {createObjectStore} from '../services/backup/object-store/create-object-store.ts';
 import type {ObjectStore} from '../services/backup/object-store/object-store.ts';
 import {initializeCustomChangeSource} from '../services/change-source/custom/change-source.ts';
-import {initializePostgresChangeSource} from '../services/change-source/pg/change-source.ts';
+import {
+  initializeArchiveModeChangeSource,
+  initializePostgresChangeSource,
+} from '../services/change-source/pg/change-source.ts';
 import {createBackupCleanupMonitor} from '../services/change-streamer/backup-cleanup-monitor-factory.ts';
 import {ChangeStreamerHttpServer} from '../services/change-streamer/change-streamer-http.ts';
 import {initializeStreamer} from '../services/change-streamer/change-streamer-service.ts';
@@ -125,9 +128,10 @@ export default async function runWorker(
 
   // When restoring from litestream, acquire a lock to prevent change-log
   // purges. This ensures that (this) change-streamer will be able to resume
-  // from the backup.
+  // from the backup. In backup mode `archive` there is no litestream restore
+  // (and no replica at all) to protect.
   let purgeLock =
-    litestream.backupURL && litestream.executable
+    litestream.backupURL && litestream.executable && backup.mode !== 'archive'
       ? await new PurgeLocker(lc, shard, changeDB).acquire()
       : null;
   const restoreOptions = {litestream, constraints: purgeLock ?? undefined};
@@ -193,8 +197,29 @@ export default async function runWorker(
         destinationBackupURL,
         replicaID,
         waitForBackupBeforeServing,
-      } =
-        upstream.type === 'pg'
+      } = archiveStore
+        ? // The gateway world: no replica is restored or synced here.
+          // Identity comes from the change DB + upstream replicas table,
+          // and an identity-less stack performs genesis through the
+          // archive (the base producer builds the first base).
+          await initializeArchiveModeChangeSource(
+            lc,
+            must(
+              upstream.type === 'pg' ? upstream.db : undefined,
+              '--backup-mode=archive requires a Postgres upstream',
+            ),
+            shard,
+            changeDB,
+            {
+              ...initialSync,
+              replicationSlotFailover: upstream.pgReplicationSlotFailover,
+            },
+            context,
+            {store: archiveStore, taskID},
+            replicationLag.reportIntervalMs,
+            upstream.pgStreamInboundTimeoutMs,
+          )
+        : upstream.type === 'pg'
           ? await initializePostgresChangeSource(
               lc,
               upstream.db,

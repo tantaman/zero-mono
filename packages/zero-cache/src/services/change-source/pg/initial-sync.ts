@@ -494,7 +494,7 @@ export async function shadowInitialSync(
   }
 }
 
-async function checkUpstreamConfig(sql: PostgresDB) {
+export async function checkUpstreamConfig(sql: PostgresDB) {
   const {walLevel, version} = (
     await sql<{walLevel: string; version: number}[]>`
       SELECT current_setting('wal_level') as "walLevel", 
@@ -515,7 +515,7 @@ async function checkUpstreamConfig(sql: PostgresDB) {
   return version;
 }
 
-async function ensurePublishedTables(
+export async function ensurePublishedTables(
   lc: LogContext,
   sql: PostgresDB,
   shard: ShardConfig,
