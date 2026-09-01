@@ -29,6 +29,7 @@ import {createLogContext} from './logging.ts';
 import {startOtelAuto} from './otel-start.ts';
 import {WorkerDispatcher} from './worker-dispatcher.ts';
 import {
+  BASE_PRODUCER_URL,
   CHANGE_STREAMER_URL,
   MUTATOR_URL,
   REAPER_URL,
@@ -149,6 +150,20 @@ export default async function runWorker(
     const {promise: shadowReady, resolve: shadowStarted} = resolver();
     loadWorker(SHADOW_SYNCER_URL, 'supporting').once('message', shadowStarted);
     await shadowReady;
+  }
+
+  // In backup mode `archive`, the base producer materializes and publishes
+  // the SQLite bases everything else restores. It runs in the
+  // replication-manager's process tree for now; it only talks to the object
+  // store, so deploying it as a separate node later is a deployment
+  // decision, not a code change.
+  if (config.backup.mode === 'archive' && runChangeStreamer) {
+    const {promise: producerReady, resolve: producerStarted} = resolver();
+    loadWorker(BASE_PRODUCER_URL, 'supporting').once(
+      'message',
+      producerStarted,
+    );
+    await producerReady;
   }
 
   const syncers: Worker[] = [];

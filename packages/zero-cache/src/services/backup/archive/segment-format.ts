@@ -56,6 +56,8 @@ import {
 
 const MAGIC = new Uint8Array([0x5a, 0x41, 0x52, 0x43]); // "ZARC"
 const FORMAT_VERSION = 2;
+/** The current log segment format version, recorded in base manifests. */
+export const SEGMENT_FORMAT_VERSION = FORMAT_VERSION;
 const CHECKSUM_BYTES = 32;
 const HEADER_BYTES = MAGIC.length + 1 + CHECKSUM_BYTES;
 

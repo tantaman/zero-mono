@@ -12,6 +12,16 @@ export type PragmaConfig = {
   busyTimeout: number;
   analysisLimit: number;
   walAutocheckpoint?: number | undefined;
+  /**
+   * Throughput settings for the base producer's `base-builder` mode, whose
+   * crash posture is discard-and-rebuild: durability pragmas can be traded
+   * away entirely because an unclean shutdown discards the file.
+   */
+  journalMode?: 'off' | undefined;
+  synchronous?: 'off' | undefined;
+  lockingMode?: 'exclusive' | undefined;
+  /** Negative-KiB form of `cache_size` (SQLite's size-based spelling). */
+  cacheSizeKiB?: number | undefined;
 };
 
 type ErrorHandler = (err: Error) => void;
@@ -117,6 +127,21 @@ export function applyPragmas(db: Database, pragmas: PragmaConfig) {
   db.pragma(`analysis_limit = ${pragmas.analysisLimit}`);
   if (pragmas.walAutocheckpoint !== undefined) {
     db.pragma(`wal_autocheckpoint = ${pragmas.walAutocheckpoint}`);
+  }
+  if (pragmas.journalMode !== undefined) {
+    // Leaving WAL requires unsafe mode in better-sqlite3.
+    db.unsafeMode(true);
+    db.pragma(`journal_mode = ${pragmas.journalMode}`);
+    db.unsafeMode(false);
+  }
+  if (pragmas.synchronous !== undefined) {
+    db.pragma(`synchronous = ${pragmas.synchronous}`);
+  }
+  if (pragmas.lockingMode !== undefined) {
+    db.pragma(`locking_mode = ${pragmas.lockingMode}`);
+  }
+  if (pragmas.cacheSizeKiB !== undefined) {
+    db.pragma(`cache_size = -${pragmas.cacheSizeKiB}`);
   }
 }
 

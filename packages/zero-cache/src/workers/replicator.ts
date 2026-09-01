@@ -170,8 +170,26 @@ async function setJournalMode(
  * Returns the PragmaConfig for a given replica file mode.
  * This is used by both the main thread (setupReplica) and
  * the write worker thread to apply the same pragma settings.
+ *
+ * `base-builder` is the base producer's throughput mode: it is the sole,
+ * exclusive user of its working file, nothing reads the file while it
+ * applies, and its crash posture is discard-and-rebuild (delete the file,
+ * restore its own newest base, resume tailing) — so all durability pragmas
+ * are traded for apply speed.
  */
-export function getPragmaConfig(mode: ReplicaFileMode): PragmaConfig {
+export function getPragmaConfig(
+  mode: ReplicaFileMode | 'base-builder',
+): PragmaConfig {
+  if (mode === 'base-builder') {
+    return {
+      busyTimeout: 30000,
+      analysisLimit: 1000,
+      journalMode: 'off',
+      synchronous: 'off',
+      lockingMode: 'exclusive',
+      cacheSizeKiB: 256 * 1024, // 256 MiB
+    };
+  }
   return {
     busyTimeout: 30000,
     analysisLimit: 1000,

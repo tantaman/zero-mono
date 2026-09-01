@@ -34,3 +34,21 @@ export function backupArchiveGaps() {
       'cannot serve a restore across the gap.',
   );
 }
+
+export function backupBasePublications() {
+  return getOrCreateCounter(
+    'replica',
+    'backup_base.publications',
+    'Base publications by the producer, by result: published, ' +
+      'already-complete (an idempotent retry), or failed.',
+  );
+}
+
+export function backupGCObjectsDeleted() {
+  return getOrCreateCounter(
+    'replica',
+    'backup_archive.gc_objects_deleted',
+    'Objects reclaimed by archive garbage collection, by kind: base, ' +
+      'debris (incomplete publication), or segment.',
+  );
+}

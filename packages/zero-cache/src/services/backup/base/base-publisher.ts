@@ -9,6 +9,7 @@ import {
   baseCompleteKey,
   baseIntentKey,
 } from '../archive/layout.ts';
+import {SEGMENT_FORMAT_VERSION} from '../archive/segment-format.ts';
 import {
   ObjectAlreadyExistsError,
   type ObjectStore,
@@ -60,11 +61,8 @@ export async function publishBase(
   const {chunkBytes, integrityCheck} = opts;
   const now = opts.now ?? Date.now;
 
-  const {replicaVersion, cursor} = freezeAndVerify(
-    lc,
-    replicaFile,
-    integrityCheck,
-  );
+  const {replicaVersion, cursor, pageSize, replicaSchemaVersion} =
+    freezeAndVerify(lc, replicaFile, integrityCheck);
 
   const completeKey = baseCompleteKey(replicaVersion, cursor);
   const existing = await store.head(completeKey);
@@ -132,6 +130,9 @@ export async function publishBase(
     chunkBytes,
     chunks,
     completedAt: now(),
+    pageSize,
+    replicaSchemaVersion,
+    logFormatVersion: SEGMENT_FORMAT_VERSION,
   };
   try {
     // Strictly last: the base exists once (and only once) this lands.
@@ -163,7 +164,12 @@ function freezeAndVerify(
   lc: LogContext,
   replicaFile: string,
   integrityCheck: 'full' | 'quick',
-): {replicaVersion: string; cursor: string} {
+): {
+  replicaVersion: string;
+  cursor: string;
+  pageSize: number;
+  replicaSchemaVersion: number;
+} {
   const db = new Database(lc, replicaFile);
   try {
     const [{['journal_mode']: journalMode}] = db.pragma('journal_mode') as [
@@ -189,10 +195,37 @@ function freezeAndVerify(
     const {replicaVersion, watermark} = getSubscriptionState(
       new StatementRunner(db),
     );
-    return {replicaVersion, cursor: watermark};
+    const [{['page_size']: pageSize}] = db.pragma('page_size') as [
+      {['page_size']: number},
+    ];
+    return {
+      replicaVersion,
+      cursor: watermark,
+      pageSize,
+      replicaSchemaVersion: readSchemaVersion(db),
+    };
   } finally {
     db.close();
   }
+}
+
+/**
+ * The replica's migration schema version, read without the create-if-absent
+ * side effect of `getVersionHistory` — a frozen file must not be written.
+ */
+function readSchemaVersion(db: Database): number {
+  const exists = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sqlite_master WHERE name = '_zero.versionHistory'`,
+    )
+    .get<{n: number}>();
+  if (exists.n === 0) {
+    return 0;
+  }
+  const row = db
+    .prepare(`SELECT schemaVersion FROM "_zero.versionHistory"`)
+    .get<{schemaVersion: number} | undefined>();
+  return row?.schemaVersion ?? 0;
 }
 
 async function putIgnoringExisting(

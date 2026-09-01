@@ -1,4 +1,5 @@
 import type {LogContext} from '@rocicorp/logger';
+import {resolver, type Resolver} from '@rocicorp/resolver';
 import type {Source} from '../../../types/streams.ts';
 import {Subscription} from '../../../types/subscription.ts';
 import type {
@@ -13,6 +14,7 @@ import {
   iterateMessages,
   listLogSegments,
 } from './archive-reader.ts';
+import type {SegmentMessage} from './segment-format.ts';
 
 export type ArchiveChangeSourceOptions = {
   store: ObjectStore;
@@ -26,6 +28,11 @@ export type ArchiveChangeSourceOptions = {
   pollIntervalMs: number;
   /** Directory for segment download temp files. */
   tempDir: string;
+  /**
+   * Invoked after each stream data message is consumed by the subscriber —
+   * the base producer's hook for its apply-rate and apply-lag measurements.
+   */
+  onDeliver?: ((message: SegmentMessage) => void) | undefined;
   /** Overridable for tests. */
   setTimeoutFn?: typeof setTimeout | undefined;
 };
@@ -61,18 +68,43 @@ export class ArchiveChangeSource implements ChangeStreamer {
   readonly #opts: ArchiveChangeSourceOptions;
   readonly #setTimeout: typeof setTimeout;
 
+  #holdRequested = false;
+  #hold: Resolver<boolean> | undefined;
+
   constructor(lc: LogContext, opts: ArchiveChangeSourceOptions) {
     this.#lc = lc.withContext('component', 'archive-change-source');
     this.#opts = opts;
     this.#setTimeout = opts.setTimeoutFn ?? setTimeout;
   }
 
+  /**
+   * The pause-at-boundary half of the base producer's freeze: asks the
+   * stream to stop delivering at the next transaction boundary (or right
+   * away if it is idle at one) and to stay parked. Resolves `true` once the
+   * subscriber has consumed everything up to that boundary — the applier's
+   * file is then at a commit boundary and safe to freeze once its
+   * connection closes — or `false` if the stream ended first, in which case
+   * the applier's state is unknown and the caller must discard-and-rebuild
+   * rather than publish.
+   */
+  holdAtBoundary(): Promise<boolean> {
+    this.#holdRequested = true;
+    this.#hold ??= resolver();
+    return this.#hold.promise;
+  }
+
   subscribe(ctx: SubscriberContext): Promise<Source<SerializedDownstream>> {
     const sub = Subscription.create<SerializedDownstream>();
-    void this.#stream(ctx, sub).catch(e => {
-      this.#lc.warn?.(`archive subscription for ${ctx.id} failed`, e);
-      sub.fail(e instanceof Error ? e : new Error(String(e)));
-    });
+    void this.#stream(ctx, sub)
+      .catch(e => {
+        this.#lc.warn?.(`archive subscription for ${ctx.id} failed`, e);
+        sub.fail(e instanceof Error ? e : new Error(String(e)));
+      })
+      .finally(() => {
+        // A caller awaiting the boundary must not hang on a dead stream;
+        // resolving false tells it the applier's state is unknown.
+        this.#hold?.resolve(false);
+      });
     return Promise.resolve(sub);
   }
 
@@ -119,10 +151,13 @@ export class ArchiveChangeSource implements ChangeStreamer {
       }
       const head = contiguousHeadFrom(segments, cursor);
       if (head === cursor) {
+        if (await this.#parkIfHeld(sub)) {
+          return;
+        }
         await this.#sleep(pollIntervalMs, sub);
         continue;
       }
-      for await (const {message, json} of iterateMessages(
+      for await (const item of iterateMessages(
         store,
         replicaVersion,
         cursor,
@@ -132,10 +167,34 @@ export class ArchiveChangeSource implements ChangeStreamer {
         if (!sub.active) {
           return;
         }
-        await sub.push({data: message, json}).result;
+        if (item.message[0] === 'begin' && (await this.#parkIfHeld(sub))) {
+          return;
+        }
+        await sub.push({data: item.message, json: item.json}).result;
+        this.#opts.onDeliver?.(item);
       }
       cursor = head;
     }
+  }
+
+  /**
+   * At a transaction boundary with a hold requested: everything pushed so
+   * far has been consumed (pushes await consumption), so resolve the hold
+   * and park until the subscription is torn down. Returns true if parked.
+   */
+  async #parkIfHeld(sub: Subscription<SerializedDownstream>): Promise<boolean> {
+    if (!this.#holdRequested) {
+      return false;
+    }
+    this.#hold?.resolve(true);
+    await new Promise<void>(resolve => {
+      if (sub.signal.aborted) {
+        resolve();
+      } else {
+        sub.signal.addEventListener('abort', () => resolve(), {once: true});
+      }
+    });
+    return true;
   }
 
   #sleep(ms: number, sub: Subscription<SerializedDownstream>): Promise<void> {

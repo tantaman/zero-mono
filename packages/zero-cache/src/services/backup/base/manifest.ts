@@ -41,6 +41,15 @@ const baseManifestSchema = v.object({
   /** In offset order: chunk `i` occupies `[i * chunkBytes, ...)`. */
   chunks: v.array(baseChunkSchema),
   completedAt: v.number(),
+
+  // Additive metadata (absent from the earliest manifests): what a restorer
+  // or drill tool needs to judge compatibility without opening the file.
+  /** The SQLite page size of the base file. */
+  pageSize: v.number().optional(),
+  /** The replica schema version the applier had migrated the file to. */
+  replicaSchemaVersion: v.number().optional(),
+  /** The archive log segment format version in use when this base froze. */
+  logFormatVersion: v.number().optional(),
 });
 
 export type BaseManifest = v.Infer<typeof baseManifestSchema>;
