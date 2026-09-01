@@ -10,7 +10,6 @@ import {
 } from '../../../../shared/src/bigint-json.ts';
 import {Queue} from '../../../../shared/src/queue.ts';
 import {promiseVoid} from '../../../../shared/src/resolved-promises.ts';
-import * as v from '../../../../shared/src/valita.ts';
 import * as Mode from '../../db/mode-enum.ts';
 import {runTx} from '../../db/run-transaction.ts';
 import {sharedSnapshot, TransactionPool} from '../../db/transaction-pool.ts';
@@ -18,7 +17,6 @@ import {type PostgresDB, type PostgresTransaction} from '../../types/pg.ts';
 import {cdcSchema, type ShardID} from '../../types/shards.ts';
 import {orTimeout} from '../../types/timeout.ts';
 import {
-  backfillRequestSchema,
   isDataChange,
   isSchemaChange,
   type BackfillID,
@@ -26,7 +24,6 @@ import {
   type Change,
   type DataChange,
   type Identifier,
-  type SchemaChange,
   type TableMetadata,
 } from '../change-source/protocol/current.ts';
 import {
@@ -35,7 +32,9 @@ import {
 } from '../change-source/protocol/current/downstream.ts';
 import type {UpstreamStatusMessage} from '../change-source/protocol/current/status.ts';
 import {
+  backfillRequestsFrom,
   cookieOps,
+  parseMark,
   type BackfillCookie,
   type CookieOp,
   type CookieSet,
@@ -78,6 +77,10 @@ type QueueEntry =
       watermark: string,
       json: string,
       orig: Exclude<Change, DataChange> | null, // null for DataChanges
+      // The change's cookie ops, folded at enqueue time so that the one
+      // DataChange that carries cookie state — a `backfill` batch, whose mark
+      // is a single row key — need not retain the batch of rows it arrived in.
+      folded: CookieOp[] | undefined,
     ]
   | ['ready', callback: () => void]
   | ['subscriber', SubscriberAndMode]
@@ -100,8 +103,6 @@ type PendingTransaction = {
 type ReplicationOwner = {
   owner: string | null;
 };
-
-const backfillRequestsSchema = v.array(backfillRequestSchema);
 
 export type TuningOptions = {
   backPressureLimitHeapProportion: number;
@@ -303,17 +304,21 @@ export class Storer implements Service {
    * with a watermark it was not folded to loses every backfill that completed
    * in the interval, and those rows are not replayable from the slot.
    *
-   * `cookies` is not `backfillRequests` in another shape. The request list is
+   * `cookies` is not `backfillRequests` in another shape: the request list is
    * driven off `backfilling`, so it drops the metadata of every table with no
    * in-flight backfill — correct for starting a stream, lossy as the cookie
-   * snapshot that the SQLite change log continues folding onto.
+   * snapshot that the SQLite change log continues folding onto. It is, however,
+   * *derived* from the cookies, by the same {@link backfillRequestsFrom} the
+   * SQLite change log uses. Building the requests here in SQL instead would be
+   * a second implementation of which backfills resume and from where, in the
+   * one place where the two stores must agree exactly.
    */
   async getStartStreamInitializationParameters(): Promise<{
     lastWatermark: string;
     backfillRequests: BackfillRequest[];
     cookies: CookieSet;
   }> {
-    const [[{lastWatermark}], result, tableMetadata, backfilling] =
+    const [[{lastWatermark}], tableMetadata, backfilling] =
       await this.#withTimeout(
         'get-stream-params',
         runTx(
@@ -321,24 +326,6 @@ export class Storer implements Service {
           sql => [
             sql<{lastWatermark: string}[]>`
         SELECT "lastWatermark" FROM ${this.#cdc('replicationState')}`,
-
-            // Formats a BackfillRequest using json_object_agg() to construct the
-            // `columns` object. It is LEFT JOIN'ed with the `tableMetadata` table
-            // to make it optional and possibly `null`.
-            sql`
-        SELECT
-            json_build_object(
-              'schema', b."schema",
-              'name', b."table",
-              'metadata', t."metadata"
-            ) as "table",
-            json_object_agg(b."column", b."backfill")
-              as "columns"
-          FROM ${this.#cdc('backfilling')} as b
-          LEFT JOIN ${this.#cdc('tableMetadata')} as t
-          ON (b."schema" = t."schema" AND b."table" = t."table")
-          GROUP BY b."schema", b."table", t."metadata"
-        `,
 
             // Ordered by primary key, so that this set and the SQLite change log's
             // can be compared row for row. `COLLATE "C"` because that comparison is
@@ -350,21 +337,30 @@ export class Storer implements Service {
         SELECT "schema", "table", "metadata" FROM ${this.#cdc('tableMetadata')}
           ORDER BY "schema" COLLATE "C", "table" COLLATE "C"`,
 
-            sql<BackfillCookie[]>`
-        SELECT "schema", "table", "column", "backfill" FROM ${this.#cdc('backfilling')}
+            sql<
+              (Omit<BackfillCookie, 'resumeAfter'> & {
+                resumeAfter: string | null;
+              })[]
+            >`
+        SELECT "schema", "table", "column", "backfill", "resumeAfter"
+          FROM ${this.#cdc('backfilling')}
           ORDER BY "schema" COLLATE "C", "table" COLLATE "C", "column" COLLATE "C"`,
           ],
           {mode: Mode.READONLY},
         ),
       );
 
+    const cookies: CookieSet = {
+      tableMetadata: [...tableMetadata],
+      backfilling: backfilling.map(c => ({
+        ...c,
+        resumeAfter: parseMark(c.resumeAfter),
+      })),
+    };
     return {
       lastWatermark,
-      backfillRequests: v.parse(result, backfillRequestsSchema),
-      cookies: {
-        tableMetadata: [...tableMetadata],
-        backfilling: [...backfilling],
-      },
+      backfillRequests: backfillRequestsFrom(cookies),
+      cookies,
     };
   }
 
@@ -501,6 +497,9 @@ export class Storer implements Service {
       watermark,
       json,
       isDataChange(change) ? null : change, // drop DataChanges to save memory
+      isSchemaChange(change) || change.tag === 'backfill'
+        ? cookieOps(change)
+        : undefined,
     ]);
 
     return json;
@@ -703,7 +702,7 @@ export class Storer implements Service {
           }
         }
         // msgType === 'change'
-        const [_, watermark, json, change] = msg;
+        const [_, watermark, json, change, folded] = msg;
         const tag = change?.tag;
         this.#approximateQueuedBytes -= json.length;
 
@@ -748,16 +747,22 @@ export class Storer implements Service {
           change: extractChangeSubstring(json, tag),
         };
 
-        if (change !== null && isSchemaChange(change)) {
-          // Schema changes carry backfill / table-metadata statements that
-          // must be applied in stream order relative to the changeLog rows.
-          // Flush any buffered rows first, then write this row together with
-          // its metadata statements as a single unit (preserving the previous
-          // per-change ordering for schema changes).
+        if (folded !== undefined) {
+          // Schema changes carry backfill / table-metadata statements, and a
+          // backfill batch carries the progress mark that lets an interrupted
+          // backfill resume after it. Both must be applied in stream order
+          // relative to the changeLog rows: flush any buffered rows first, then
+          // write this row together with its cookie statements as a single unit
+          // (preserving the previous per-change ordering for schema changes).
+          //
+          // Marking per batch costs one statement per backfill message, which
+          // carries a COPY chunk's worth of rows — the flush it forces would
+          // have had a batch of one to write anyway, since a backfill
+          // transaction is batches all the way down.
           await this.#flushChangeLog(tx);
           tx.lastFlush = tx.pool.process(sql => [
             sql`INSERT INTO ${this.#cdc('changeLog')} ${sql(entry)}`,
-            ...this.#trackBackfillMetadata(sql, change),
+            ...folded.flatMap(op => this.#cookieStmts(sql, op)),
           ]);
         } else {
           // Accumulate plain changeLog rows (begin, data changes, commit) and
@@ -1022,20 +1027,15 @@ export class Storer implements Service {
   }
 
   /**
-   * Returns the db statements necessary to track backfill and table metadata
-   * presented in the `change`, if any.
+   * Returns the db statements that carry out one cookie op.
    *
    * This is the Postgres interpreter of {@link cookieOps}, which is also
-   * interpreted against the SQLite change log by `ChangeLogCookieWriter`. The
-   * two stores have to agree on every transition forever, and the failure mode
-   * if they drift is a backfill that is silently never re-requested — so the
-   * decision of what a schema change *means* lives in one place and only its
-   * transport lives here.
+   * interpreted against the SQLite change log by `ChangeLogCookieWriter` and
+   * against the replica by `BackfillingTracker`. The three stores have to agree
+   * on every transition forever, and the failure mode if they drift is a
+   * backfill that is silently never re-requested — so the decision of what a
+   * change *means* lives in one place and only its transport lives here.
    */
-  #trackBackfillMetadata(sql: PostgresTransaction, change: SchemaChange) {
-    return cookieOps(change).flatMap(op => this.#cookieStmts(sql, op));
-  }
-
   #cookieStmts(sql: PostgresTransaction, op: CookieOp): PendingQuery<Row[]>[] {
     switch (op.op) {
       case 'upsert-metadata':
@@ -1091,6 +1091,19 @@ export class Storer implements Service {
         ];
       }
 
+      case 'advance-backfill': {
+        const {schema, name: table} = op.table;
+        // A column with no row here — one whose backfill finished or was
+        // dropped earlier in this same transaction — updates nothing, which is
+        // what should happen.
+        return [
+          sql`UPDATE ${this.#cdc('backfilling')}
+                SET "resumeAfter" = ${BigIntJSON.stringify(op.resumeAfter)}
+                WHERE "schema" = ${schema} AND "table" = ${table}
+                  AND "column" IN ${sql([...op.columns])}`,
+        ];
+      }
+
       default:
         unreachable(op);
     }
@@ -1115,11 +1128,13 @@ export class Storer implements Service {
     column: string,
     backfill: BackfillID,
   ) {
+    // `resumeAfter` is left out of the insert and reset by the update: a
+    // (re)started backfill has no progress yet.
     const row: BackfillingColumn = {schema, table, column, backfill};
     return sql`
         INSERT INTO ${this.#cdc('backfilling')} ${sql(row)}
           ON CONFLICT ("schema", "table", "column")
-          DO UPDATE SET ${sql(row)};
+          DO UPDATE SET ${sql(row)}, "resumeAfter" = NULL;
     `;
   }
 

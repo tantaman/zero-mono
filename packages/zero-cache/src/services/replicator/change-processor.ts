@@ -903,7 +903,8 @@ class TransactionProcessor {
     this.#reloadTableSpecs();
   }
 
-  processBackfill({relation, watermark, columns, rowValues}: MessageBackfill) {
+  processBackfill(msg: MessageBackfill) {
+    const {relation, watermark, columns, rowValues} = msg;
     const tableName = liteTableName(relation);
     const tableSpec = must(this.#tableSpecs.get(tableName));
     const rowKeyCols = relation.rowKey.columns;
@@ -953,6 +954,11 @@ class TransactionProcessor {
       );
       backfilled++;
     }
+
+    // The progress mark advances over every row of the batch, including the
+    // ones skipped above: a skip means the replica already holds something
+    // newer for that row, not that the row still has to be backfilled.
+    this.#backfilling.apply(msg);
 
     this.#lc.debug?.(
       `backfilled ${backfilled} rows (skipped ${skipped}) into ${tableName}`,

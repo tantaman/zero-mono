@@ -82,6 +82,13 @@ export class BackfillResumeUnsupportedError extends Error {
   readonly name = 'BackfillResumeUnsupportedError';
 }
 
+/**
+ * One value of a resume row key. Tied to the protocol field it comes from so
+ * that the two cannot drift: these are `backfill.rowValues` entries that made a
+ * round trip through the change log, bigints included.
+ */
+type KeyValue = NonNullable<BackfillRequest['resumeAfter']>[number];
+
 // Text-family types are ordered with COLLATE "C" so that the emission order
 // (and any resume point derived from it) is bytewise and thus stable across
 // locale settings and glibc/ICU collation changes. Non-collatable types
@@ -103,7 +110,7 @@ const COLLATABLE_TYPE_RE =
 export function backfillCursor(
   table: PublishedTableSpec,
   keyColumns: readonly string[],
-  resumeAfter?: readonly JSONValue[] | undefined,
+  resumeAfter?: readonly KeyValue[] | undefined,
 ): DownloadCursor | undefined {
   if (keyColumns.length === 0) {
     if (resumeAfter !== undefined) {
@@ -138,7 +145,7 @@ export function backfillCursor(
   };
 }
 
-function keyValueLiteral(val: JSONValue): string {
+function keyValueLiteral(val: KeyValue): string {
   switch (typeof val) {
     case 'string':
       // E'...' literals with doubled backslashes and quotes are safe
@@ -149,6 +156,10 @@ function keyValueLiteral(val: JSONValue): string {
         return String(val);
       }
       break;
+    // An `int8` key arrives as a bigint, which is the common case for a
+    // resumable table: without it every such backfill would restart.
+    case 'bigint':
+      return String(val);
     case 'boolean':
       return val ? 'true' : 'false';
   }

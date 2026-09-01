@@ -503,6 +503,15 @@ function streamTableExists(db: Database): boolean {
  * again here means an ordering or key-order regression can never be reported as
  * a divergence, which is a class of false alert that would cost more than it
  * caught.
+ *
+ * The backfill progress mark is deliberately left out. Unlike the rest of the
+ * set it is not a fact the stores must agree on: the replica trails the log, so
+ * its mark is legitimately older, and catching it up would mean folding the
+ * `backfill` batches in between — parsing megabytes of row data to check a
+ * hint. And it is only a hint. A mark that is stale, or missing, or rolled back
+ * with a reseed costs one restart of a backfill that is idempotent anyway,
+ * where a `backfilling` row that the stores disagree about is a backfill that
+ * never happens. Only the second one is worth an alert.
  */
 function canonicalizeCookies(cookies: CookieSet): string {
   return BigIntJSON.stringify({

@@ -1,10 +1,10 @@
+import {jsonValueSchema} from '../../../../../../shared/src/bigint-json.ts';
 import * as v from '../../../../../../shared/src/valita.ts';
 import {
   backfillIDSchema,
   identifierSchema,
   tableMetadataSchema,
 } from './data.ts';
-import {jsonValueSchema} from './json.ts';
 import {upstreamStatusMessageSchema} from './status.ts';
 
 /** At the moment, the only upstream messages are status messages.  */

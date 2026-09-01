@@ -115,6 +115,12 @@ export function createBackfillTables(shard: ShardID) {
     "table" TEXT NOT NULL,
     "column" TEXT NOT NULL,
     "backfill" JSONB NOT NULL,
+    -- TEXT, not JSONB, unlike every other cookie document: this one is read
+    -- back into a comparison against upstream row keys, and an int8 key larger
+    -- than 2^53 does not survive a round trip through jsonb's JS
+    -- representation. Held as the BigIntJSON text that the other two stores
+    -- hold, which is also what makes the three sets comparable as written.
+    "resumeAfter" TEXT,
     PRIMARY KEY("schema", "table", "column")
   );
   `;
@@ -132,6 +138,12 @@ export type BackfillingColumn = {
   column: string;
   backfill: BackfillID;
 };
+
+export function addBackfillResumeAfter(shard: ShardID) {
+  return /*sql*/ `
+  ALTER TABLE ${schema(shard)}."backfilling" ADD "resumeAfter" TEXT;
+  `;
+}
 
 function createTables(shard: ShardID) {
   return (

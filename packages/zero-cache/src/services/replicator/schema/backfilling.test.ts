@@ -48,8 +48,20 @@ describe('replicator/schema/backfilling', () => {
       });
 
       expectBackfilling([
-        {schema: 'my', table: 'foo', column: 'a', backfill: '{"fooID":987}'},
-        {schema: 'my', table: 'foo', column: 'b', backfill: '{"fooID":843}'},
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'a',
+          backfill: '{"fooID":987}',
+          resumeAfter: null,
+        },
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'b',
+          backfill: '{"fooID":843}',
+          resumeAfter: null,
+        },
       ]);
     });
 
@@ -106,7 +118,13 @@ describe('replicator/schema/backfilling', () => {
         },
       );
       expectBackfilling([
-        {schema: 'my', table: 'foo', column: 'a', backfill: '{"fooID":1}'},
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'a',
+          backfill: '{"fooID":1}',
+          resumeAfter: null,
+        },
       ]);
 
       apply({
@@ -116,7 +134,13 @@ describe('replicator/schema/backfilling', () => {
         new: {name: 'z', spec: {pos: 1, dataType: 'int4'}},
       });
       expectBackfilling([
-        {schema: 'my', table: 'foo', column: 'z', backfill: '{"fooID":1}'},
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'z',
+          backfill: '{"fooID":1}',
+          resumeAfter: null,
+        },
       ]);
     });
 
@@ -144,13 +168,26 @@ describe('replicator/schema/backfilling', () => {
           table: 'foo',
           column: 'a',
           backfill: '{"fooID":1}',
+          resumeAfter: null,
         },
-        {schema: 'your', table: 'bar', column: 'c', backfill: '{"fooID":2}'},
+        {
+          schema: 'your',
+          table: 'bar',
+          column: 'c',
+          backfill: '{"fooID":2}',
+          resumeAfter: null,
+        },
       ]);
 
       apply({tag: 'drop-table', id: {schema: 'renamed', name: 'foo'}});
       expectBackfilling([
-        {schema: 'your', table: 'bar', column: 'c', backfill: '{"fooID":2}'},
+        {
+          schema: 'your',
+          table: 'bar',
+          column: 'c',
+          backfill: '{"fooID":2}',
+          resumeAfter: null,
+        },
       ]);
     });
 
@@ -167,8 +204,20 @@ describe('replicator/schema/backfilling', () => {
         column: 'b',
       });
       expectBackfilling([
-        {schema: 'my', table: 'foo', column: 'a', backfill: '{"fooID":1}'},
-        {schema: 'my', table: 'foo', column: 'id', backfill: '{"fooID":0}'},
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'a',
+          backfill: '{"fooID":1}',
+          resumeAfter: null,
+        },
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'id',
+          backfill: '{"fooID":0}',
+          resumeAfter: null,
+        },
       ]);
 
       // The rowKey columns are excluded from `columns` but are backfilled with
@@ -294,6 +343,7 @@ describe('replicator/schema/backfilling', () => {
           table: 'foo',
           column: 'a',
           backfill: '{"fooID":1}',
+          resumeAfter: null,
         },
       ]);
     });
@@ -305,7 +355,13 @@ describe('replicator/schema/backfilling', () => {
       populateBackfillingFromColumnMetadata(lc, db);
 
       expectBackfilling([
-        {schema: 'my', table: 'foo', column: 'a', backfill: '{"fooID":1}'},
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'a',
+          backfill: '{"fooID":1}',
+          resumeAfter: null,
+        },
       ]);
     });
 
@@ -324,6 +380,7 @@ describe('replicator/schema/backfilling', () => {
           table: 'a.b',
           column: 'c',
           backfill: '{"fooID":1}',
+          resumeAfter: null,
         },
       ]);
     });
@@ -342,8 +399,15 @@ describe('replicator/schema/backfilling', () => {
           table: 'bar',
           column: 'b',
           backfill: '{"fooID":2}',
+          resumeAfter: null,
         },
-        {schema: 'my', table: 'foo', column: 'a', backfill: '{"fooID":1}'},
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'a',
+          backfill: '{"fooID":1}',
+          resumeAfter: null,
+        },
       ]);
     });
 
@@ -365,7 +429,13 @@ describe('replicator/schema/backfilling', () => {
       populateBackfillingFromColumnMetadata(lc, db);
 
       expectBackfilling([
-        {schema: 'my', table: 'foo', column: 'z', backfill: '{"fooID":9}'},
+        {
+          schema: 'my',
+          table: 'foo',
+          column: 'z',
+          backfill: '{"fooID":9}',
+          resumeAfter: null,
+        },
       ]);
     });
   });

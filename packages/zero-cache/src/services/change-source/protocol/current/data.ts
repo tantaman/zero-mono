@@ -294,6 +294,13 @@ export const backfillSchema = v.object({
   //   [...rowKeyValues, ...columnValues],  // row 2
   // ]
   // ```
+  //
+  // Rows must be emitted in ascending row-key order, across the whole backfill
+  // and not merely within a batch, with text compared bytewise. The
+  // change-streamer records the last row of each batch as the backfill's
+  // progress mark and resumes strictly after it (see the `resumeAfter` of a
+  // `BackfillRequest`), so a change source that emits rows out of order would
+  // have rows before the mark silently skipped on resumption.
   rowValues: v.array(v.array(jsonValueSchema)),
 
   // Optionally includes the progress of the backfill operation,

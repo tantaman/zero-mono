@@ -116,8 +116,9 @@ export class ChangeLogStreamWriter {
 
   /**
    * Appends one data or schema change. The parsed message is taken rather than
-   * just its tag because a schema change also mutates the cookie jar, and the
-   * caller already holds it — so the fold costs no re-parse.
+   * just its tag because a schema change — and a `backfill` batch, whose last
+   * row key is the progress mark — also mutates the cookie jar, and the caller
+   * already holds it, so the fold costs no re-parse.
    *
    * The cookie statements run here, i.e. inside this transaction and in stream
    * order relative to the rows they were folded from. The Postgres change log
@@ -143,7 +144,7 @@ export class ChangeLogStreamWriter {
     });
     this.#estimatedBytes += estimatedBytes;
 
-    if (isSchemaChange(change)) {
+    if (isSchemaChange(change) || tag === 'backfill') {
       for (const op of this.#cookies.apply(change)) {
         this.#cookieMutations.push(op.op);
       }

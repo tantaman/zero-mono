@@ -201,14 +201,36 @@ backfilled rows now reach the replica in row-key order rather than
 upstream heap order (which is what makes the last applied row a valid
 resumption point), and a table with no row key at all — no primary key
 and no replica identity index, so it is not synced anyway — gets no
-cursor and keeps the unordered download. The remaining piece — the
-durable last-emitted-PK progress mark in the cookie state and
-`backfillRequestsFrom` resuming from it — requires a coordinated
-`cookieOps` fold change across all three stores (PG `cdc.backfilling`,
-the SQLite change-log cookie state, and the replica's
-`_zero.backfilling`, the last of which bumps the replica schema version
-and therefore touches litestream deployments too) and `.pg.test.ts`
-validation; deferred to its own PR. Item 5 landed as three small changes
+cursor and keeps the unordered download.
+
+The durable progress mark then landed too, which is what makes item 4
+actually resume rather than merely be able to. The `cookieOps` fold gained
+one op, `advance-backfill`, folded from the `backfill` batch itself — the
+first _data_ change the cookie jar folds, and it is there because the mark
+has to survive a restart and only the change log can hold it. All three
+stores carry it beside the backfilling column they already held
+(`cdc.backfilling`, `_zero.changeLogBackfilling`, `_zero.backfilling`,
+bumping the change-log DB to v5 and the replica schema to v18), and
+`backfillRequestsFrom` turns it into the request's `resumeAfter`. Points
+worth keeping in mind:
+
+- A table resumes only when _every_ backfilling column agrees on the mark.
+  A column whose backfill started later has no rows before the others'
+  mark, so the table restarts — which is the only thing that populates it.
+- The mark is stored as text in Postgres rather than `jsonb`, unlike every
+  other cookie document: an `int8` key past 2^53 does not survive a round
+  trip through jsonb's JS representation, and a rounded mark is a resume on
+  the wrong row. For the same reason `keyValueLiteral` renders bigints.
+- The mark is a hint, not a fact the stores must agree on, so the
+  change-log initialization comparison ignores it. Losing one costs a
+  restart of something idempotent; losing a `backfilling` row costs a
+  column that is never populated.
+- Every change source must now emit backfill rows in row-key order across
+  the whole backfill, which `backfill.rowValues` documents. The Postgres
+  source does, by item 4; a source that did not would have rows before the
+  mark silently skipped.
+
+Item 5 landed as three small changes
 rather than new machinery: in development mode (`zero-cache-dev` sets
 `NODE_ENV=development`) an unset `--backup-archive-url` defaults to a
 `file://` store next to the replica file; a serving replicator in mode
@@ -355,6 +377,5 @@ now validated against Postgres rather than only in unit tests.
 
 What remains needs infrastructure this environment does not have: the
 scratch-stack chaos orchestration, the Flux machinery (fleet repo, M4.4),
-the flip drills (M4.5), and the follow-ups called out inline (the durable
-backfill progress mark, the fs-store CI drill, oracle layer 1 over
-producer bases).
+the flip drills (M4.5), and the follow-ups called out inline (the fs-store
+CI drill, oracle layer 1 over producer bases).
