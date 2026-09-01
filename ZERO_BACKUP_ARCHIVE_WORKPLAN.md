@@ -276,6 +276,16 @@ Exit criteria: the gateway-boot tests from the design's Testing section
    schedules), process-kill orchestration for the design's kill matrix on
    a scratch stack, PG restart/slot-churn injection; the oracle is the
    only judge.
+
+   *The wrapper is landed on this branch*: `ChaosObjectStore` applies a
+   `ChaosPolicy` (seeded-random error/lost-response/latency rates,
+   scripted outage windows, composable) to every operation, with an
+   `error-after` decision for the "upload landed, response lost" case the
+   deterministic-name retry discipline exists for, and per-run stats. A
+   ratchet test drives the archive writer to a contiguous durable head
+   through 30% upload errors + 20% lost responses. The process-kill
+   orchestration and PG restart injection on a scratch stack remain (they
+   need a running stack, which this environment cannot host).
 4. **Flux machinery** (fleet repo): the mode component/values conditional,
    pre-provisioned bucket + three-way IRSA, PrometheusRules per world,
    `prune`/`wait`/healthChecks, and the forward/rollback runbooks.
