@@ -30,16 +30,37 @@ For orientation, what already exists under
 - Oracle layer 1 (cursor-aligned determinism at every transaction
   boundary) as vitest; health gauges.
 
-Known deltas from the design, tracked below: the writer buffers in memory
-(M1), `decodeSegment` is whole-segment (M1), the manifest lacks page size
-and schema/applier versions (M2), segment headers lack commit timestamps
-(M1, with the parts change since both touch the format).
+Known deltas from the design, tracked below: the manifest lacks page size
+and schema/applier versions (M2). The M1 deltas (in-memory writer,
+whole-segment decode, missing commit timestamps) are resolved — M1 landed
+on this branch.
 
-## Milestone 1 — Streaming retrofit
+## Milestone 1 — Streaming retrofit (landed, this branch)
 
 Gate: no production flip until this lands. Everything else can proceed in
 parallel, but M2's `ArchiveChangeSource` should consume the streaming
 decoder from day one.
+
+All six items below are landed. Notable resolutions beyond the plan as
+written:
+
+- **Part naming** (item 5, resolving open question 8) embeds the spanning
+  transaction's commit watermark: interior parts are
+  `<start>-.<watermark>.NNNNNNNN.seg` and the final part is the ordinary
+  `<start>-<watermark>.seg`. The sort property is as proposed (`.` sorts
+  before every watermark character), and the embedded watermark keeps
+  retries idempotent — an abandoned chain's debris can never collide with
+  a different transaction's chain. The writer's reconcile additionally
+  deletes incomplete chains outright, so a re-sent transaction re-seals
+  cleanly even if `--backup-segment-target-bytes` changed across restarts.
+- The chain trigger is a distinct `partTargetBytes` writer option
+  defaulting to `segmentTargetBytes` (the design's single-knob behavior);
+  tests pin it independently.
+- Format version 2 covers both format changes in one bump; v1 (which
+  never left the lab) is not decodable.
+- The memory-ceiling drill (item 6) measured ~16 MB of live heap
+  archiving + replaying + restoring a 1 GiB transaction under a 192 MB
+  old-space cap, in ~22 s.
 
 1. **Object-store streaming** (S).
    `getStream(key): ReadableStream` and
