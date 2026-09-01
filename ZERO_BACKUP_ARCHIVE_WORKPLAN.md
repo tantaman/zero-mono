@@ -108,7 +108,39 @@ close`, `onDurable`) is unchanged, so the change-streamer wiring and
    `--max-old-space-size` far below the payload. This is M1's acceptance
    test and the permanent regression guard.
 
-## Milestone 2 — Base producer worker
+## Milestone 2 — Base producer worker (landed, this branch)
+
+All six items below are landed. Notable resolutions beyond the plan as
+written:
+
+- The freeze is pause-at-boundary end to end: `ArchiveChangeSource` gained
+  `holdAtBoundary()`, which parks the stream at the next transaction
+  boundary with everything before it consumed (per-message back-pressure
+  makes "consumed" mean "committed by the applier"); a hold that resolves
+  "stream died" publishes nothing and the session fails into
+  discard-and-rebuild. This is what makes `journal_mode = OFF` safe on the
+  working file.
+- Genesis (item 4) resolves open question 6 along the proposed line, with
+  the handoff as a request/response through the store (like item 5):
+  `genesis.ts` carries the offer/heartbeat protocol, and `initialSync`
+  gained a `providedSnapshot` mode (real replica, no upstream mutations —
+  the gateway owns the slot and the `replicas` record). The gateway side
+  (`awaitGenesisBase`, holding the snapshot transaction open) is consumed
+  by M3.1.
+- Item 5's chunk overlap is a prefetch cache: `requestLiveBase` downloads
+  the in-flight publication's chunks as they appear, and `archiveRestore`
+  consults the cache with unchanged verification (a stale entry costs a
+  re-download, never correctness).
+- The replay-budget estimate is a declared heuristic (compressed tail ×
+  assumed expansion / measured apply rate) for the M4 drills to calibrate.
+
+Exit-criteria status: the genesis → tail → base → unclean-kill → restore
+drill is green at the service level (in-memory store, in-process worker);
+the full fs-store subprocess drill and extending oracle layer 1 over
+producer-built bases remain, tracked with M4's kill matrix. The
+`providedSnapshot` initial-sync mode needs a `.pg.test.ts` exercising it
+against real Postgres (CI has the container infrastructure; this
+environment does not).
 
 1. **`ArchiveChangeSource`** (M). Presents the **change-streamer subscribe
    surface** (`Source<Downstream>`) from sealed segments — catchup from a
