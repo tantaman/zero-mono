@@ -101,11 +101,16 @@ function createReplica(
   data: TableData,
 ): Database {
   const db = new Database(lc, path);
-  // zero-cache's own replica pragmas (`applyChangeLogPragmas`), not just the
-  // journal mode: `synchronous` left at SQLite's FULL default would fsync every
-  // commit and the benchmark would be measuring durability policy rather than
-  // derivation. rindle's writer connection is wal2 + NORMAL to match.
-  db.pragma('auto_vacuum = INCREMENTAL');
+  // The REPLICA's pragmas — wal2, plus what `migration-lite` and `applyPragmas`
+  // leave a replica file with (`workers/replicator.ts` supplies these values).
+  // `synchronous` matters most: left at SQLite's FULL default it would fsync
+  // every commit and this benchmark would be measuring durability policy rather
+  // than derivation. rindle's writer connection is wal2 + NORMAL to match.
+  //
+  // Note for anyone extending this: do NOT reach for `applyChangeLogPragmas`.
+  // That is the CHANGE LOG database's pragma set, and its
+  // `auto_vacuum = INCREMENTAL` makes the replica throw `database is locked`
+  // the moment a pipeline's `TableSource` writes an advancement through.
   db.pragma('busy_timeout = 30000');
   db.pragma('analysis_limit = 1000');
   db.pragma('journal_mode = wal2');

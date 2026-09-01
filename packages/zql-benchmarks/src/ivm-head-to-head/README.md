@@ -2,8 +2,8 @@
 
 This directory is **Zero's half** of a cross-engine benchmark. The other half is
 [rindle](https://github.com/tantaman/rindle)'s Rust IVM engine — a port of this
-engine — and the point of the exercise is to run *the same query shapes over the
-same data through both* and see where the two diverge.
+engine — and the point of the exercise is to run _the same query shapes over the
+same data through both_ and see where the two diverge.
 
 Nothing here runs in CI or in `pnpm bench`; these are standalone scripts, driven
 from the rindle side by `tools/ivm-head-to-head.mjs` and
@@ -11,10 +11,10 @@ from the rindle side by `tools/ivm-head-to-head.mjs` and
 
 ## The two benchmarks
 
-| file | what it measures | rindle counterpart |
-|---|---|---|
-| `main.ts` | the **core engine**: hydration, per-write maintenance and held state for one query, on the `MemorySource` leaf and the `zqlite` `TableSource` leaf, in view mode (`ArrayView`) and sink mode | `rust/rindle-triangle-bench` |
-| `zero-cache-derive.ts` | the **derivation plane**: zero-cache's `PipelineDriver` keeping V registered queries fresh per replicated write | `rust/rindle-replica/examples/bench_cluster_derive.rs` |
+| file                   | what it measures                                                                                                                                                                             | rindle counterpart                                     |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `main.ts`              | the **core engine**: hydration, per-write maintenance and held state for one query, on the `MemorySource` leaf and the `zqlite` `TableSource` leaf, in view mode (`ArrayView`) and sink mode | `rust/rindle-triangle-bench`                           |
+| `zero-cache-derive.ts` | the **derivation plane**: zero-cache's `PipelineDriver` keeping V registered queries fresh per replicated write                                                                              | `rust/rindle-replica/examples/bench_cluster_derive.rs` |
 
 ## Running it
 
@@ -48,7 +48,7 @@ identically: `CHINOOK_SQL`, `TRIANGLE_SCALES`, `TRIANGLE_W`,
 The loader, the scaling, the SQLite schema and indexes, the timing estimator
 (~150 ms warmup, then the min ns/op over rounds), the write stream and the
 labelled push cases are all ports of the rindle harness — the two are meant to
-be diffed line for line. Divergences that are *deliberate* are called out in the
+be diffed line for line. Divergences that are _deliberate_ are called out in the
 file that owns them:
 
 - **`count` is absent.** Zero's ZQL has no aggregation operator, so rindle's
