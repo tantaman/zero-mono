@@ -168,8 +168,17 @@ export default async function runWorker(
 
   const syncers: Worker[] = [];
   if (numSyncers) {
+    // `serving-copy` copies the local change-streamer's replica file, which
+    // only exists in backup mode `litestream`; in mode `archive` the local
+    // change-streamer is a gateway with no replica, and the serving replica
+    // is restored from the archive instead (a lingering
+    // --litestream-backup-url must not change that).
     const mode: ReplicaFileMode =
-      runChangeStreamer && litestream.backupURL ? 'serving-copy' : 'serving';
+      runChangeStreamer &&
+      litestream.backupURL &&
+      config.backup.mode !== 'archive'
+        ? 'serving-copy'
+        : 'serving';
     const {promise: replicaReady, resolve} = resolver();
     const replicator = loadWorker(
       REPLICATOR_URL,

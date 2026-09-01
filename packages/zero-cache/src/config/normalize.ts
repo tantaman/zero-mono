@@ -1,4 +1,5 @@
 import {availableParallelism} from 'node:os';
+import {pathToFileURL} from 'node:url';
 import type {LogContext} from '@rocicorp/logger';
 import {nanoid} from 'nanoid';
 import {assert, assertNotUndefined} from '../../../shared/src/asserts.ts';
@@ -214,6 +215,21 @@ export function normalizeZeroConfig(
   if (!config.cvr.db) {
     config.cvr.db = config.upstream.db;
     env['ZERO_CVR_DB'] = config.upstream.db;
+  }
+
+  if (
+    config.backup.mode === 'archive' &&
+    !config.backup.archiveURL &&
+    isDevelopmentMode()
+  ) {
+    // Single-node development (`zero-cache-dev`): default the archive to a
+    // file:// store next to the replica file, so mode `archive` runs without
+    // any object-store configuration. Production deployments must configure
+    // the URL explicitly (assertNormalized enforces this).
+    const url = pathToFileURL(`${config.replica.file}-archive`).href;
+    config.backup.archiveURL = url;
+    env['ZERO_BACKUP_ARCHIVE_URL'] = url;
+    lc.info?.(`backup mode archive: defaulting --backup-archive-url to ${url}`);
   }
 
   if (!config.keepaliveTimeoutMs && isRunningInECS()) {

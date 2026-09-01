@@ -203,7 +203,17 @@ durable last-emitted-PK progress mark in the cookie state and
 the SQLite change-log cookie state, and the replica's
 `_zero.backfilling`, the last of which bumps the replica schema version
 and therefore touches litestream deployments too) and `.pg.test.ts`
-validation; deferred to its own PR. Item 5 remains.
+validation; deferred to its own PR. Item 5 landed as three small changes
+rather than new machinery: in development mode (`zero-cache-dev` sets
+`NODE_ENV=development`) an unset `--backup-archive-url` defaults to a
+`file://` store next to the replica file; a serving replicator in mode
+`archive` restores from the archive even when the change-streamer is
+local (the local gateway owns no replica file — the in-process base
+producer publishes the first base and the restore picks it up); and the
+dispatcher never selects `serving-copy` in mode `archive` (there is no
+local replica to copy, whatever `--litestream-backup-url` says). The
+single-node process tree was already wired: `main.ts` loads the base
+producer whenever the task runs the change-streamer in mode `archive`.
 
 1. **Gateway initialization** (L). In mode `archive`,
    `initializePostgresChangeSource` neither restores nor initial-syncs:

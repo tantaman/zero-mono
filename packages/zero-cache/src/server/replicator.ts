@@ -87,14 +87,18 @@ export default async function runWorker(
   // Remote view-syncers restore from the replication-manager, which supplies
   // the backup URL (and, in backup mode `archive`, the format — no
   // litestream executable is involved in an archive restore).
-  // A local change-streamer owns the canonical replica and must not infer
-  // backup configuration from bundled executable paths.
+  // A local change-streamer owns the canonical replica in mode `litestream`
+  // and must not infer backup configuration from bundled executable paths.
+  // In mode `archive`, however, a local change-streamer is a gateway that
+  // owns no replica file, so the serving replica is restored from the
+  // archive exactly as on a remote view-syncer (this is what makes
+  // single-node / `zero-cache-dev` work: the base producer publishes the
+  // first base and this restore picks it up).
   if (
     fileMode === 'serving' &&
-    !runningLocalChangeStreamer &&
-    (config.litestream.executable ||
-      config.litestream.executableV5 ||
-      config.backup.mode === 'archive')
+    (config.backup.mode === 'archive' ||
+      (!runningLocalChangeStreamer &&
+        (config.litestream.executable || config.litestream.executableV5)))
   ) {
     await restoreReplica(lc, config);
   }

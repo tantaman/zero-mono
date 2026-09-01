@@ -1,5 +1,10 @@
-import {describe, expect, test} from 'vitest';
-import {assertNormalized, runsChangeStreamer} from './normalize.ts';
+import {afterEach, describe, expect, test, vi} from 'vitest';
+import {createSilentLogContext} from '../../../shared/src/logging-test-utils.ts';
+import {
+  assertNormalized,
+  normalizeZeroConfig,
+  runsChangeStreamer,
+} from './normalize.ts';
 import type {ZeroConfig} from './zero-config.ts';
 
 function configWith(litestream: Partial<ZeroConfig['litestream']>): ZeroConfig {
@@ -274,6 +279,63 @@ describe('config/normalize backup archive mode', () => {
         'must be a positive number',
       );
     }
+  });
+});
+
+describe('config/normalize dev archive URL default', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function archiveModeConfig(): ZeroConfig {
+    const config = configWith({});
+    config.backup.mode = 'archive';
+    return Object.assign(config, {
+      port: 4848,
+      replica: {file: '/tmp/dev-replica.db'},
+      upstream: {db: 'postgres:///up'},
+    }) as ZeroConfig;
+  }
+
+  test('development mode defaults the archive URL to a file:// store', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const env: NodeJS.ProcessEnv = {};
+    const config = archiveModeConfig();
+    normalizeZeroConfig(createSilentLogContext(), config, env);
+    expect(config.backup.archiveURL).toBe('file:///tmp/dev-replica.db-archive');
+    expect(env['ZERO_BACKUP_ARCHIVE_URL']).toBe(
+      'file:///tmp/dev-replica.db-archive',
+    );
+    expect(() => assertNormalized(config)).not.toThrow();
+  });
+
+  test('production mode does not default the archive URL', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const env: NodeJS.ProcessEnv = {};
+    const config = archiveModeConfig();
+    normalizeZeroConfig(createSilentLogContext(), config, env);
+    expect(config.backup.archiveURL).toBeUndefined();
+    expect(env['ZERO_BACKUP_ARCHIVE_URL']).toBeUndefined();
+  });
+
+  test('an explicit archive URL is preserved', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const env: NodeJS.ProcessEnv = {};
+    const config = archiveModeConfig();
+    config.backup.archiveURL = 's3://bucket/archive';
+    normalizeZeroConfig(createSilentLogContext(), config, env);
+    expect(config.backup.archiveURL).toBe('s3://bucket/archive');
+    expect(env['ZERO_BACKUP_ARCHIVE_URL']).toBeUndefined();
+  });
+
+  test('litestream mode never defaults the archive URL', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const env: NodeJS.ProcessEnv = {};
+    const config = archiveModeConfig();
+    config.backup.mode = 'litestream';
+    normalizeZeroConfig(createSilentLogContext(), config, env);
+    expect(config.backup.archiveURL).toBeUndefined();
+    expect(env['ZERO_BACKUP_ARCHIVE_URL']).toBeUndefined();
   });
 });
 
