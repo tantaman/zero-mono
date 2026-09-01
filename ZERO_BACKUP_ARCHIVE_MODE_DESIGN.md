@@ -31,6 +31,37 @@ tracked stores (`UpstreamAcker`), and restore is already behind a small result
 contract that a second implementation can slot into. The new system is ~90%
 additive code in a new directory, touching existing code at six bounded seams.
 
+## Goals
+
+This replaces the existing replication-manager + replica setup outright. The
+end system is:
+
+1. **S3 logical logs.** The committed change stream, archived as sealed,
+   checksummed segments; the durable artifact of record.
+2. **Daily bases.** The backup producer publishes a SQLite base roughly once
+   a day; everything between bases is served by the log. The tail-replay
+   budget can trigger a base early, but the steady-state cadence is daily.
+3. **Log GC.** Retention is bases-plus-covering-logs with a PITR window;
+   segments at or below the oldest retained base's cursor are collected.
+4. **Speedy recovery.** A view-syncer that needs a replica receives a fresh
+   base concurrently copied from the producer's live file (the accelerated
+   live-base restore) rather than replaying up to a day of tail — restore
+   latency is bounded by copy bandwidth, not by base age.
+5. **Initial sync through S3.** Postgres is table-copied once per lineage —
+   by the producer — and every other node syncs from S3. No fleet-sized
+   fan-in on the upstream database, ever.
+
+Two cross-cutting constraints shape every mechanism below:
+
+- **Streaming, low resident memory.** No component may hold a transaction —
+  or any unbounded section of the stream — in memory. Bounded buffers, disk
+  spools, and streaming codecs everywhere. See "Streaming and memory
+  discipline".
+- **A path to pgoutput protocol v2.** Nothing may assume a transaction
+  arrives contiguously, or fits anywhere but disk before its commit: v2
+  streams large in-progress transactions in interleaved chunks. See "Toward
+  logical replication protocol v2".
+
 ## The end state: a gateway replication-manager
 
 The replication-manager's replica exists today because Litestream needs a
@@ -48,10 +79,10 @@ startup. Its durable state is the change DB, the change logs, and the archive.
 **The backup producer is the only component that materializes SQLite.** At
 lineage genesis it performs initial sync and publishes the result as the first
 base (per the Initial Sync and Base Bootstrap companion); thereafter it tails
-the archive through the real apply path and publishes bases on the
-replay-budget cadence. Its own recovery is a restore of its own newest base
-(discard-and-rebuild), so even the producer's working file is
-producer-derived.
+the archive through the real apply path and publishes bases on the daily
+cadence (with the tail-replay budget as an early trigger). Its own recovery is
+a restore of its own newest base (discard-and-rebuild), so even the producer's
+working file is producer-derived.
 
 **Every other replica is a restore of a producer base.** View-syncers restore
 base + tail and then catch up live over their subscription, exactly as they
@@ -100,6 +131,59 @@ replica and litestream as a safety net; retiring the replica is the final
 transition, taken only after the producer has been the sole source of
 restores through a full soak period.
 
+## Streaming and memory discipline
+
+The rule: resident memory is O(bounded buffer) — never O(transaction),
+O(segment), or O(base). A bulk `UPDATE` touching every row of the largest
+table must flow through the gateway, the archive, the producer, and a
+restoring consumer without any of them growing their heap. Per component:
+
+**Archive writer: spool, don't buffer.** The in-stream writer appends each
+message's JSON to a local disk spool through a streaming zstd encoder as the
+message arrives, and tracks the spool offset of the last committed
+transaction. A rollback or interrupted stream truncates the spool back to
+that offset; memory holds the compression window and offset bookkeeping,
+nothing proportional to the transaction. Sealing finalizes the spool file
+(checksum computed over it in a streaming pass) and hands it to the uploader,
+which streams it to the store — multipart above the part threshold — without
+loading it. The durable cursor still advances only at fully-uploaded commits,
+so ACK semantics are unchanged. _The current `archive-writer.ts` buffers the
+open segment and the upload queue in memory, bounded only by back-pressure /
+fail-soft; replacing that with the spool is required work, tracked in the
+delivery sequence._
+
+**Transactions larger than a segment: parts.** A segment normally seals at a
+commit boundary, but a transaction larger than the target size must not force
+an unbounded segment. A transaction may therefore span segments: interior
+parts end mid-transaction, the part chain is part of the continuity check,
+and only the part carrying the `commit` advances the durable cursor — so a
+crash mid-chain re-sends the whole transaction, exactly as an unsealed
+segment would today. (Exact part naming is an open question below.)
+
+**Archive reader and applier: stream the replay.** Tail replay and the
+producer's `ArchiveChangeSource` stream a segment body (streaming/ranged GET)
+through a streaming zstd decoder, parse one message line at a time, and feed
+`ChangeProcessor` — which already applies message-by-message inside a single
+SQLite transaction. At no point is a whole segment or transaction resident.
+_The current `decodeSegment` buffers and fully parses a segment; it remains
+the right tool for verification tooling, but the replay path needs a
+streaming counterpart._
+
+**Bases: already streaming.** The publisher reads fixed-size chunks through
+one reusable buffer and hashes incrementally; restore downloads chunks with
+bounded concurrency to fixed offsets. Memory is O(chunkBytes × concurrency)
+on both sides, independent of base size.
+
+**Object store: grow streaming reads and writes.** The minimal interface
+gains `getStream`/`putStream` (S3: streaming body / multipart upload; fs:
+file streams) for segment upload and replay; whole-object `get`/`put` remain
+for manifests and pointers, which are small by construction.
+
+**The gateway itself is already streaming.** The change-streamer forwards
+message-by-message with flow control and the storer batches boundedly;
+nothing in this design may regress that by inserting a transaction-sized
+buffer into its loop.
+
 ## The mode flag
 
 A new `backup` option group in `packages/zero-cache/src/config/zero-config.ts`,
@@ -120,8 +204,8 @@ backup: {
   segmentSealIntervalSeconds,  // the time-based seal; bounds archive RPO
 
   base: {
-    maxReplaySeconds,          // primary trigger: tail-replay budget
-    maxIntervalHours,          // fallback trigger when telemetry is unhealthy
+    maxIntervalHours,          // primary cadence: one base per day (default 24)
+    maxReplaySeconds,          // early trigger when tail replay would exceed budget
     chunkBytes,
     integrityCheck: v.literalUnion('full', 'quick'),
   },
@@ -196,9 +280,12 @@ The change-streamer already fans one committed stream out to the `Storer`
 (durable PG change log), the `Forwarder` (live subscribers), and an optional
 in-stream `SQLiteChangeLogWriter`
 (`services/change-streamer/change-streamer-service.ts`). The `ArchiveWriter` is
-a fourth consumer wired in the same constructor: it buffers transaction
-envelopes into segments, seals on size or time, uploads asynchronously, and
-exposes the highest **contiguous** durable cursor.
+a fourth consumer wired in the same constructor: it appends transaction
+envelopes to the open segment, seals on size or time, uploads asynchronously,
+and exposes the highest **contiguous** durable cursor. Per the streaming
+discipline, the open segment lives in a local disk spool behind a streaming
+compressor — never in memory — and a transaction larger than the segment
+target spans segment parts.
 
 The envelope to archive is exactly the existing `ChangeStreamData` protocol
 (`services/change-source/protocol/current/downstream.ts`) — the
@@ -341,10 +428,11 @@ SQLite replica from Postgres data; everything else restores its output.
 There is no S3 client in `zero-cache` today; all object-store I/O goes through
 the litestream subprocess. `apps/zbugs` already depends on
 `@aws-sdk/client-s3`, so the dependency is precedented in the monorepo. Define
-a minimal interface (immutable put-if-absent, get, list, head) with S3 and
-filesystem backends. The `file://` backend is what makes full restore-drill
-integration tests and local development possible, matching litestream's own
-file-URL support.
+a minimal interface (immutable put-if-absent, get, list, head — plus
+`getStream`/`putStream` for the segment upload and replay paths, per the
+streaming discipline) with S3 and filesystem backends. The `file://` backend
+is what makes full restore-drill integration tests and local development
+possible, matching litestream's own file-URL support.
 
 ### 7. Gateway initialization → identity and resume without a replica
 
@@ -417,18 +505,25 @@ throughout.
    `archiveRestore`, and a drill/compare tool that restores into a scratch
    path and diffs logical content against the live replica — mirror the
    `sqlite-change-log-comparator` pattern. Companion Phase 2.
-4. **Base builder worker.** Publication protocol, clean-shutdown marker,
+4. **Streaming retrofit.** Replace the writer's in-memory open segment and
+   upload queue with the disk spool (truncate-on-rollback, streaming
+   checksum, streaming/multipart upload), add `getStream`/`putStream` to the
+   object store, add the streaming replay decoder, and define the part
+   scheme for transactions larger than a segment. Gated by the memory
+   ceiling test below; must land before `archive-dual` is exposed to
+   production-scale transactions.
+5. **Base producer worker.** Publication protocol on the daily cadence with
+   the replay-budget early trigger, clean-shutdown marker,
    discard-and-rebuild, and first-base bootstrap via the "promote a live
-   replica" cutover (freeze the backup-replicator's file, verify, publish).
-   Companion Phases 2-3.
-5. **Mode `archive`.** `trackArchive` in the acker, the snapshot-protocol
+   replica" cutover for migrating deployments. Companion Phases 2-3.
+6. **Mode `archive`.** `trackArchive` in the acker, the snapshot-protocol
    field, purge-floor rekeying, GC, accelerated live-base restore. Companion
    Phase 4.
-6. **Convergence metrics** (`zero_apply_*`). Orthogonal to the mode flag and
+7. **Convergence metrics** (`zero_apply_*`). Orthogonal to the mode flag and
    valuable on their own; the replicator already threads
    `upstreamCommitTimeMs` through version-ready notifications for lag
    computation. Can ship at any point.
-7. **Gateway cutover.** Retire the RM replica: initialize identity and resume
+8. **Gateway cutover.** Retire the RM replica: initialize identity and resume
    from the change DB and archive (seam 7), move lineage genesis into the
    producer, stop spawning the backup-replicator and litestream, and delete
    the RM restore call site. Gated on the producer having served every
@@ -482,6 +577,32 @@ failure, and readiness gating (`waitForBackupBeforeServing` →
 `firstBackupReceived`) should key off the first durable segment plus a
 complete base.
 
+## Toward logical replication protocol v2
+
+pgoutput protocol v2 streams large in-progress transactions: chunks of
+multiple transactions arrive interleaved between `Stream Start`/`Stream Stop`
+markers, and a streamed transaction can end in an abort. Today zero-cache
+speaks v1, where every transaction arrives whole and in commit order — which
+is also the only reason the current pipeline can get away with
+transaction-sized buffering anywhere.
+
+The archive keeps its canonical contract regardless of ingest protocol:
+segments contain **committed transactions in commit order**, exactly the
+envelopes the applier consumes. v2 ingestion then becomes a gateway-local
+concern: interleaved in-progress chunks are spooled to disk per-xid (the same
+spool mechanism the writer uses, one spool per open transaction), and a
+transaction enters the committed stream — and therefore the archive, the
+change logs, and subscribers — only at its commit, in commit order; an abort
+deletes its spool. Because the streaming discipline already forbids holding a
+transaction in memory, v2's arbitrarily large in-progress transactions cost
+disk, not resident memory — the discipline is what makes v2 adoptable at all.
+
+This is deliberately _not_ "archive the raw v2 stream": keeping the archive
+commit-ordered means the applier, the base producer, catchup, restore, and
+every consumer are untouched by the protocol migration. The one component
+that learns v2 is the PG change source; everything downstream of the
+committed stream is already correct.
+
 ## Testing
 
 - Unit: segment format round-trip, corruption/gap/overlap rejection, manifest
@@ -496,6 +617,11 @@ complete base.
 - Gateway cutover: cold-start the RM with no replica file against a populated
   archive and change DB, and against an empty bucket (producer genesis),
   asserting identical streaming behavior in both.
+- Memory ceiling: archive, replay, and restore a synthetic multi-GB
+  transaction (and a multi-GB base) under a fixed `--max-old-space-size` far
+  below the payload size. This is the acceptance test for the streaming
+  discipline, and the regression guard that keeps a transaction-sized buffer
+  from ever creeping back in.
 - The existing `.pg.test.ts` multi-config vitest setup covers the
   PG-integration variants; no new test infrastructure is needed.
 
@@ -506,8 +632,8 @@ complete base.
    bucket path. Litestream remains authoritative; blast radius is extra S3
    writes and one extra worker.
 2. Watch the dual-run signals: contiguous-cursor gaps (should be zero),
-   archive lag vs ACK, base publication cadence vs the replay budget, drill
-   results.
+   archive lag vs ACK, the daily base cadence and its early-trigger rate,
+   gateway resident memory under bulk-write load, and drill results.
 3. Promote the canary to `ZERO_BACKUP_MODE=archive` once the companion
    document's Phase 4 criteria hold. Litestream keeps running as the safety
    net until `litestream.backupURL` is unset.
@@ -518,9 +644,10 @@ complete base.
 
 1. Does the archive writer consume the stream synchronously in the
    change-streamer loop (like the SQLite change-log writer) with async sealing,
-   or fully async with its own queue? Synchronous framing with async upload is
-   the proposed default; the storer's back-pressure mechanism
-   (`readyForMore`) is the model if segment buffering needs flow control.
+   or fully async with its own queue? Resolved by the streaming discipline:
+   synchronous framing into the disk spool with async streaming upload, and
+   `readyForMore`-style back-pressure keyed to spool-plus-queue bytes on
+   disk rather than heap.
 2. Where does the builder's live tail come from in `archive-dual` — polling
    sealed segments (simple, adds seal-interval latency to base freshness) or a
    change-streamer subscription with archive catchup (fresher, more wiring)?
@@ -549,3 +676,8 @@ complete base.
    run the producer in-process against a `file://` archive, or keep a local
    direct-apply path as a permanent exception? Proposed: producer in-process —
    one materialization path everywhere is most of the point.
+8. The part-naming scheme for transactions that span segments (interior parts
+   have no commit watermark to name an `end` by), and the spool's disk
+   budget: the spool directory needs sizing guidance and a disk-full posture
+   (fail-stall in mode `archive`, like an upload failure), since the
+   streaming discipline trades heap for disk.

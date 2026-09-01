@@ -112,6 +112,18 @@ type SealedSegment = {
  * deterministic from stream identity and cursor interval, so a retried
  * upload that finds its object already present (a crash between upload and
  * ACK in a previous incarnation) is treated as durable rather than an error.
+ *
+ * ### Memory
+ *
+ * This implementation buffers the open segment and upload queue in memory,
+ * bounded only by back-pressure (authoritative) or fail-soft (dual) — which
+ * violates the streaming discipline in ZERO_BACKUP_ARCHIVE_MODE_DESIGN.md
+ * ("never O(transaction)") for transactions approaching the buffer cap. The
+ * planned retrofit replaces the buffers with a disk spool (streaming
+ * compression, truncate-on-rollback, streaming upload) and allows oversized
+ * transactions to span segment parts; until it lands, do not expose
+ * archive-dual to workloads with transactions near {@link
+ * ArchiveWriterOptions.maxBufferedBytes}.
  */
 export class ArchiveWriter {
   readonly #lc: LogContext;

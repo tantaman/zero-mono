@@ -1270,18 +1270,19 @@ export const zeroOptions = {
     baseMaxReplaySeconds: {
       type: v.number().default(300),
       desc: [
-        `The primary base-production trigger: a new SQLite base is published when`,
-        `the estimated time to replay the archived tail from the newest base`,
-        `exceeds this budget.`,
+        `The early base-production trigger: a new SQLite base is published ahead`,
+        `of the regular cadence when the estimated time to replay the archived`,
+        `tail from the newest base exceeds this budget.`,
       ],
       hidden: true,
     },
 
     baseMaxIntervalHours: {
-      type: v.number().default(12),
+      type: v.number().default(24),
       desc: [
-        `The fallback base-production trigger, used when replay telemetry is`,
-        `unhealthy: a new base is published at least this often.`,
+        `The base-production cadence: a new base is published at least this`,
+        `often (daily by default), with everything in between served by the`,
+        `archived log.`,
       ],
       hidden: true,
     },
