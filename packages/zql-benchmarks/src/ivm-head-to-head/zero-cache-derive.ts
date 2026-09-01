@@ -317,6 +317,35 @@ function astFor(shape: string, i: number, keys: Keys): AST {
       ],
     };
   }
+  // DIAGNOSTIC: `related_key` with a highly selective child filter
+  // (Milliseconds > 40 min passes ~4.6% of tracks). Same parent set, same
+  // output shape, same V — the only difference is that ~95% of pushed rows are
+  // rejected by the child's filter BEFORE the join fetches its parents. Racing
+  // it against `related_key` isolates how much of the nested cliff is that
+  // fetch, on each engine.
+  if (shape === 'related_key_rare') {
+    return {
+      table: 'Album',
+      orderBy: [['AlbumId', 'asc']],
+      where: eq('ArtistId', artist),
+      related: [
+        {
+          correlation: {parentField: ['AlbumId'], childField: ['AlbumId']},
+          subquery: {
+            table: 'Track',
+            alias: 'tracks',
+            orderBy: [['TrackId', 'asc']],
+            where: {
+              type: 'simple',
+              op: '>',
+              left: {type: 'column', name: 'Milliseconds'},
+              right: {type: 'literal', value: 2_400_000},
+            },
+          },
+        },
+      ],
+    };
+  }
   // one artist's albums that have a rock track
   if (shape === 'exists_key') {
     return {
@@ -424,7 +453,9 @@ function runCell(shape: string, scale: number, views: number) {
     // whichever engine dedupes or caches better. A hard error, not a warning.
     if (shape.endsWith('_key')) {
       const budget =
-        shape === 'related_key' || shape === 'exists_key'
+        shape === 'related_key' ||
+        shape === 'related_key_rare' ||
+        shape === 'exists_key'
           ? keys.artists.length
           : keys.albums.length;
       if (views > budget) {
