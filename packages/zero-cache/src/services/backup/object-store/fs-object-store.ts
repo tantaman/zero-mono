@@ -1,6 +1,8 @@
+import {createWriteStream} from 'node:fs';
 import {
   link,
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
@@ -10,6 +12,9 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import {dirname, join} from 'node:path';
+import {Readable} from 'node:stream';
+import {pipeline} from 'node:stream/promises';
+import type {ReadableStream as NodeReadableStream} from 'node:stream/web';
 import {
   ObjectAlreadyExistsError,
   ObjectNotFoundError,
@@ -49,6 +54,36 @@ export class FsObjectStore implements ObjectStore {
   async putIfAbsent(key: string, data: Uint8Array): Promise<void> {
     const path = this.#path(key);
     const temp = await this.#writeTemp(path, data);
+    await this.#linkTempIfAbsent(temp, path, key);
+  }
+
+  async putStreamIfAbsent(
+    key: string,
+    source: () => ReadableStream<Uint8Array>,
+    _sizeHint: number,
+  ): Promise<void> {
+    const path = this.#path(key);
+    await mkdir(dirname(path), {recursive: true});
+    const temp = `${path}.tmp-${crypto.randomUUID()}`;
+    try {
+      await pipeline(
+        // The DOM and node:stream/web ReadableStream types disagree on BYOB
+        // reader details; the runtime objects are interchangeable.
+        Readable.fromWeb(source() as unknown as NodeReadableStream<Uint8Array>),
+        createWriteStream(temp),
+      );
+    } catch (e) {
+      await unlink(temp).catch(() => {});
+      throw e;
+    }
+    await this.#linkTempIfAbsent(temp, path, key);
+  }
+
+  async #linkTempIfAbsent(
+    temp: string,
+    path: string,
+    key: string,
+  ): Promise<void> {
     try {
       await link(temp, path);
     } catch (e) {
@@ -81,6 +116,22 @@ export class FsObjectStore implements ObjectStore {
       }
       throw e;
     }
+  }
+
+  async getStream(key: string): Promise<ReadableStream<Uint8Array>> {
+    // Opened eagerly so that an absent key fails here, not on first read.
+    let handle;
+    try {
+      handle = await open(this.#path(key), 'r');
+    } catch (e) {
+      if (isErrnoException(e, 'ENOENT')) {
+        throw new ObjectNotFoundError(key);
+      }
+      throw e;
+    }
+    return Readable.toWeb(
+      handle.createReadStream(), // closes the handle when done
+    ) as ReadableStream<Uint8Array>;
   }
 
   async head(key: string): Promise<ObjectMetadata | undefined> {

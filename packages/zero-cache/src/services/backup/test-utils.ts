@@ -26,6 +26,18 @@ export class InMemoryObjectStore implements ObjectStore {
     this.objects.set(key, data);
   }
 
+  async putStreamIfAbsent(
+    key: string,
+    source: () => ReadableStream<Uint8Array>,
+    _sizeHint: number,
+  ): Promise<void> {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of source()) {
+      chunks.push(chunk);
+    }
+    await this.putIfAbsent(key, Buffer.concat(chunks));
+  }
+
   async put(key: string, data: Uint8Array): Promise<void> {
     validateKey(key);
     await this.beforePut?.(key);
@@ -38,6 +50,16 @@ export class InMemoryObjectStore implements ObjectStore {
       return Promise.reject(new ObjectNotFoundError(key));
     }
     return Promise.resolve(data);
+  }
+
+  async getStream(key: string): Promise<ReadableStream<Uint8Array>> {
+    const data = await this.get(key);
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(data);
+        controller.close();
+      },
+    });
   }
 
   head(key: string): Promise<ObjectMetadata | undefined> {

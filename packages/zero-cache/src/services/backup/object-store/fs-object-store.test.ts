@@ -1,4 +1,4 @@
-import {mkdtempSync, rmSync} from 'node:fs';
+import {mkdtempSync, readdirSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, test} from 'vitest';
@@ -10,6 +10,17 @@ import {
 } from './object-store.ts';
 
 const utf8 = new TextEncoder();
+
+function streamOf(...chunks: string[]): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(utf8.encode(chunk));
+      }
+      controller.close();
+    },
+  });
+}
 
 describe('backup/object-store/fs', () => {
   let root: string;
@@ -81,6 +92,54 @@ describe('backup/object-store/fs', () => {
 
   test('list of an empty store is empty', async () => {
     expect(await store.list('')).toEqual([]);
+  });
+
+  test('streaming put-if-absent round-trips through a streaming get', async () => {
+    await store.putStreamIfAbsent(
+      'v1/02/log/02-05.seg',
+      () => streamOf('seg', 'ment'),
+      7,
+    );
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of await store.getStream('v1/02/log/02-05.seg')) {
+      chunks.push(chunk);
+    }
+    expect(new TextDecoder().decode(Buffer.concat(chunks))).toBe('segment');
+    // The byte-level surface agrees.
+    expect(
+      new TextDecoder().decode(await store.get('v1/02/log/02-05.seg')),
+    ).toBe('segment');
+  });
+
+  test('streaming put-if-absent rejects an existing key without clobbering it', async () => {
+    await store.putIfAbsent('a/b', utf8.encode('first'));
+    await expect(
+      store.putStreamIfAbsent('a/b', () => streamOf('second'), 6),
+    ).rejects.toThrow(ObjectAlreadyExistsError);
+    expect(new TextDecoder().decode(await store.get('a/b'))).toBe('first');
+    expect(readdirSync(join(root, 'a'))).toEqual(['b']); // no temp debris
+  });
+
+  test('a failing source stream leaves no object and no temp debris', async () => {
+    await expect(
+      store.putStreamIfAbsent(
+        'a/b',
+        () =>
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(utf8.encode('partial'));
+              controller.error(new Error('source failed'));
+            },
+          }),
+        100,
+      ),
+    ).rejects.toThrow('source failed');
+    expect(await store.head('a/b')).toBeUndefined();
+    expect(readdirSync(join(root, 'a'))).toEqual([]);
+  });
+
+  test('getStream of an absent key fails with ObjectNotFoundError', async () => {
+    await expect(store.getStream('nope')).rejects.toThrow(ObjectNotFoundError);
   });
 
   test('delete is idempotent', async () => {

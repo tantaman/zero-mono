@@ -25,6 +25,25 @@ export interface ObjectStore {
   putIfAbsent(key: string, data: Uint8Array): Promise<void>;
 
   /**
+   * Streams an immutable object into the store with the put-if-absent
+   * semantics of {@link putIfAbsent}, holding only a bounded buffer in memory
+   * regardless of object size. This is how sealed log segments upload without
+   * ever being resident.
+   *
+   * `source` is invoked once per store-level attempt and must produce a fresh
+   * stream of the same content each time (the callers' upload/retry unit is a
+   * sealed local file, so a fresh file stream is always available). `sizeHint`
+   * is the expected content length in bytes; it tunes the upload strategy
+   * (e.g. S3 part sizing) but the store must remain correct if the stream's
+   * actual length differs.
+   */
+  putStreamIfAbsent(
+    key: string,
+    source: () => ReadableStream<Uint8Array>,
+    sizeHint: number,
+  ): Promise<void>;
+
+  /**
    * Uploads an object, replacing any existing object at the key. Only for
    * pointer objects that are legitimately rewritten; everything content-
    * addressable goes through {@link putIfAbsent}.
@@ -33,6 +52,13 @@ export interface ObjectStore {
 
   /** Fails with {@link ObjectNotFoundError} if the key is absent. */
   get(key: string): Promise<Uint8Array>;
+
+  /**
+   * Opens a streaming read of the object's bytes, so that arbitrarily large
+   * objects (segments, base chunks) can be consumed without being resident.
+   * Fails with {@link ObjectNotFoundError} if the key is absent.
+   */
+  getStream(key: string): Promise<ReadableStream<Uint8Array>>;
 
   /** Returns `undefined` if the key is absent. */
   head(key: string): Promise<ObjectMetadata | undefined>;
