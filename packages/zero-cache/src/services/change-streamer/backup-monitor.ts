@@ -18,16 +18,24 @@ export class BackupMonitor implements SingletonService {
   readonly #lc: LogContext;
   readonly #watermarks: Source<BackedUpWatermark>;
   readonly #changeStreamer: ChangeStreamerService;
-  readonly #replicaFile: string;
+  readonly #replicaFile: string | null;
   readonly #firstBackupReceived = resolver();
 
   #latestBackup: BackedUpWatermark | undefined;
 
+  /**
+   * `replicaFile` is `null` when this task holds no replica -- the gateway
+   * of backup mode `archive`. The backup-lag gauge is derived from the
+   * replica's own write time, so with no replica there is nothing to derive
+   * it from; the archive world reports the equivalent through
+   * `replica.backup_archive.cursor_lag_versions` and
+   * `replica.backup_base.age_ms` instead.
+   */
   constructor(
     lc: LogContext,
     watermarks: Source<BackedUpWatermark>,
     changeStreamer: ChangeStreamerService,
-    replicaFile: string,
+    replicaFile: string | null,
   ) {
     this.#lc = lc;
     this.#watermarks = watermarks;
@@ -66,6 +74,10 @@ export class BackupMonitor implements SingletonService {
   }
 
   #initBackupLagMetric() {
+    const replicaFile = this.#replicaFile;
+    if (replicaFile === null) {
+      return;
+    }
     getOrCreateGauge('replica', 'backup_lag', {
       description:
         'Latency from when a change is written to the replica ' +
@@ -80,7 +92,7 @@ export class BackupMonitor implements SingletonService {
         );
         return;
       }
-      const db = new Database(this.#lc, this.#replicaFile, {readonly: true});
+      const db = new Database(this.#lc, replicaFile, {readonly: true});
       try {
         const {writeTimeMs} = db
           .prepare(/*sql*/ `SELECT writeTimeMs FROM "_zero.replicationState"`)

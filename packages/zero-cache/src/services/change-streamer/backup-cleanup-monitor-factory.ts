@@ -83,5 +83,12 @@ export function createBackupCleanupMonitor({
     ).start();
   }
 
-  return new BackupMonitor(lc, stream, changeStreamer, replicaFile);
+  // The archive world's gateway holds no replica, so there is no file to
+  // derive the backup-lag gauge from.
+  return new BackupMonitor(
+    lc,
+    stream,
+    changeStreamer,
+    archive ? null : replicaFile,
+  );
 }
