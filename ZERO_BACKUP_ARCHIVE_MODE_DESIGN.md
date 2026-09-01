@@ -1,10 +1,11 @@
 # Backup Archive Mode: Implementation Plan
 
-|                  |                                                                                 |
-| ---------------- | ------------------------------------------------------------------------------- |
-| **Status**       | Proposed                                                                        |
-| **Companions**   | Logical Change Archive and SQLite Base Backups; Initial Sync and Base Bootstrap |
-| **Last updated** | August 31, 2026                                                                 |
+|                  |                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------- |
+| **Status**       | Proposed                                                                                                |
+| **Companions**   | Logical Change Archive and SQLite Base Backups; Initial Sync and Base Bootstrap                         |
+| **Origin**       | [Replace Litestream Backups discussion](https://chatgpt.com/share/6a96150b-0a24-83e9-bc5d-842305ccd958) |
+| **Last updated** | September 1, 2026                                                                                       |
 
 ## Purpose
 
@@ -317,6 +318,12 @@ the SQLite change log persists per transaction
 which satisfies the companion document's requirement to archive the exact
 envelopes the applier consumes, by construction.
 
+For timestamp-based PITR, segment headers should additionally record the
+first and last upstream commit timestamps they cover (the commit envelopes
+carry `commitTimeMs`), so a wall-clock restore target can be mapped to a
+cursor without decoding segments. The format's version field makes this an
+additive change; it is not in format v1.
+
 One deliberate difference from the SQLite change-log writer: that writer is
 fail-soft (disables itself on error, replication continues), because it is a
 cache. The archive writer is authoritative and therefore **fail-stall**,
@@ -366,7 +373,10 @@ changes:
 - S3-archive GC (retain >= 2 verified bases, retain log segments covering the
   older retained base through the current cursor, PITR window) is a separate
   new service, active only in mode `archive` with `gc.enabled`, operating
-  purely in cursor space per the companion document.
+  purely in cursor space per the companion document. Where cross-region
+  bucket replication is configured, its completion is an additional GC
+  precondition: a segment must not be collected in the primary region before
+  the base that supersedes it is durable in the replica region.
 
 ### 4. Restore → the `RestoreResult` contract at both call sites
 
@@ -429,7 +439,16 @@ SQLite replica from Postgres data; everything else restores its output.
   clean-shutdown marker, and the discard-on-unclean-start rule are new code in
   the builder worker. Discard-and-rebuild is just "delete file, run
   `archiveRestore` from the latest complete base, resume tailing" — its own
-  restore path, as the companion document requires.
+  restore path, as the companion document requires. Pieces are never uploaded
+  from a file that remains mutable; the alternative to pausing the applier
+  for the freeze is SQLite's Online Backup API, which yields a consistent
+  snapshot file while the applier keeps running — worth adopting if the
+  pause ever shows up in apply-lag (at the origin discussion's observed
+  60-80k rows/sec apply rate, the daily pause is expected to be negligible).
+- The manifest should also carry the database page size and the schema /
+  applier / log-format versions (the origin discussion's manifest field
+  list); the implemented v1 manifest carries cursor, sizes, and hashes, and
+  its version field makes the rest additive when the producer lands.
 - At lineage genesis the producer owns initial sync: the table copy lands in
   the producer's working file and is published as the first base. This is
   also the forward-flip path — flipping a stack into the archive world _is_ a
@@ -440,6 +459,13 @@ SQLite replica from Postgres data; everything else restores its output.
 - The accelerated live-base restore is a request/response between the restore
   coordinator and this worker (publish `intent.json`, upload chunks, publish
   `complete.json`), reusing the same publication code as the periodic base.
+  Chunks being **separately addressable objects** — rather than parts of one
+  S3 multipart upload, which materializes only at `CompleteMultipartUpload` —
+  is what lets the restorer download chunks while the producer is still
+  uploading them, which is the whole point of the accelerated path:
+  `T_restore ≈ T_freeze + max(T_upload, T_download) + T_tail-replay`. The
+  restored file is still not opened until every chunk has arrived and the
+  complete manifest has verified.
 
 ### 6. Object store → a new abstraction, needed regardless
 
