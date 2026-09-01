@@ -22,6 +22,7 @@ import {
   ARCHIVE_ROOT,
   baseCompleteKey,
   basePrefix,
+  baseRequestPrefix,
   lineagesFromKeys,
   logPrefix,
   parseBaseCompleteKey,
@@ -29,7 +30,7 @@ import {
 } from './archive/layout.ts';
 import type {SegmentMessage} from './archive/segment-format.ts';
 import {publishBase} from './base/base-publisher.ts';
-import {decodeBaseManifest} from './base/manifest.ts';
+import {decodeBaseManifest, decodeBaseRequest} from './base/manifest.ts';
 import {runArchiveGC, type GCOptions} from './gc.ts';
 import {backupBasePublications, backupGCObjectsDeleted} from './metrics.ts';
 import type {ObjectStore} from './object-store/object-store.ts';
@@ -100,6 +101,9 @@ const COMPRESSION_EXPANSION_FACTOR = 4;
 /** No early trigger until the rate is measured over at least this much. */
 const MIN_RATE_SAMPLE_BYTES = 4 * 1024 * 1024;
 const MIN_RATE_SAMPLE_MS = 5_000;
+
+/** A live-base request older than this is debris from a dead restorer. */
+const REQUEST_TTL_MS = 15 * 60 * 1000;
 
 /**
  * The base producer: the one component in the archive world that
@@ -382,10 +386,16 @@ export class BaseProducerService implements Service {
     if (lastBase === undefined) {
       return true; // no base at all: publish as soon as possible
     }
-    // Nothing applied beyond the last base means nothing to publish.
+    const requested = await this.#serveBaseRequests(lineage);
+    // Nothing applied beyond the last base means nothing to publish. (Any
+    // pending base requests were already answered above: the newest base
+    // is as fresh as this producer can make one.)
     const applied = this.#lastAppliedWatermark;
     if (applied === undefined || applied <= lastBase.cursor) {
       return false;
+    }
+    if (requested) {
+      return true; // an accelerated live-base request
     }
     if (Date.now() - lastBase.completedAt >= baseMaxIntervalMs) {
       return true;
@@ -412,6 +422,47 @@ export class BaseProducerService implements Service {
     return this.#replayEstimateMs >= baseMaxReplayMs;
   }
 
+  /**
+   * The producer's half of the accelerated live-base protocol: stale or
+   * unreadable request markers are debris and deleted; fresh markers are
+   * answered — by deleting them right away when the newest base already
+   * reflects everything applied (the "already current" response), or by
+   * returning true so the caller publishes now (those markers are consumed
+   * by {@link #publish} once the base lands).
+   */
+  async #serveBaseRequests(lineage: string): Promise<boolean> {
+    const {store} = this.#opts;
+    const objects = await store.list(baseRequestPrefix(lineage));
+    if (objects.length === 0) {
+      return false;
+    }
+    const applied = this.#lastAppliedWatermark;
+    const current =
+      applied === undefined ||
+      (this.#lastBase !== undefined && applied <= this.#lastBase.cursor);
+    let fresh = false;
+    for (const {key} of objects) {
+      let stale = false;
+      try {
+        const request = decodeBaseRequest(await store.get(key));
+        stale = request.requestedAt < Date.now() - REQUEST_TTL_MS;
+        if (!stale) {
+          this.#lc.info?.(
+            `live-base request from task ${request.taskID}` +
+              (current ? ': the newest base is already current' : ''),
+          );
+        }
+      } catch {
+        stale = true;
+      }
+      if (stale || current) {
+        await store.delete(key);
+      }
+      fresh ||= !stale;
+    }
+    return fresh && !current;
+  }
+
   async #publish(lineage: string): Promise<void> {
     const lc = this.#lc;
     const {store, replicaFile, chunkBytes, integrityCheck, gc} = this.#opts;
@@ -432,6 +483,11 @@ export class BaseProducerService implements Service {
     } catch (e) {
       backupBasePublications().add(1, {result: 'failed'});
       throw e;
+    }
+
+    // Consume the live-base request markers this publication answers.
+    for (const {key} of await store.list(baseRequestPrefix(lineage))) {
+      await store.delete(key).catch(() => {});
     }
 
     if (gc !== null) {

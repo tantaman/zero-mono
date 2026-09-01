@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {existsSync} from 'node:fs';
-import {mkdir, open, rename, rm} from 'node:fs/promises';
+import {mkdir, open, readFile, rename, rm} from 'node:fs/promises';
 import type {LogContext} from '@rocicorp/logger';
 import {Database} from '../../../../../zqlite/src/db.ts';
 import {deleteLiteDB} from '../../../db/delete-lite-db.ts';
@@ -27,6 +27,7 @@ import {
 } from '../archive/layout.ts';
 import {decodeBaseManifest, type BaseManifest} from '../base/manifest.ts';
 import type {ObjectStore} from '../object-store/object-store.ts';
+import {chunkCachePath} from './live-base.ts';
 
 export type ArchiveRestoreOptions = {
   /**
@@ -38,6 +39,14 @@ export type ArchiveRestoreOptions = {
   mode?: 'backup' | 'serving' | undefined;
   /** Concurrent chunk downloads. Default 4. */
   downloadConcurrency?: number | undefined;
+  /**
+   * A directory of chunks prefetched by the accelerated live-base request
+   * (see `requestLiveBase`), consulted before the store. Cached chunks go
+   * through exactly the same size and checksum verification as downloaded
+   * ones, so a stale or corrupt cache entry costs a re-download, never
+   * correctness.
+   */
+  chunkCacheDir?: string | undefined;
 };
 
 const DEFAULT_DOWNLOAD_CONCURRENCY = 4;
@@ -197,9 +206,13 @@ async function downloadBase(
     const worker = async () => {
       for (let index = next++; index < chunks.length; index = next++) {
         const expected = chunks[index];
-        const data = await store.get(
-          baseChunkKey(replicaVersion, cursor, index),
-        );
+        const data =
+          (await readCachedChunk(
+            options.chunkCacheDir,
+            cursor,
+            index,
+            expected,
+          )) ?? (await store.get(baseChunkKey(replicaVersion, cursor, index)));
         if (data.length !== expected.size) {
           throw new Error(
             `chunk ${index} is ${data.length} bytes; expected ${expected.size}`,
@@ -230,6 +243,34 @@ async function downloadBase(
     );
   }
   lc.debug?.(`downloaded base ${replicaVersion}/${cursor} (${size} bytes)`);
+}
+
+/**
+ * A prefetched chunk, if present and matching the manifest's expectations;
+ * a mismatch (a stale or partial prefetch) falls back to the store.
+ */
+async function readCachedChunk(
+  cacheDir: string | undefined,
+  cursor: string,
+  index: number,
+  expected: {size: number; sha256: string},
+): Promise<Uint8Array | undefined> {
+  if (cacheDir === undefined) {
+    return undefined;
+  }
+  let data: Uint8Array;
+  try {
+    data = await readFile(chunkCachePath(cacheDir, cursor, index));
+  } catch {
+    return undefined;
+  }
+  if (
+    data.length !== expected.size ||
+    createHash('sha256').update(data).digest('hex') !== expected.sha256
+  ) {
+    return undefined;
+  }
+  return data;
 }
 
 async function hashFile(path: string): Promise<{size: number; sha256: string}> {

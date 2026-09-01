@@ -156,6 +156,32 @@ export function baseCompleteKey(
   return `${basePrefix(replicaVersion)}${cursor}/complete.json`;
 }
 
+/**
+ * Live-base request markers: a restorer asks the producer for a fresh base
+ * by writing a marker here; the producer polls the prefix, publishes (or
+ * determines the newest base is already current), and deletes the marker.
+ * Marker names carry no watermark, so they are invisible to every cursor-
+ * space listing above.
+ */
+export function baseRequestPrefix(replicaVersion: string): string {
+  return `${basePrefix(replicaVersion)}requests/`;
+}
+
+const UNSAFE_KEY_CHARS = /[^A-Za-z0-9._-]/g;
+const LEADING_DOT = /^\./;
+
+export function baseRequestKey(
+  replicaVersion: string,
+  requestID: string,
+): string {
+  // Request IDs derive from task IDs, which are not constrained to the
+  // store's key alphabet; sanitize rather than reject.
+  const safe = requestID
+    .replace(UNSAFE_KEY_CHARS, '-')
+    .replace(LEADING_DOT, '-');
+  return `${baseRequestPrefix(replicaVersion)}${safe}.json`;
+}
+
 const BASE_COMPLETE_NAME = /^([0-9a-z]+)\/complete\.json$/;
 
 /**

@@ -54,8 +54,28 @@ const baseManifestSchema = v.object({
 
 export type BaseManifest = v.Infer<typeof baseManifestSchema>;
 
+export const BASE_REQUEST_FORMAT = 'zero-archive-base-request';
+
+const baseRequestSchema = v.object({
+  format: v.literal(BASE_REQUEST_FORMAT),
+  version: v.number(),
+  /** The requesting task, for logs; the marker name is derived from it. */
+  taskID: v.string(),
+  requestedAt: v.number(),
+});
+
+export type BaseRequest = v.Infer<typeof baseRequestSchema>;
+
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
+
+export function encodeBaseRequest(request: BaseRequest): Uint8Array {
+  return utf8Encoder.encode(JSON.stringify(request));
+}
+
+export function decodeBaseRequest(data: Uint8Array): BaseRequest {
+  return v.parse(JSON.parse(utf8Decoder.decode(data)), baseRequestSchema);
+}
 
 export function encodeBaseIntent(intent: BaseIntent): Uint8Array {
   return utf8Encoder.encode(JSON.stringify(intent));

@@ -21,14 +21,14 @@ import {
   applyPragmas,
   type PragmaConfig,
 } from '../replicator/write-worker-client.ts';
-import {segmentKey} from './archive/layout.ts';
+import {baseRequestKey, segmentKey} from './archive/layout.ts';
 import {encodeSegment} from './archive/segment-format.ts';
 import {
   BaseProducerService,
   type BaseProducerOptions,
 } from './base-producer.ts';
 import {publishBase} from './base/base-publisher.ts';
-import {decodeBaseManifest} from './base/manifest.ts';
+import {decodeBaseManifest, encodeBaseRequest} from './base/manifest.ts';
 import {InMemoryObjectStore, wireTransaction} from './test-utils.ts';
 
 const lc = createSilentLogContext();
@@ -253,6 +253,51 @@ describe('backup/base-producer', () => {
     const running = producer.run();
     try {
       await until(() => completeBases().includes('05'));
+    } finally {
+      await producer.stop();
+      await running;
+    }
+  });
+
+  test('serves accelerated live-base requests', async () => {
+    await seedGenesisBase();
+    const producer = newProducer({
+      // Cadence never fires; only requests can trigger publication.
+      baseMaxIntervalMs: 3600 * 1000,
+      checkIntervalMs: 15,
+    });
+    const running = producer.run();
+    try {
+      // The restore replayed nothing (no segments), so the '02' base is
+      // current: a request is answered by consuming the marker, no new base.
+      await until(() => producer.state().lastAppliedWatermark === '02');
+      await store.put(
+        baseRequestKey('02', 'restorer-1'),
+        encodeBaseRequest({
+          format: 'zero-archive-base-request',
+          version: 1,
+          taskID: 'restorer-1',
+          requestedAt: Date.now(),
+        }),
+      );
+      await until(() => !store.objects.has(baseRequestKey('02', 'restorer-1')));
+      expect(completeBases()).toEqual(['02']);
+
+      // With new content applied, a request triggers an immediate publish
+      // and the marker is consumed by it.
+      await putSegment('02', ['03']);
+      await until(() => producer.state().lastAppliedWatermark === '03');
+      await store.put(
+        baseRequestKey('02', 'restorer-2'),
+        encodeBaseRequest({
+          format: 'zero-archive-base-request',
+          version: 1,
+          taskID: 'restorer-2',
+          requestedAt: Date.now(),
+        }),
+      );
+      await until(() => completeBases().includes('03'));
+      await until(() => !store.objects.has(baseRequestKey('02', 'restorer-2')));
     } finally {
       await producer.stop();
       await running;
