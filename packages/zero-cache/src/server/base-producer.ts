@@ -70,6 +70,7 @@ export default async function runWorker(
     // The freshness of the archived tail is bounded by the seal interval,
     // so polling faster buys nothing.
     pollIntervalMs: backup.segmentSealIntervalSeconds * 1000,
+    checkIntervalMs: backup.baseCheckIntervalSeconds * 1000,
     baseMaxIntervalMs: backup.baseMaxIntervalHours * MS_PER_HOUR,
     baseMaxReplayMs: backup.baseMaxReplaySeconds * 1000,
     chunkBytes: backup.baseChunkBytes,

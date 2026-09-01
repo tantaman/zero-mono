@@ -140,6 +140,7 @@ export function assertNormalized(
     ['segment-target-bytes', backup.segmentTargetBytes],
     ['segment-seal-interval-seconds', backup.segmentSealIntervalSeconds],
     ['base-max-replay-seconds', backup.baseMaxReplaySeconds],
+    ['base-check-interval-seconds', backup.baseCheckIntervalSeconds],
     ['base-max-interval-hours', backup.baseMaxIntervalHours],
     ['base-chunk-bytes', backup.baseChunkBytes],
     ['gc-pitr-hours', backup.gcPitrHours],

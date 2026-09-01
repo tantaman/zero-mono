@@ -1286,6 +1286,19 @@ export const zeroOptions = {
       hidden: true,
     },
 
+    baseCheckIntervalSeconds: {
+      type: v.number().default(30),
+      desc: [
+        `How often the base producer re-evaluates what it has to do: adopt a`,
+        `new lineage, take up a genesis offer, or resume tailing after a`,
+        `failed session. It also bounds cold-start latency — a producer that`,
+        `starts a moment before the gateway posts its genesis offer waits one`,
+        `interval before seeing it — so tests and impatient single-node`,
+        `deployments turn it down.`,
+      ],
+      hidden: true,
+    },
+
     baseChunkBytes: {
       type: v.number().default(64 * 1024 * 1024),
       desc: [
