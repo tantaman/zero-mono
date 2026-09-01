@@ -6,6 +6,7 @@ import {beforeEach, describe, expect, vi} from 'vitest';
 import {TestLogSink} from '../../../../../shared/src/logging-test-utils.ts';
 import {Queue} from '../../../../../shared/src/queue.ts';
 import {Database} from '../../../../../zqlite/src/db.ts';
+import {StatementRunner} from '../../../db/statements.ts';
 import {
   dropReplicationSlots,
   getConnectionURI,
@@ -22,7 +23,9 @@ import type {
 import {initializePostgresChangeSource} from '../../change-source/pg/change-source.ts';
 import type {ChangeStreamMessage} from '../../change-source/protocol/current/downstream.ts';
 import {serializeChangeStreamData} from '../../change-streamer/change-log-codec.ts';
+import {ChangeProcessor} from '../../replicator/change-processor.ts';
 import {publishBase} from '../base/base-publisher.ts';
+import {runArchiveDrill} from '../drill/archive-drill.ts';
 import {archiveRestore} from '../restore/archive-restore.ts';
 import {InMemoryObjectStore} from '../test-utils.ts';
 import {listLogSegments} from './archive-reader.ts';
@@ -235,5 +238,121 @@ describe('backup/archive real-Postgres round trip', {timeout: 60000}, () => {
     } finally {
       restored.close();
     }
+  });
+  test('an archive-restored replica matches one the live applier built', async () => {
+    // The strongest statement the subsystem can make: two replicas at the
+    // same watermark, one built by the applier reading the change stream
+    // directly and one rebuilt from a base plus the archived log, agree
+    // row for row. Everything the archive does that the live path does not
+    // -- serialize, seal, compress, upload, verify, decode -- has to be
+    // lossless for this to hold, which is why the bigint rounding showed up
+    // as a wrong value rather than an error.
+    const {changeSource, subscriptionState} =
+      await initializePostgresChangeSource(
+        lc,
+        upstreamURI,
+        SHARD,
+        liveReplica.path,
+        {tableCopyWorkers: 1},
+        {test: 'archive-drill-fidelity'},
+        0,
+        {},
+      );
+    source = changeSource;
+    const {replicaVersion, watermark: initialWatermark} = subscriptionState;
+
+    await publishBase(lc, store, liveReplica.path, {
+      chunkBytes: 4 * 1024 * 1024,
+      integrityCheck: 'quick',
+    });
+
+    const writer = new ArchiveWriter(lc, {
+      store,
+      replicaVersion,
+      spoolDir,
+      segmentTargetBytes: 1,
+      partTargetBytes: 8 * 1024 * 1024,
+      sealIntervalMs: 30_000,
+    });
+    await writer.reconcile(initialWatermark);
+
+    const stream = await source.startStream(initialWatermark);
+    streams.push(stream);
+    const downstream = drainToQueue(stream.changes);
+
+    // The live replica, applied exactly as `replayTail` applies the archived
+    // one: same ChangeProcessor, same 'backup' mode. The only difference
+    // between the two sides is the trip through the archive.
+    const liveDB = new Database(lc, liveReplica.path);
+    let applyFailure: unknown;
+    const live = new ChangeProcessor(
+      new StatementRunner(liveDB),
+      'backup',
+      (_, err) => (applyFailure = err),
+    );
+
+    await upstream.unsafe(`
+      INSERT INTO data(id, n, flag, note, payload)
+        VALUES ('c', 9007199254740993, true, 'ünïcödé ✓', '{"k":3}');
+    `);
+    await upstream.unsafe(
+      `UPDATE data SET n = -9007199254740995, note = NULL WHERE id = 'b';`,
+    );
+    await upstream.unsafe(`DELETE FROM data WHERE id = 'a';`);
+    await upstream.unsafe(`ALTER TABLE data ADD COLUMN extra TEXT;`);
+    await upstream.unsafe(
+      `UPDATE data SET extra = 'after the schema change' WHERE id = 'c';`,
+    );
+    // The sentinel bounds the drain below without having to predict how many
+    // transactions the DDL above turns into.
+    await upstream.unsafe(
+      `INSERT INTO data(id, n, flag, note, payload, extra)
+         VALUES ('sentinel', 0, false, 'done', '{}', 'done');`,
+    );
+
+    const sawSentinel = () =>
+      (
+        liveDB
+          .prepare(`SELECT count(*) AS c FROM data WHERE id = 'sentinel'`)
+          .get() as {c: number}
+      ).c > 0;
+
+    let lastWatermark = initialWatermark;
+    for (;;) {
+      const msg = await downstream.dequeue();
+      if (msg[0] !== 'begin' && msg[0] !== 'data' && msg[0] !== 'commit') {
+        continue;
+      }
+      writer.write(msg, serializeChangeStreamData(msg));
+      live.processMessage(lc, msg);
+      if (applyFailure !== undefined) {
+        throw applyFailure;
+      }
+      if (msg[0] === 'commit') {
+        lastWatermark = msg[2].watermark;
+        if (sawSentinel()) {
+          break;
+        }
+      }
+    }
+
+    await vi.waitFor(() =>
+      expect(writer.state().durableWatermark).toBe(lastWatermark),
+    );
+    await writer.close();
+    liveDB.close();
+
+    // The drill is the comparator the archive world schedules in production;
+    // this is the first time it runs over anything but synthetic fixtures.
+    const result = await runArchiveDrill(lc, store, liveReplica.path, {
+      scratchDir: join(scratchDir, 'drill'),
+      archiveWaitTimeoutMs: 10_000,
+      pollIntervalMs: 50,
+    });
+    expect(result).toMatchObject({
+      outcome: 'match',
+      replicaVersion,
+      watermark: lastWatermark,
+    });
   });
 });
