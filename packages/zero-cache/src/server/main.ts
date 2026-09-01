@@ -29,6 +29,7 @@ import {createLogContext} from './logging.ts';
 import {startOtelAuto} from './otel-start.ts';
 import {WorkerDispatcher} from './worker-dispatcher.ts';
 import {
+  BASE_PRODUCER_URL,
   CHANGE_STREAMER_URL,
   MUTATOR_URL,
   REAPER_URL,
@@ -129,9 +130,35 @@ export default async function runWorker(
       'message',
       changeStreamerStarted,
     );
+    // In backup mode `archive`, the base producer materializes and publishes
+    // the SQLite bases everything else restores. It runs in the
+    // replication-manager's process tree for now; it only talks to the object
+    // store and upstream, so deploying it as a separate node later is a
+    // deployment decision, not a code change.
+    //
+    // It is started before the change-streamer is awaited, and awaited after,
+    // because on a cold boot the two rendezvous: the change-streamer's genesis
+    // offers the slot's exported snapshot through the archive and blocks until
+    // the producer publishes the first base, so a producer started only after
+    // the change-streamer reports ready would never answer, and genesis would
+    // abandon on its heartbeat timeout. The producer depends on nothing the
+    // change-streamer provides at startup, so overlapping them is safe.
+    const producerReady =
+      config.backup.mode === 'archive'
+        ? (() => {
+            const {promise, resolve} = resolver();
+            loadWorker(BASE_PRODUCER_URL, 'supporting').once(
+              'message',
+              resolve,
+            );
+            return promise;
+          })()
+        : undefined;
+
     // Wait for the change-streamer to be ready to guarantee that a replica
     // file is present.
     await changeStreamerReady;
+    await producerReady;
   }
 
   if (numSyncers > 0) {
@@ -153,8 +180,17 @@ export default async function runWorker(
 
   const syncers: Worker[] = [];
   if (numSyncers) {
+    // `serving-copy` copies the local change-streamer's replica file, which
+    // only exists in backup mode `litestream`; in mode `archive` the local
+    // change-streamer is a gateway with no replica, and the serving replica
+    // is restored from the archive instead (a lingering
+    // --litestream-backup-url must not change that).
     const mode: ReplicaFileMode =
-      runChangeStreamer && litestream.backupURL ? 'serving-copy' : 'serving';
+      runChangeStreamer &&
+      litestream.backupURL &&
+      config.backup.mode !== 'archive'
+        ? 'serving-copy'
+        : 'serving';
     const {promise: replicaReady, resolve} = resolver();
     const replicator = loadWorker(
       REPLICATOR_URL,

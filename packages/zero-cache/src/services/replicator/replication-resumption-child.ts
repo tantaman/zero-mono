@@ -190,10 +190,15 @@ class FailpointWriteWorkerClient implements WriteWorkerClient {
     return this.#inner.getSubscriptionState();
   }
 
-  async processMessage(
-    downstream: ChangeStreamData,
-  ): Promise<CommitResult | null> {
-    const result = await this.#inner.processMessage(downstream);
+  async processMessages(
+    batch: readonly ChangeStreamData[],
+  ): Promise<(CommitResult | null)[]> {
+    const results = await this.#inner.processMessages(batch);
+    // The failpoint is "committed to SQLite, never acked", so it fires on the
+    // batch's first commit: everything up to it is durable, and the hang
+    // keeps the ack -- and any later result in the same batch -- from ever
+    // being delivered.
+    const result = results.find(r => r?.watermark);
     if (
       result?.watermark &&
       this.#failpoint === 'after-sqlite-commit-before-ack' &&
@@ -206,7 +211,7 @@ class FailpointWriteWorkerClient implements WriteWorkerClient {
       ]);
       await resolver<never>().promise;
     }
-    return result;
+    return results;
   }
 
   abort() {

@@ -221,3 +221,41 @@ test('does not export a data point before any backup has been observed', async (
     await provider.shutdown();
   }
 });
+
+test('exports no backup_lag at all when the task holds no replica', async () => {
+  // The gateway of backup mode `archive`. The gauge is derived from the
+  // replica's write time, and a gateway has no replica: before this case was
+  // handled, every collection opened a file that was not there and logged a
+  // SQLITE_ERROR for the missing `_zero.replicationState`.
+  const {exporter, provider} = withProvider();
+  try {
+    const {BackupMonitor} = await import('./backup-monitor.ts');
+    const watermarks = Subscription.create<BackedUpWatermark>();
+    const trackBackupWatermark = vi.fn();
+    const changeStreamer = {
+      trackBackupWatermark,
+    } as unknown as ChangeStreamerService;
+    const monitor = new BackupMonitor(
+      createSilentLogContext(),
+      watermarks,
+      changeStreamer,
+      null,
+    );
+
+    const run = monitor.run();
+    watermarks.push(backedUp('01', 4_000));
+    await monitor.firstBackupReceived();
+
+    // Watermarks are still tracked; only the replica-derived gauge is gone.
+    await vi.waitFor(() =>
+      expect(trackBackupWatermark).toHaveBeenCalledWith('01'),
+    );
+    await provider.forceFlush();
+    expect(latestValueAndReset(exporter)).toBeUndefined();
+
+    watermarks.cancel();
+    await run;
+  } finally {
+    await provider.shutdown();
+  }
+});

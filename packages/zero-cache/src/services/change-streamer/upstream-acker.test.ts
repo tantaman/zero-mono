@@ -27,8 +27,58 @@ describe('change-streamer/upstream-acker', () => {
     expect(
       () => new UpstreamAcker({trackPgChangeLog: false, trackBackup: false}),
     ).toThrowErrorMatchingInlineSnapshot(
-      `[Error: At least one of trackPgChangeLog or trackBackup must be true]`,
+      `[Error: At least one of trackPgChangeLog, trackBackup, or trackArchive must be true]`,
     );
+  });
+
+  test('acks only once the (sole) tracked archive catches up', () => {
+    const acker = new UpstreamAcker({
+      trackPgChangeLog: false,
+      trackBackup: false,
+      trackArchive: true,
+    });
+    const {sink: upstream, acked} = sink();
+    acker.reset(upstream);
+
+    acker.trackDownstream(commit('05'));
+    expect(acked).toEqual([]);
+
+    acker.trackArchive('05');
+    expect(acked).toEqual([['status', {tag: 'commit'}, {watermark: '05'}]]);
+  });
+
+  test('when tracking the archive too, acks are gated by the slowest store', () => {
+    const acker = new UpstreamAcker({
+      trackPgChangeLog: true,
+      trackBackup: true,
+      trackArchive: true,
+    });
+    const {sink: upstream, acked} = sink();
+    acker.reset(upstream);
+
+    acker.trackDownstream(commit('05'));
+    acker.trackPgChangeLog('05');
+    acker.trackBackup('05');
+    // The archive (the slowest store) has not persisted '05' yet.
+    expect(acked).toEqual([]);
+
+    acker.trackArchive('05');
+    expect(acked).toEqual([['status', {tag: 'commit'}, {watermark: '05'}]]);
+  });
+
+  test('an untracked archive cursor does not gate acks', () => {
+    // archive-dual: the cursor is exported as a metric only.
+    const acker = new UpstreamAcker({
+      trackPgChangeLog: true,
+      trackBackup: false,
+      trackArchive: false,
+    });
+    const {sink: upstream, acked} = sink();
+    acker.reset(upstream);
+
+    acker.trackDownstream(commit('05'));
+    acker.trackPgChangeLog('05');
+    expect(acked).toEqual([['status', {tag: 'commit'}, {watermark: '05'}]]);
   });
 
   test('acks only once the (sole) tracked pg change-log catches up', () => {

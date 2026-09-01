@@ -144,6 +144,93 @@ To stream zero-cache logs directly in the terminal:
 pnpm --filter zero-throughput start -- --process-log-mode inherit
 ```
 
+## Replication Ceiling: Postgres to a View-Syncer With No Pipelines
+
+The default benchmark measures what a _client_ sees, so every number folds
+in the IVM pipelines and the poke path. `run ceiling` deliberately removes
+that half: it starts the distributed topology, connects **no clients** (so
+the view-syncers run no pipelines), drives Postgres with a bulk writer, and
+watches the view-syncer's replica file advance. What is left in the
+measurement is the replication path itself:
+
+```
+Postgres WAL -> replication-manager (change source, change log, and in
+backup mode `archive` the archive writer) -> WebSocket -> view-syncer
+replicator -> SQLite replica
+```
+
+```bash
+# The archive world: gateway with no replica, base producer in its process
+# tree, view-syncer restoring from the archive.
+pnpm --filter zero-throughput run ceiling -- \
+  --backup-mode archive \
+  --pg-url postgresql://user:password@127.0.0.1:6436/postgres \
+  --write-rate 4000 --rows-per-statement 20 --statements-per-tx 1 \
+  --write-concurrency 4 --duration-ms 40000 --warmup-ms 10000
+
+# The same load in today's world, for comparison.
+pnpm --filter zero-throughput run ceiling -- --backup-mode litestream ...
+
+# A table over a directory of runs.
+pnpm --filter zero-throughput run ceiling:report -- results/ceiling
+```
+
+`--write-rate 0` means unthrottled: the writers push as hard as Postgres
+accepts, which is how far _past_ the ceiling a run goes rather than the
+ceiling itself. To find the ceiling, walk a ladder of rates and take the
+highest one whose verdict is `SUSTAINED`.
+
+What the runner reports, and why each number is there:
+
+| Number               | What it says                                                                 |
+| -------------------- | ---------------------------------------------------------------------------- |
+| commit rows/s, MiB/s | What Postgres actually accepted (the offered load, not the target)           |
+| apply rows/s         | How fast the view-syncer's replica advanced -- the throughput being measured |
+| e2e lag p50/p95      | `now - clock_timestamp()` of the newest row in the replica                   |
+| backlog slope        | Rows/s the backlog grows by; ~0 is the definition of sustained               |
+| drain                | How long the replica took to catch up after the writers stopped              |
+| retained WAL         | What upstream ACK gating is holding; in `archive` mode, gated on the archive |
+| archive MiB/s        | Compressed segment bytes the archive is absorbing                            |
+| CPU by worker        | `rm/change-streamer`, `rm/base-producer`, `vs-0/replicator`, and the harness |
+| disk + device util   | Bytes each role sent to storage, and whole-device busy time (%util)          |
+
+The write shape matters as much as the rate: `--rows-per-statement` widens
+the INSERTs (amortizing the generator's round trips) and
+`--statements-per-tx` makes transactions bigger without widening the
+statements. The replication path charges for the two differently -- bytes
+flow through segments and the replica, transaction boundaries cost commits
+-- so a rows/s ceiling is only meaningful next to the shape that produced
+it. Payloads are cut from a random pool, so nothing on the path gets to
+compress data a real workload would not.
+
+`--num-view-syncers 2` is how the litestream world's replication-manager is
+reproduced without a litestream binary: the second view-syncer stands in for
+the backup-replicator, so two subscribers gate the change-streamer's flow
+control exactly as they do in that world. Comparing it against a
+one-subscriber archive gateway is what measures the archive world's
+structural advantage -- its applier reads sealed segments from the object
+store rather than the live subscription, so it cannot gate the stream.
+
+Archive-mode runs need no object store: `--archive-dir` (default
+`results/archive`) is a `file://` store, cleared at the start of each run
+that resets. `--base-check-interval-seconds` and
+`--segment-seal-interval-seconds` are turned down from their production
+defaults (30s) so that a benchmark is not mostly sleep.
+
+### Decomposing a ceiling number
+
+```bash
+pnpm --filter zero-throughput run pipeline-cost
+```
+
+Micro-benchmarks for the per-change costs the path pays, so a rows/s number
+can be decomposed rather than guessed at: what a row costs going into a
+serving-shaped replica with nothing in the way, what one change costs on the
+wire (a framed message down plus the ack `consumed()` sends back, per
+change), and what the write worker's postMessage round trip costs -- one per
+change, strictly serialized -- against the same 20 changes sent as one
+message.
+
 ## Process Topologies: Single-Node vs. Distributed
 
 ### 1. Default Topology (`--topology single`)

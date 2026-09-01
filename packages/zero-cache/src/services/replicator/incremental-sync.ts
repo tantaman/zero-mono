@@ -2,7 +2,10 @@ import type {LogContext} from '@rocicorp/logger';
 import {AbortError} from '../../../../shared/src/abort-error.ts';
 import type {Enum} from '../../../../shared/src/enum.ts';
 import {deleteLiteDB} from '../../db/delete-lite-db.ts';
-import {getOrCreateCounter} from '../../observability/metrics.ts';
+import {
+  getOrCreateCounter,
+  getOrCreateLatencyHistogram,
+} from '../../observability/metrics.ts';
 import type {Source} from '../../types/streams.ts';
 import type {DownloadStatus} from '../change-source/protocol/current.ts';
 import type {ChangeStreamData} from '../change-source/protocol/current/downstream.ts';
@@ -23,6 +26,21 @@ import type {ReplicationReport} from './reporter/report-schema.ts';
 import type {WriteWorkerClient} from './write-worker-client.ts';
 
 type ErrorType = Enum<typeof ErrorType>;
+
+/**
+ * How much change JSON one hop to the write worker may carry. The bound is
+ * memory: the batch is held until it is applied and `postMessage` clones it,
+ * so this is roughly what a replicator holds above its steady state. It is
+ * deliberately the same 64 KiB the change-streamer pipelines before waiting
+ * on subscriber flow control, so neither side runs far ahead of the other.
+ */
+const MAX_BATCH_BYTES = 64 * 1024;
+
+/**
+ * A second cap, by count, so that a stream of very small messages cannot
+ * retain a large number of objects while staying under the byte cap.
+ */
+const MAX_BATCH_MESSAGES = 500;
 
 /**
  * The {@link IncrementalSyncer} manages a logical replication stream from upstream,
@@ -49,6 +67,29 @@ export class IncrementalSyncer {
     'replication',
     'events',
     'Number of replication events processed',
+  );
+
+  // Convergence metrics: every consumer of the change stream (serving
+  // replicas and the base producer alike, distinguished by the `mode`
+  // attribute) reports the same two signals, so replicas across worlds can
+  // be compared directly.
+  readonly #applyCommits = getOrCreateCounter(
+    'apply',
+    'commits',
+    'Transactions applied (committed) to the local replica.',
+  );
+  readonly #applyBatches = getOrCreateCounter(
+    'apply',
+    'write_batches',
+    'Hops to the write worker. Divided into apply.changes, this is the ' +
+      'batching factor: 1 means every change paid its own round trip.',
+  );
+  readonly #applyLag = getOrCreateLatencyHistogram(
+    'apply',
+    'lag',
+    'Time from a transaction committing upstream to it being applied to ' +
+      'the local replica. Crosses the upstream/local clock domain, like ' +
+      'zero.replication.total_lag.',
   );
 
   constructor(
@@ -125,7 +166,33 @@ export class IncrementalSyncer {
 
         let backfillStatus: DownloadStatus | undefined;
 
-        for await (const {data: message} of downstream) {
+        // Changes accumulated for the next hop to the write worker. Bounded
+        // on purpose: this is resident memory that `postMessage` transiently
+        // doubles when it clones it, so a transaction is never held here --
+        // whatever the caps allow is flushed and applied, mid-transaction if
+        // need be, and the boundary messages that make it atomic are just
+        // more messages in the stream.
+        let batch: ChangeStreamData[] = [];
+        let batchBytes = 0;
+
+        const flush = async () => {
+          if (batch.length === 0) {
+            return;
+          }
+          const sending = batch;
+          batch = [];
+          batchBytes = 0;
+          this.#applyBatches.add(1, {mode: this.#mode});
+          const results = await this.#worker.processMessages(sending);
+          for (const result of results) {
+            this.#handleResult(lc, result);
+            if (result?.completedBackfill) {
+              backfillStatus = undefined;
+            }
+          }
+        };
+
+        for await (const {data: message, json} of downstream) {
           this.#replicationEvents.add(1);
           switch (message[0]) {
             case 'status': {
@@ -199,12 +266,20 @@ export class IncrementalSyncer {
                 backfillStatus = status; // Update the current status
               }
 
-              const data = message as ChangeStreamData;
-              const result = await this.#worker.processMessage(data);
-
-              this.#handleResult(lc, result);
-              if (result?.completedBackfill) {
-                backfillStatus = undefined;
+              batch.push(message as ChangeStreamData);
+              batchBytes += json.length;
+              // Flush when the batch is as large as it is allowed to get, or
+              // -- the common case at any rate below saturation -- when
+              // nothing else has arrived yet, so batching never trades
+              // latency for throughput it does not need. A source that does
+              // not report its queue depth reports `undefined` here, which
+              // flushes every message: exactly the pre-batching behavior.
+              if (
+                batchBytes >= MAX_BATCH_BYTES ||
+                batch.length >= MAX_BATCH_MESSAGES ||
+                (downstream.queued ?? 0) === 0
+              ) {
+                await flush();
               }
               break;
             }
@@ -230,6 +305,12 @@ export class IncrementalSyncer {
   #handleResult(lc: LogContext, result: CommitResult | null) {
     if (!result) {
       return;
+    }
+    this.#applyCommits.add(1, {mode: this.#mode});
+    if (result.upstreamCommitTimeMs !== undefined) {
+      this.#applyLag.recordMs(Date.now() - result.upstreamCommitTimeMs, {
+        mode: this.#mode,
+      });
     }
     if (result.completedBackfill) {
       // Publish the final status

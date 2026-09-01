@@ -1,3 +1,4 @@
+import {jsonValueSchema} from '../../../../../../shared/src/bigint-json.ts';
 import * as v from '../../../../../../shared/src/valita.ts';
 import {
   backfillIDSchema,
@@ -29,6 +30,17 @@ export const backfillRequestSchema = v.object({
     metadata: tableMetadataSchema.nullable(),
   }),
   columns: v.record(backfillIDSchema),
+
+  /**
+   * Resumes an interrupted backfill strictly after the row with this key,
+   * with values ordered to match the table's row key columns. Rows are
+   * backfilled in row-key order (text-family columns compared bytewise,
+   * i.e. `COLLATE "C"`), so the key of the last row durably applied
+   * downstream is a valid resumption point. A change-source that cannot
+   * resume from the given key values instead restarts the backfill from
+   * the beginning, which is always correct since backfills are idempotent.
+   */
+  resumeAfter: v.array(jsonValueSchema).optional(),
 });
 
 export type BackfillRequest = v.Infer<typeof backfillRequestSchema>;

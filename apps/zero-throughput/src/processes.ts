@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import {rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import type {BenchmarkConfig} from './config.ts';
 import {appPath, appRoot, repoRoot} from './config.ts';
 import {
@@ -179,7 +179,27 @@ export async function removeReplicaFiles(replicaFile: string): Promise<void> {
       `${replicaFile}-vs${i}-wal`,
     );
   }
-  await Promise.all(files.map(file => rm(file, {force: true})));
+  // Backup-mode `archive` artifacts: the gateway's segment spool and the
+  // base producer's working replica, both derived and both beside the
+  // configured replica path.
+  const dirs = [
+    `${replicaFile}-rm-archive-spool`,
+    `${replicaFile}-archive-spool`,
+    `${replicaFile}-rm-base-producer-segments`,
+    `${replicaFile}-base-producer-segments`,
+  ];
+  for (const suffix of ['-rm-base-producer', '-base-producer']) {
+    files.push(
+      `${replicaFile}${suffix}`,
+      `${replicaFile}${suffix}-shm`,
+      `${replicaFile}${suffix}-wal`,
+      `${replicaFile}${suffix}-wal2`,
+    );
+  }
+  await Promise.all([
+    ...files.map(file => rm(file, {force: true})),
+    ...dirs.map(dir => rm(dir, {recursive: true, force: true})),
+  ]);
 }
 
 export type StartedTopology = {
@@ -247,10 +267,14 @@ export async function startZeroTopology(
     const vsURL = `http://127.0.0.1:${vsPort}`;
     readyURLs.push(vsURL);
 
-    copyReplicaFile(
-      `${config.zero.replicaFile}-rm`,
-      `${config.zero.replicaFile}-vs${i}`,
-    );
+    if (config.backupMode !== 'archive') {
+      copyReplicaFile(
+        `${config.zero.replicaFile}-rm`,
+        `${config.zero.replicaFile}-vs${i}`,
+      );
+    }
+    // In `archive` there is nothing to copy: the manager holds no replica,
+    // and the view-syncer restores the base the producer published.
 
     const vs = spawnZeroProcess({
       config,
@@ -272,6 +296,35 @@ export async function startZeroTopology(
       await Promise.all(processes.map(p => p.stop()));
     },
   };
+}
+
+/**
+ * The `--backup-mode` environment, applied to every node of the topology.
+ * A fleet is configured from one shared environment: the gateway acts on
+ * these, and the view-syncers read `--backup-mode` to know that their
+ * serving replica is restored from the archive rather than from litestream
+ * or from a copy of the manager's file.
+ */
+function backupEnv(config: BenchmarkConfig): NodeJS.ProcessEnv {
+  if (config.backupMode !== 'archive') {
+    return {};
+  }
+  const dir = appPath(config.archiveDir);
+  mkdirSync(dir, {recursive: true});
+  return {
+    ZERO_BACKUP_MODE: 'archive',
+    ZERO_BACKUP_ARCHIVE_URL: pathToFileURL(dir).href,
+    ZERO_BACKUP_BASE_CHECK_INTERVAL_SECONDS: String(
+      config.baseCheckIntervalSeconds,
+    ),
+    ZERO_BACKUP_SEGMENT_SEAL_INTERVAL_SECONDS: String(
+      config.segmentSealIntervalSeconds,
+    ),
+  };
+}
+
+export function archiveDirPath(config: BenchmarkConfig): string {
+  return appPath(config.archiveDir);
 }
 
 function copyReplicaFile(src: string, dst: string): void {
@@ -323,6 +376,7 @@ function spawnZeroProcess(args: {
     ZERO_LOG_LEVEL: config.zero.logLevel,
     ZERO_LOG_FORMAT: 'text',
     ZERO_ALLOW_LEGACY_QUERIES: 'true',
+    ...backupEnv(config),
   };
 
   if (args.changeStreamerURI) {

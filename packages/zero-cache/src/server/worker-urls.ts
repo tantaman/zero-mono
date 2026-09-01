@@ -14,6 +14,7 @@ function resolve(path: string): URL {
 // These URLs are part of the build process. See ../../zero/tool/build.ts
 // All these urls must be relative to this file and be located in the same directory.
 
+export const BASE_PRODUCER_URL = resolve('./base-producer.ts');
 export const CHANGE_STREAMER_URL = resolve('./change-streamer.ts');
 export const MAIN_URL = resolve('./main.ts');
 export const MUTATOR_URL = resolve('./mutator.ts');

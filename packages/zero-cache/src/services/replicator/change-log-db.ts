@@ -72,13 +72,19 @@ import {
  * Readers can now filter without parsing arbitrary row payloads, and
  * reconciliation can bound truncation by bytes as well as rows.
  *
+ * v5 added the backfill progress mark to the backfilling cookie table, so an
+ * interrupted backfill resumes after the last row it delivered. The reseed it
+ * costs on upgrade drops the marks of any backfill in flight at that moment,
+ * which restarts those backfills — the behavior of every version before this
+ * one.
+ *
  * `auto_vacuum = INCREMENTAL` arrived within v2, deliberately without a bump:
  * it is a file-header property rather than a schema change, and the reseed a
  * version mismatch triggers cannot enable it (see
  * {@link applyChangeLogPragmas}), so {@link openChangeLogDBForWriting} guards
  * on the pragma itself instead of on this number.
  */
-export const CHANGE_LOG_DB_SCHEMA_VERSION = 4;
+export const CHANGE_LOG_DB_SCHEMA_VERSION = 5;
 
 /** https://www.sqlite.org/pragma.html#pragma_auto_vacuum */
 const AUTO_VACUUM_INCREMENTAL = 2;

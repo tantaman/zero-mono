@@ -1,4 +1,5 @@
 import {availableParallelism} from 'node:os';
+import {pathToFileURL} from 'node:url';
 import type {LogContext} from '@rocicorp/logger';
 import {nanoid} from 'nanoid';
 import {assert, assertNotUndefined} from '../../../shared/src/asserts.ts';
@@ -126,6 +127,29 @@ export function assertNormalized(
       config.litestream.vfsQueryExecutable,
     '--litestream-backup-using-v5 requires --litestream-vfs-query-executable to be specified',
   );
+  const {backup} = config;
+  assert(
+    backup.mode === 'litestream' || backup.archiveURL,
+    '--backup-archive-url is required when --backup-mode is not litestream',
+  );
+  assert(
+    Number.isSafeInteger(backup.gcRetainBases) && backup.gcRetainBases >= 2,
+    '--backup-gc-retain-bases must be an integer of at least 2',
+  );
+  for (const [flag, value] of [
+    ['segment-target-bytes', backup.segmentTargetBytes],
+    ['segment-seal-interval-seconds', backup.segmentSealIntervalSeconds],
+    ['base-max-replay-seconds', backup.baseMaxReplaySeconds],
+    ['base-check-interval-seconds', backup.baseCheckIntervalSeconds],
+    ['base-max-interval-hours', backup.baseMaxIntervalHours],
+    ['base-chunk-bytes', backup.baseChunkBytes],
+    ['gc-pitr-hours', backup.gcPitrHours],
+  ] as const) {
+    assert(
+      Number.isFinite(value) && value > 0,
+      `--backup-${flag} must be a positive number`,
+    );
+  }
   assert(config.change.db, 'missing --change-db');
   assert(config.cvr.db, 'missing --cvr-db');
   assertNotUndefined(config.numSyncWorkers, 'missing --num-sync-workers');
@@ -192,6 +216,21 @@ export function normalizeZeroConfig(
   if (!config.cvr.db) {
     config.cvr.db = config.upstream.db;
     env['ZERO_CVR_DB'] = config.upstream.db;
+  }
+
+  if (
+    config.backup.mode === 'archive' &&
+    !config.backup.archiveURL &&
+    isDevelopmentMode()
+  ) {
+    // Single-node development (`zero-cache-dev`): default the archive to a
+    // file:// store next to the replica file, so mode `archive` runs without
+    // any object-store configuration. Production deployments must configure
+    // the URL explicitly (assertNormalized enforces this).
+    const url = pathToFileURL(`${config.replica.file}-archive`).href;
+    config.backup.archiveURL = url;
+    env['ZERO_BACKUP_ARCHIVE_URL'] = url;
+    lc.info?.(`backup mode archive: defaulting --backup-archive-url to ${url}`);
   }
 
   if (!config.keepaliveTimeoutMs && isRunningInECS()) {

@@ -69,6 +69,39 @@ describe('change-streamer/snapshot-reservations', () => {
     expect(reservations.getReservedWatermarks()).toEqual(['watermark-1']);
   });
 
+  test('confirmFor() advertises the backup format only when it is not litestream', async () => {
+    // Mode `archive`: view-syncers restore in whatever format the
+    // replication-manager advertises.
+    const archive = new SnapshotReservations(createSilentLogContext(), {
+      backupURL: 's3://foo/archive',
+      litestreamVersion: 'v5',
+      backupFormat: 'archive',
+    });
+    const message = getFirstMessage(archive.open('task-1'));
+    archive.confirmFor('task-1', 'replica-v1', 'watermark-1', 'pg');
+    expect(await message).toEqual([
+      'status',
+      {
+        tag: 'status',
+        backupURL: 's3://foo/archive',
+        backupFormat: 'archive',
+        replicaVersion: 'replica-v1',
+        minWatermark: 'watermark-1',
+      },
+    ]);
+
+    // An explicit litestream format stays byte-identical to the legacy
+    // message (see the confirmFor() test above for the absent-field case).
+    const litestream = new SnapshotReservations(createSilentLogContext(), {
+      backupURL: 's3://foo/bar',
+      litestreamVersion: 'v5',
+      backupFormat: 'litestream',
+    });
+    const legacy = getFirstMessage(litestream.open('task-1'));
+    litestream.confirmFor('task-1', 'replica-v1', 'watermark-1', 'pg');
+    expect((await legacy)[1]).not.toHaveProperty('backupFormat');
+  });
+
   test('confirmFor() is a no-op for an already-confirmed reservation', () => {
     const reservations = newReservations();
     reservations.open('task-1');

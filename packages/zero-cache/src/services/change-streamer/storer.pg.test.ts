@@ -385,7 +385,7 @@ describe('change-streamer/storer', () => {
       expect(await storer.getStartStreamInitializationParameters())
         .toMatchInlineSnapshot(`
           {
-            "backfillRequests": Result [
+            "backfillRequests": [
               {
                 "columns": {
                   "a": {
@@ -416,6 +416,7 @@ describe('change-streamer/storer', () => {
                     "fooID": 987,
                   },
                   "column": "a",
+                  "resumeAfter": undefined,
                   "schema": "your",
                   "table": "bar",
                 },
@@ -425,6 +426,7 @@ describe('change-streamer/storer', () => {
                     "fooID": 843,
                   },
                   "column": "b",
+                  "resumeAfter": undefined,
                   "schema": "your",
                   "table": "bar",
                 },
@@ -434,6 +436,7 @@ describe('change-streamer/storer', () => {
                     "fooID": 777,
                   },
                   "column": "d",
+                  "resumeAfter": undefined,
                   "schema": "your",
                   "table": "bar",
                 },
@@ -479,18 +482,18 @@ describe('change-streamer/storer', () => {
       await storer.allProcessed();
       expect(summarize(await storer.getStartStreamInitializationParameters()))
         .toMatchInlineSnapshot(`
-        "lastWatermark 0b
-        tableMetadata
-          my.foo {"rowKey":{"type":"index","columns":["a","b"]}}
-        backfilling
-          my.foo.c {"barID":"baz","fooID":123}
-          your.bar.a {"barID":"zoo","fooID":987}
-          your.bar.b {"barID":"ozz","fooID":843}
-          your.bar.d {"barID":"zoz","fooID":777}
-        backfillRequests
-          your.bar metadata=null columns={"a":{"barID":"zoo","fooID":987},"b":{"barID":"ozz","fooID":843},"d":{"barID":"zoz","fooID":777}}
-          my.foo metadata={"rowKey":{"type":"index","columns":["a","b"]}} columns={"c":{"barID":"baz","fooID":123}}"
-      `);
+          "lastWatermark 0b
+          tableMetadata
+            my.foo {"rowKey":{"type":"index","columns":["a","b"]}}
+          backfilling
+            my.foo.c {"barID":"baz","fooID":123}
+            your.bar.a {"barID":"zoo","fooID":987}
+            your.bar.b {"barID":"ozz","fooID":843}
+            your.bar.d {"barID":"zoz","fooID":777}
+          backfillRequests
+            my.foo metadata={"rowKey":{"type":"index","columns":["a","b"]}} columns={"c":{"barID":"baz","fooID":123}}
+            your.bar metadata=null columns={"a":{"barID":"zoo","fooID":987},"b":{"barID":"ozz","fooID":843},"d":{"barID":"zoz","fooID":777}}"
+        `);
 
       // Add another column to the same table with new table metadata.
       storer.store('0c', ['begin', messages.begin(), {commitWatermark: '0b'}]);

@@ -11,8 +11,13 @@ import {registerSQLiteCorruptionDiagnosticTarget} from '../db/sqlite-corruption.
 import {warmupConnections} from '../db/warmup.ts';
 import {initEventSink, publishCriticalEvent} from '../observability/events.ts';
 import {getOrCreateGauge} from '../observability/metrics.ts';
+import {createObjectStore} from '../services/backup/object-store/create-object-store.ts';
+import type {ObjectStore} from '../services/backup/object-store/object-store.ts';
 import {initializeCustomChangeSource} from '../services/change-source/custom/change-source.ts';
-import {initializePostgresChangeSource} from '../services/change-source/pg/change-source.ts';
+import {
+  initializeArchiveModeChangeSource,
+  initializePostgresChangeSource,
+} from '../services/change-source/pg/change-source.ts';
 import {createBackupCleanupMonitor} from '../services/change-streamer/backup-cleanup-monitor-factory.ts';
 import {ChangeStreamerHttpServer} from '../services/change-streamer/change-streamer-http.ts';
 import {initializeStreamer} from '../services/change-streamer/change-streamer-service.ts';
@@ -35,6 +40,7 @@ import {
   ReplicationStatusPublisher,
 } from '../services/replicator/replication-status.ts';
 import {sqliteFileBytes} from '../services/replicator/sqlite-change-log-observability.ts';
+import {versionFromLexi} from '../types/lexi-version.ts';
 import {connectPgClient} from '../types/pg.ts';
 import {
   childWorker,
@@ -79,6 +85,7 @@ export default async function runWorker(
     autoReset,
     replicationLag,
     litestream,
+    backup,
     upstream,
     change,
     replica,
@@ -121,15 +128,17 @@ export default async function runWorker(
 
   // When restoring from litestream, acquire a lock to prevent change-log
   // purges. This ensures that (this) change-streamer will be able to resume
-  // from the backup.
+  // from the backup. In backup mode `archive` there is no litestream restore
+  // (and no replica at all) to protect.
   let purgeLock =
-    litestream.backupURL && litestream.executable
+    litestream.backupURL && litestream.executable && backup.mode !== 'archive'
       ? await new PurgeLocker(lc, shard, changeDB).acquire()
       : null;
   const restoreOptions = {litestream, constraints: purgeLock ?? undefined};
 
   let changeStreamer: ChangeStreamerService | undefined;
   let backupURL: string | undefined;
+  let replicaVersion: string | undefined;
 
   const context = getServerContext(config);
   const sqliteChangeLogEnabled = sqliteChangeLogMode !== 'off';
@@ -160,6 +169,24 @@ export default async function runWorker(
     );
   }
 
+  // The logical backup archive (see the --backup-mode flag). The store is
+  // created once; the writer's lineage (replicaVersion) is only known
+  // per-initialization below.
+  let archiveStore: ObjectStore | undefined;
+  if (backup.mode === 'archive') {
+    const archiveURL = must(
+      backup.archiveURL,
+      '--backup-archive-url is required when --backup-mode is not litestream',
+    );
+    lc.info?.(`backup mode ${backup.mode}: archiving to ${archiveURL}`);
+    archiveStore = await createObjectStore(archiveURL, {
+      // The archive shares the litestream bucket's S3 configuration; only
+      // the URL (bucket/prefix) is deliberately distinct.
+      endpoint: litestream.endpoint,
+      region: litestream.region,
+    });
+  }
+
   let waitForFirstBackupBeforeServing = false;
   for (const first of [true, false]) {
     try {
@@ -170,8 +197,29 @@ export default async function runWorker(
         destinationBackupURL,
         replicaID,
         waitForBackupBeforeServing,
-      } =
-        upstream.type === 'pg'
+      } = archiveStore
+        ? // The gateway world: no replica is restored or synced here.
+          // Identity comes from the change DB + upstream replicas table,
+          // and an identity-less stack performs genesis through the
+          // archive (the base producer builds the first base).
+          await initializeArchiveModeChangeSource(
+            lc,
+            must(
+              upstream.type === 'pg' ? upstream.db : undefined,
+              '--backup-mode=archive requires a Postgres upstream',
+            ),
+            shard,
+            changeDB,
+            {
+              ...initialSync,
+              replicationSlotFailover: upstream.pgReplicationSlotFailover,
+            },
+            context,
+            {store: archiveStore, taskID},
+            replicationLag.reportIntervalMs,
+            upstream.pgStreamInboundTimeoutMs,
+          )
+        : upstream.type === 'pg'
           ? await initializePostgresChangeSource(
               lc,
               upstream.db,
@@ -210,12 +258,22 @@ export default async function runWorker(
         changeSource,
         replicationStatusPublisher,
         subscriptionState,
-        destinationBackupURL
+        // In backup mode `archive`, subscribers restore from the archive:
+        // the snapshot status advertises the archive URL and format, and a
+        // canary flip on the replication-manager alone carries every
+        // view-syncer with it.
+        archiveStore
           ? {
-              backupURL: destinationBackupURL,
-              litestreamVersion: litestream.backupUsingV5 ? 'v5' : 'legacy',
+              backupURL: must(backup.archiveURL),
+              litestreamVersion: 'legacy', // ACKs gate on the archive cursor
+              backupFormat: 'archive',
             }
-          : null,
+          : destinationBackupURL
+            ? {
+                backupURL: destinationBackupURL,
+                litestreamVersion: litestream.backupUsingV5 ? 'v5' : 'legacy',
+              }
+            : null,
         purgeLock,
         autoReset ?? false,
         {
@@ -276,10 +334,25 @@ export default async function runWorker(
                   retentionMs: sqliteChangeLogRetentionMs,
                 }
               : undefined,
+          // The presence of this option is the archive writer's gate. The
+          // archive is authoritative whenever configured (fail-stall), and
+          // its durable cursor gates upstream ACKs.
+          archiveWriter: archiveStore
+            ? {
+                store: archiveStore,
+                replicaVersion: subscriptionState.replicaVersion,
+                // Beside the replica file: local disk with room for the
+                // replica has room for the (re-derivable) spool.
+                spoolDir: `${replica.file}-archive-spool`,
+                segmentTargetBytes: backup.segmentTargetBytes,
+                sealIntervalMs: backup.segmentSealIntervalSeconds * 1000,
+              }
+            : undefined,
         },
         setTimeout,
       );
       backupURL = destinationBackupURL;
+      replicaVersion = subscriptionState.replicaVersion;
       waitForFirstBackupBeforeServing = waitForBackupBeforeServing;
       break;
     } catch (e) {
@@ -321,6 +394,10 @@ export default async function runWorker(
   // impossible: upstream must have advanced in order for replication to be stuck.
   assert(changeStreamer, `resetting replica did not advance replicaVersion`);
 
+  if (archiveStore) {
+    registerArchiveGauges(changeStreamer);
+  }
+
   const processes = new ProcessManager(lc, parent);
   if (backupURL) {
     lc.info?.('setting up backup to', backupURL);
@@ -353,6 +430,11 @@ export default async function runWorker(
     config,
     replicaFile: replica.file,
     changeStreamer,
+    // In backup mode `archive`, the purge floor and snapshot confirmation
+    // come from the archive's complete-base listing.
+    archive: archiveStore
+      ? {store: archiveStore, replicaVersion: must(replicaVersion)}
+      : undefined,
   });
 
   let readinessGate = promiseVoid;
@@ -389,6 +471,50 @@ export default async function runWorker(
   } finally {
     await processes.shutdown();
   }
+}
+
+/**
+ * The health gauges for the logical backup archive: the durable cursor's lag
+ * behind the stream (which is also how far ACKs are being held back),
+ * buffered bytes, and upload-queue depth. These are the signals the flip
+ * runbook watches on a newly-flipped stack.
+ */
+function registerArchiveGauges(changeStreamer: ChangeStreamerService) {
+  const state = () => changeStreamer.archiveWriterState?.();
+  getOrCreateGauge('replica', 'backup_archive.cursor_lag_versions', {
+    description:
+      'How far the durable archive cursor trails the last committed ' +
+      'watermark the writer has seen, in version (LSN) units.',
+  }).addCallback(o => {
+    const s = state();
+    if (s?.durableWatermark && s.lastBufferedWatermark) {
+      o.observe(
+        Number(
+          versionFromLexi(s.lastBufferedWatermark) -
+            versionFromLexi(s.durableWatermark),
+        ),
+      );
+    }
+  });
+  getOrCreateGauge('replica', 'backup_archive.buffered_bytes', {
+    description:
+      'Uncompressed bytes buffered in the archive writer (open segment ' +
+      'plus upload queue).',
+    unit: 'By',
+  }).addCallback(o => {
+    const s = state();
+    if (s) {
+      o.observe(s.bufferedBytes);
+    }
+  });
+  getOrCreateGauge('replica', 'backup_archive.queued_segments', {
+    description: 'Sealed segments awaiting upload.',
+  }).addCallback(o => {
+    const s = state();
+    if (s) {
+      o.observe(s.queuedSegments);
+    }
+  });
 }
 
 // fork()

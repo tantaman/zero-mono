@@ -30,6 +30,16 @@ const statusSchema = v.object({
   backupURL: v.string(),
 
   /**
+   * The format of the backup at {@link backupURL}. Subscribers restore in
+   * whatever format the replication-manager advertises, which is what lets a
+   * canary deployment flip `--backup-mode` on its replication-manager alone
+   * and have every view-syncer follow automatically. Absent (an older or
+   * litestream-mode replication-manager) means `litestream`; the field is
+   * optional and therefore backward compatible.
+   */
+  backupFormat: v.literalUnion('litestream', 'archive').optional(),
+
+  /**
    * The `replicaVersion` of the backup. If a subscriber's restored or
    * existing replica is of a different version, it should delete it and
    * retry the restore from litestream (i.e. equivalent to a

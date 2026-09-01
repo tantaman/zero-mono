@@ -1,4 +1,7 @@
-import {copyFileSync} from 'fs';
+import {copyFileSync, mkdtempSync, rmSync} from 'fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import websocket from '@fastify/websocket';
 import type {LogLevel} from '@rocicorp/logger';
 import {resolver} from '@rocicorp/resolver';
@@ -426,6 +429,8 @@ describe('integration', {timeout: 30000}, () => {
   let changeDB: PostgresDB;
   let replicaDbFile: DbFile;
   let replicaDbFile2: DbFile;
+  /** The `file://` object store backing the `archive` backup-mode variant. */
+  let archiveDir: string;
   let env: Record<string, string>;
   let port: number;
   let port2: number;
@@ -451,6 +456,7 @@ describe('integration', {timeout: 30000}, () => {
     changeDB = await testDBs.create('integration_test_change');
     replicaDbFile = new DbFile('integration_test_replica');
     replicaDbFile2 = new DbFile('integration_test_replica2');
+    archiveDir = mkdtempSync(join(tmpdir(), 'zero-integration-archive-'));
     zeros = [];
     zerosExited = [];
 
@@ -511,6 +517,7 @@ describe('integration', {timeout: 30000}, () => {
         await testDBs.drop(upDB, cvrDB, changeDB);
         replicaDbFile.delete();
         replicaDbFile2.delete();
+        rmSync(archiveDir, {recursive: true, force: true});
       }
     };
   }, 30000);
@@ -788,6 +795,29 @@ describe('integration', {timeout: 30000}, () => {
           ...env,
           ['ZERO_LITESTREAM_EXECUTABLE']: '/not-used/litestream',
           ['ZERO_LITESTREAM_EXECUTABLE_V5']: '/not-used/litestream-v5',
+        },
+      ],
+      undefined,
+    ],
+    [
+      // Backup mode `archive`: no litestream, and the replication-manager
+      // holds no replica file of its own. Booting at all exercises the
+      // producer/gateway genesis rendezvous (the gateway blocks on the first
+      // base, which only the base-producer worker can publish), and every
+      // assertion below then runs against a replica the serving replicator
+      // restored from the archive rather than one it synced itself.
+      'single-node archive backup',
+      'pg',
+      () => [
+        {
+          ...env,
+          ['ZERO_BACKUP_MODE']: 'archive',
+          ['ZERO_BACKUP_ARCHIVE_URL']: pathToFileURL(archiveDir).href,
+          // The producer's re-evaluation beat, which also bounds how long a
+          // cold start waits to notice the gateway's genesis offer. At the
+          // 30s default this variant spends a full minute asleep.
+          ['ZERO_BACKUP_BASE_CHECK_INTERVAL_SECONDS']: '1',
+          ['ZERO_BACKUP_SEGMENT_SEAL_INTERVAL_SECONDS']: '1',
         },
       ],
       undefined,

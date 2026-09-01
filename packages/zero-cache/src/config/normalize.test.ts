@@ -1,5 +1,10 @@
-import {describe, expect, test} from 'vitest';
-import {assertNormalized, runsChangeStreamer} from './normalize.ts';
+import {afterEach, describe, expect, test, vi} from 'vitest';
+import {createSilentLogContext} from '../../../shared/src/logging-test-utils.ts';
+import {
+  assertNormalized,
+  normalizeZeroConfig,
+  runsChangeStreamer,
+} from './normalize.ts';
 import type {ZeroConfig} from './zero-config.ts';
 
 function configWith(litestream: Partial<ZeroConfig['litestream']>): ZeroConfig {
@@ -29,6 +34,19 @@ function configWith(litestream: Partial<ZeroConfig['litestream']>): ZeroConfig {
       executableV5: undefined,
       vfsPollIntervalMs: 15_000,
       ...litestream,
+    },
+    backup: {
+      mode: 'litestream',
+      segmentTargetBytes: 16 * 1024 * 1024,
+      segmentSealIntervalSeconds: 30,
+      baseMaxReplaySeconds: 300,
+      baseCheckIntervalSeconds: 30,
+      baseMaxIntervalHours: 24,
+      baseChunkBytes: 64 * 1024 * 1024,
+      baseIntegrityCheck: 'full',
+      gcEnabled: true,
+      gcRetainBases: 2,
+      gcPitrHours: 24,
     },
   } as unknown as ZeroConfig;
 }
@@ -208,6 +226,118 @@ describe('config/normalize SQLite change log', () => {
     config.changeStreamer.sqliteChangeLogColdReadPercent = 5;
 
     expect(() => assertNormalized(config)).not.toThrow();
+  });
+});
+
+describe('config/normalize backup archive mode', () => {
+  test('litestream mode requires no archive URL', () => {
+    expect(() => assertNormalized(configWith({}))).not.toThrow();
+  });
+
+  test('mode archive requires an archive URL', () => {
+    const config = configWith({});
+    config.backup.mode = 'archive';
+    expect(() => assertNormalized(config)).toThrow(
+      '--backup-archive-url is required when --backup-mode is not litestream',
+    );
+
+    config.backup.archiveURL = 's3://bucket/archive';
+    expect(() => assertNormalized(config)).not.toThrow();
+  });
+
+  test('gc (an emergency off switch) is valid in either mode', () => {
+    // The flag is only read in mode archive; a fleet-wide value must not
+    // fail validation in the litestream world.
+    for (const gcEnabled of [true, false]) {
+      const config = configWith({});
+      config.backup.gcEnabled = gcEnabled;
+      expect(() => assertNormalized(config)).not.toThrow();
+    }
+  });
+
+  test('gc must retain at least two bases', () => {
+    for (const retainBases of [0, 1, 1.5]) {
+      const config = configWith({});
+      config.backup.gcRetainBases = retainBases;
+      expect(() => assertNormalized(config)).toThrow(
+        '--backup-gc-retain-bases must be an integer of at least 2',
+      );
+    }
+  });
+
+  test('tuning values must be positive', () => {
+    for (const flag of [
+      'segmentTargetBytes',
+      'segmentSealIntervalSeconds',
+      'baseMaxReplaySeconds',
+      'baseCheckIntervalSeconds',
+      'baseMaxIntervalHours',
+      'baseChunkBytes',
+      'gcPitrHours',
+    ] as const) {
+      const config = configWith({});
+      config.backup[flag] = 0;
+      expect(() => assertNormalized(config)).toThrow(
+        'must be a positive number',
+      );
+    }
+  });
+});
+
+describe('config/normalize dev archive URL default', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function archiveModeConfig(): ZeroConfig {
+    const config = configWith({});
+    config.backup.mode = 'archive';
+    return Object.assign(config, {
+      port: 4848,
+      replica: {file: '/tmp/dev-replica.db'},
+      upstream: {db: 'postgres:///up'},
+    }) as ZeroConfig;
+  }
+
+  test('development mode defaults the archive URL to a file:// store', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const env: NodeJS.ProcessEnv = {};
+    const config = archiveModeConfig();
+    normalizeZeroConfig(createSilentLogContext(), config, env);
+    expect(config.backup.archiveURL).toBe('file:///tmp/dev-replica.db-archive');
+    expect(env['ZERO_BACKUP_ARCHIVE_URL']).toBe(
+      'file:///tmp/dev-replica.db-archive',
+    );
+    expect(() => assertNormalized(config)).not.toThrow();
+  });
+
+  test('production mode does not default the archive URL', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const env: NodeJS.ProcessEnv = {};
+    const config = archiveModeConfig();
+    normalizeZeroConfig(createSilentLogContext(), config, env);
+    expect(config.backup.archiveURL).toBeUndefined();
+    expect(env['ZERO_BACKUP_ARCHIVE_URL']).toBeUndefined();
+  });
+
+  test('an explicit archive URL is preserved', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const env: NodeJS.ProcessEnv = {};
+    const config = archiveModeConfig();
+    config.backup.archiveURL = 's3://bucket/archive';
+    normalizeZeroConfig(createSilentLogContext(), config, env);
+    expect(config.backup.archiveURL).toBe('s3://bucket/archive');
+    expect(env['ZERO_BACKUP_ARCHIVE_URL']).toBeUndefined();
+  });
+
+  test('litestream mode never defaults the archive URL', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const env: NodeJS.ProcessEnv = {};
+    const config = archiveModeConfig();
+    config.backup.mode = 'litestream';
+    normalizeZeroConfig(createSilentLogContext(), config, env);
+    expect(config.backup.archiveURL).toBeUndefined();
+    expect(env['ZERO_BACKUP_ARCHIVE_URL']).toBeUndefined();
   });
 });
 

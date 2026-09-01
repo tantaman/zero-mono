@@ -18,10 +18,12 @@ import {
 } from '../../../../../shared/src/set-utils.ts';
 import * as v from '../../../../../shared/src/valita.ts';
 import {Database} from '../../../../../zqlite/src/db.ts';
+import * as Mode from '../../../db/mode-enum.ts';
 import {
   mapPostgresToLiteColumn,
   UnsupportedColumnDefaultError,
 } from '../../../db/pg-to-lite.ts';
+import {runTx} from '../../../db/run-transaction.ts';
 import type {
   ColumnSpec,
   PublishedIndexSpec,
@@ -47,7 +49,17 @@ import {
   majorVersionToString,
 } from '../../../types/state-version.ts';
 import type {Sink} from '../../../types/streams.ts';
-import {AutoResetSignal} from '../../change-streamer/schema/tables.ts';
+import {
+  awaitGenesisBase,
+  encodeGenesisOffer,
+  GENESIS_OFFER_FORMAT,
+  genesisOfferKey,
+} from '../../backup/genesis.ts';
+import type {ObjectStore} from '../../backup/object-store/object-store.ts';
+import {
+  AutoResetSignal,
+  getReplicationConfig,
+} from '../../change-streamer/schema/tables.ts';
 import {
   getSubscriptionStateAndContext,
   type SubscriptionStateAndContext,
@@ -84,6 +96,8 @@ import type {
 import type {ColumnMetadata, TableMetadata} from './backfill-metadata.ts';
 import {streamBackfill} from './backfill-stream.ts';
 import {
+  checkUpstreamConfig,
+  ensurePublishedTables,
   initialSync,
   type InitialSyncOptions,
   type ReplicaOptions,
@@ -97,6 +111,7 @@ import type {
 import {subscribe, type StreamMessage} from './logical-replication/stream.ts';
 import {fromBigInt, toBigInt, toStateVersionString, type LSN} from './lsn.ts';
 import {registerReplicationSlotHealthMetrics} from './replication-slot-health.ts';
+import {createReplicaAndSlot} from './replication-slots.ts';
 import {dropOldReplicasAndSlots} from './replication-slots.ts';
 import {replicationEventSchema, type ReplicationEvent} from './schema/ddl.ts';
 import {ensureShardSchema} from './schema/init.ts';
@@ -110,9 +125,11 @@ import {
   getActiveReplicas,
   getInternalShardConfig,
   getReplicaAtVersion,
+  initReplica as recordInitialSyncOnReplica,
   internalPublicationPrefix,
   replicaIdentitiesForTablesWithoutPrimaryKeys,
   replicationSlotPrefix,
+  validatePublications,
   type BackupOptions,
   type InternalShardConfig,
   type Replica,
@@ -241,6 +258,266 @@ export async function initializePostgresChangeSource(
   } finally {
     await db.end();
   }
+}
+
+export type ArchiveModeOptions = {
+  /** The archive store the genesis handoff goes through. */
+  store: ObjectStore;
+  /** The offering task, recorded in the genesis offer for logs. */
+  taskID: string;
+  /**
+   * How long the genesis wait tolerates a producer without heartbeats
+   * before abandoning the offer (and the slot). Defaults to 5 minutes,
+   * which covers producer scheduling and restart; a *copying* producer
+   * heartbeats every few seconds.
+   */
+  genesisHeartbeatTimeoutMs?: number | undefined;
+};
+
+const DEFAULT_GENESIS_HEARTBEAT_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Initializes a Postgres change source in backup mode `archive`, where the
+ * replication-manager is a gateway: it neither restores nor initial-syncs a
+ * replica. Identity and publications come from the change DB and the
+ * upstream `replicas` table; the resume point comes from the change DB (the
+ * change-log head, exactly as after any restart); and with no identity
+ * anywhere — a fresh stack, or a flip into the archive world — the gateway
+ * performs **genesis**: it creates the slot, publishes a genesis offer with
+ * the slot's exported snapshot, and holds the creating session open while
+ * the base producer copies and publishes the lineage's first base.
+ *
+ * There is no litestream and no backup-replicator anywhere in this path;
+ * `destinationBackupURL` is undefined, and readiness gates on the archive's
+ * first complete base via the archive watermark poller.
+ */
+export async function initializeArchiveModeChangeSource(
+  lc: LogContext,
+  upstreamURI: string,
+  shard: ShardConfig,
+  changeDB: PostgresDB,
+  syncOptions: InitialSyncOptions,
+  context: ServerContext,
+  archive: ArchiveModeOptions,
+  lagReportIntervalMs = 0,
+  streamInboundTimeoutMs?: number | undefined,
+): Promise<InitializeResult> {
+  const db = await connectPgClient(lc, upstreamURI, 'change-source-init');
+  try {
+    await ensureShardSchema(lc, db, shard);
+    const pgVersion = await checkUpstreamConfig(db);
+
+    // Identity: the change DB's stored config, validated against a live
+    // slot in the upstream replicas table. Anything short of that pair —
+    // no config, no matching replica/slot, or a publication change — is a
+    // (re)genesis: a new slot, a new lineage, and a first base built by
+    // the producer.
+    let replica = await findConfiguredReplica(lc, db, changeDB, shard);
+    if (replica !== null) {
+      const requested = shard.publications.toSorted();
+      const replicated = replica.publications
+        .filter(p => !p.startsWith(internalPublicationPrefix(shard)))
+        .sort();
+      if (!deepEqual(requested, replicated)) {
+        lc.warn?.(
+          `Dropping shard to change publications from [${replicated}] to ` +
+            `[${requested}]; a new lineage will be created by genesis`,
+        );
+        await db.unsafe(dropShard(shard.appID, shard.shardNum));
+        replica = null;
+      }
+    }
+    if (replica === null) {
+      replica = await performGenesis(
+        lc,
+        db,
+        shard,
+        syncOptions,
+        pgVersion,
+        context,
+        archive,
+      );
+    }
+
+    const replicaVersion = replica.generation;
+    const subscriptionState = {
+      replicaVersion,
+      publications: replica.publications,
+      // With no replica file there is no file watermark; the change-log
+      // head (which `ensureReplicationConfig` seeds at the replicaVersion
+      // for a fresh change DB) is the resume point, as it is after any
+      // restart.
+      watermark: replicaVersion,
+    };
+
+    const changeSource = new PostgresChangeSource(
+      lc,
+      upstreamURI,
+      shard,
+      replica,
+      {backupPath: null, backupV5: false}, // no litestream in the archive world
+      context,
+      lagReportIntervalMs,
+      syncOptions.textCopy,
+      streamInboundTimeoutMs,
+    );
+
+    return {
+      subscriptionState,
+      changeSource,
+      destinationBackupURL: undefined,
+      replicaID: replica.id,
+      // Readiness gates on the archive's first complete base (the archive
+      // watermark poller feeds firstBackupReceived). After a genesis that
+      // base already exists, so the gate clears immediately.
+      waitForBackupBeforeServing: true,
+    };
+  } finally {
+    await db.end();
+  }
+}
+
+/**
+ * The replica identified by the change DB's stored config, when the
+ * upstream still has it (with its slot); `null` otherwise.
+ */
+async function findConfiguredReplica(
+  lc: LogContext,
+  db: PostgresDB,
+  changeDB: PostgresDB,
+  shard: ShardConfig,
+): Promise<Replica | null> {
+  const config = await getReplicationConfig(changeDB, shard);
+  if (config === undefined) {
+    lc.info?.(`the change DB has no replication identity`);
+    return null;
+  }
+  const replica = await getReplicaAtVersion(
+    lc,
+    db,
+    shard,
+    config.replicaVersion,
+  );
+  if (replica === null) {
+    lc.warn?.(
+      `the change DB identifies generation ${config.replicaVersion}, which ` +
+        `has no live replica upstream; starting a new lineage`,
+    );
+    return null;
+  }
+  lc.info?.(
+    `resuming generation ${config.replicaVersion} on slot ${replica.slot}`,
+  );
+  return replica;
+}
+
+/**
+ * Lineage genesis, gateway side: create the slot, publish a genesis offer
+ * with the slot's exported snapshot, and hold the slot-creating session
+ * open — the snapshot stays importable for exactly that long — while the
+ * base producer copies at it and publishes the lineage's first base. An
+ * abandoned genesis (no producer heartbeat) throws; `createReplicaAndSlot`
+ * drops the slot on the way out and a process restart retries.
+ */
+async function performGenesis(
+  lc: LogContext,
+  db: PostgresDB,
+  shard: ShardConfig,
+  syncOptions: InitialSyncOptions,
+  pgVersion: number,
+  context: ServerContext,
+  archive: ArchiveModeOptions,
+): Promise<Replica> {
+  const {store, taskID} = archive;
+  const {publications} = await ensurePublishedTables(lc, db, shard);
+  lc.info?.(`starting genesis with publications [${publications}]`);
+
+  const replicaID = Date.now().toString();
+  let initialSchema: Awaited<ReturnType<typeof getPublicationInfo>> | undefined;
+  const {slot} = await createReplicaAndSlot(
+    lc,
+    db,
+    'genesis-replication-session',
+    shard,
+    replicaID,
+    (syncOptions.replicationSlotFailover ?? false) && pgVersion >= PG_17,
+    {backupPath: null, backupV5: false},
+    async (snapshotID, createdSlot) => {
+      const replicaVersion = toStateVersionString(
+        createdSlot.consistent_point as LSN,
+      );
+      // The schema the producer is about to copy, read at the very snapshot
+      // it will copy at. This is what `initialSchema` means, and reading it
+      // here — rather than after the handoff — is what makes it exact: the
+      // snapshot is importable for exactly the lifetime of this callback,
+      // and upstream DDL landing after the consistent point belongs to the
+      // replication stream, not to the initial sync.
+      initialSchema = await runTx(
+        db,
+        async tx => {
+          await tx.unsafe(`SET TRANSACTION SNAPSHOT '${snapshotID}'`);
+          return getPublicationInfo(tx, publications);
+        },
+        {mode: Mode.READONLY},
+      );
+      validatePublications(lc, initialSchema);
+      await store.put(
+        genesisOfferKey(replicaVersion),
+        encodeGenesisOffer({
+          format: GENESIS_OFFER_FORMAT,
+          version: 1,
+          replicaVersion,
+          snapshotID,
+          lsn: createdSlot.consistent_point,
+          taskID,
+          offeredAt: Date.now(),
+        }),
+      );
+      lc.info?.(
+        `offered genesis for ${replicaVersion} at snapshot ${snapshotID}; ` +
+          `waiting for the producer's first base`,
+      );
+      const result = await awaitGenesisBase(lc, store, replicaVersion, {
+        heartbeatTimeoutMs:
+          archive.genesisHeartbeatTimeoutMs ??
+          DEFAULT_GENESIS_HEARTBEAT_TIMEOUT_MS,
+      });
+      if (result !== 'published') {
+        throw new Error(
+          `genesis for ${replicaVersion} was ${result}: no base producer ` +
+            `completed the initial copy`,
+        );
+      }
+    },
+  );
+
+  const replicaVersion = toStateVersionString(slot.consistent_point as LSN);
+  // The genesis copy ran in the producer, so the producer's initial-sync
+  // deliberately left the upstream `replicas` record to the gateway (it owns
+  // the slot, and the row is only inserted once the copy has committed, by
+  // `createReplicaAndSlot` above). Record what was synced now: until this
+  // lands the row has a null `initialSyncContext`, which is precisely what
+  // marks a replica as not yet usable — `getReplicaAtVersion` filters it out.
+  await recordInitialSyncOnReplica(
+    db,
+    shard,
+    replicaID,
+    must(initialSchema, 'genesis captured no snapshot schema'),
+    context,
+  );
+
+  const replica = await getReplicaAtVersion(
+    lc,
+    db,
+    shard,
+    replicaVersion,
+    replicaID,
+    context,
+  );
+  return must(
+    replica,
+    `genesis created no replica at version ${replicaVersion}`,
+  );
 }
 
 async function selectAndRestoreReplica(

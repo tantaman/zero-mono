@@ -13,16 +13,28 @@
  * - **table metadata**, the most current {@link TableMetadata} of a table, which
  *   a {@link BackfillRequest} has to carry; and
  * - **backfilling columns**, the opaque {@link BackfillID} of every column whose
- *   backfill has not completed.
+ *   backfill has not completed, each with the *progress mark* of the backfill
+ *   in flight on it: the row key of the last row delivered, which the next
+ *   {@link BackfillRequest} resumes strictly after.
  *
  * Both are a *fold over the change stream*: the cookie set is only meaningful
  * paired with the watermark it was folded up to. {@link cookieOps} is that fold,
- * expressed transport-free so that the Postgres change log and the SQLite change
- * log cannot drift from each other — they must agree on all eight transitions
- * forever, and the failure mode if they disagree is a backfill that is silently
- * never re-requested. The two interpreters are {@link ChangeLogCookieWriter}
- * here and `Storer.#trackBackfillMetadata()` in
- * `change-streamer/storer.ts`.
+ * expressed transport-free so that the three stores that hold the set cannot
+ * drift from each other — they must agree on all nine transitions forever, and
+ * the failure mode if they disagree is a backfill that is silently never
+ * re-requested. The interpreters are {@link ChangeLogCookieWriter} here,
+ * `Storer.#cookieStmts()` in `change-streamer/storer.ts`, and
+ * `BackfillingTracker` in `replicator/schema/backfilling.ts`; {@link
+ * foldCookies} is a fourth, in memory, used to carry a replica-derived set
+ * forward for comparison.
+ *
+ * The mark is the one piece of the set that is a hint rather than a fact. It
+ * only ever moves a backfill's starting point forward over rows already
+ * delivered, so losing it — to a reseed, to a store that predates it, to
+ * columns that disagree — costs a restart of something idempotent, where losing
+ * a `backfilling` row costs a column that is never populated. That asymmetry is
+ * why the change-log initialization comparison checks the rows and ignores the
+ * marks.
  *
  * The tables live in the change-log database rather than in the replica: the
  * replicator is a subscriber *downstream* of the change-streamer's write loop,
@@ -33,12 +45,16 @@
  */
 
 import {unreachable} from '../../../../shared/src/asserts.ts';
-import {BigIntJSON} from '../../../../shared/src/bigint-json.ts';
+import {
+  BigIntJSON,
+  type JSONValue,
+} from '../../../../shared/src/bigint-json.ts';
 import * as v from '../../../../shared/src/valita.ts';
 import type {Database, Statement} from '../../../../zqlite/src/db.ts';
 import type {
   BackfillID,
   Identifier,
+  MessageBackfill,
   SchemaChange,
   TableMetadata,
 } from '../change-source/protocol/current/data.ts';
@@ -65,10 +81,11 @@ export const CREATE_CHANGE_LOG_COOKIE_SCHEMA = /*sql*/ `
   );
 
   CREATE TABLE "${CHANGE_LOG_BACKFILLING_TABLE}" (
-    "schema"   TEXT NOT NULL,
-    "table"    TEXT NOT NULL,
-    "column"   TEXT NOT NULL,
-    "backfill" TEXT NOT NULL,
+    "schema"      TEXT NOT NULL,
+    "table"       TEXT NOT NULL,
+    "column"      TEXT NOT NULL,
+    "backfill"    TEXT NOT NULL,
+    "resumeAfter" TEXT,
     PRIMARY KEY ("schema", "table", "column")
   );
 `;
@@ -89,6 +106,15 @@ export type BackfillCookie = {
   readonly table: string;
   readonly column: string;
   readonly backfill: BackfillID;
+
+  /**
+   * The row key of the last row of this column's backfill that the store has
+   * durably taken, in the table's row-key column order — the progress mark
+   * that {@link backfillRequestsFrom} turns into a `resumeAfter`. Absent until
+   * the first batch lands, and reset to absent whenever the column's backfill
+   * is (re)started by an `upsert-backfill`.
+   */
+  readonly resumeAfter?: readonly JSONValue[] | undefined;
 };
 
 /**
@@ -107,7 +133,7 @@ export const EMPTY_COOKIE_SET: CookieSet = {
 
 /**
  * A transport-free description of a cookie mutation. This is the whole of what
- * a {@link SchemaChange} means to the cookie jar; everything else about the
+ * a {@link CookieChange} means to the cookie jar; everything else about the
  * change belongs to the buffer.
  */
 export type CookieOp =
@@ -122,21 +148,62 @@ export type CookieOp =
   | {op: 'drop-table'; table: Identifier}
   | {op: 'rename-column'; table: Identifier; old: string; new: string}
   | {op: 'drop-column'; table: Identifier; column: string}
-  | {op: 'complete-backfill'; table: Identifier; columns: readonly string[]};
+  | {op: 'complete-backfill'; table: Identifier; columns: readonly string[]}
+  | {
+      op: 'advance-backfill';
+      table: Identifier;
+      columns: readonly string[];
+      resumeAfter: readonly JSONValue[];
+    };
 
 export type CookieOpTag = CookieOp['op'];
 
 /**
- * The fold, and the only place either store decides what a schema change means
- * for the cookie set. Both interpreters are mechanical translations of what this
+ * Everything the cookie jar folds: the schema changes that start, move, and
+ * finish a backfill, and the `backfill` batches that advance one. A backfill
+ * batch is a *data* change everywhere else in the tree; it is here because the
+ * progress mark it carries is cookie state by the same argument the rest of the
+ * set is — it has to survive a restart, and only the change log can hold it.
+ */
+export type CookieChange = SchemaChange | MessageBackfill;
+
+/**
+ * The fold, and the only place any store decides what a change means for the
+ * cookie set. All three interpreters are mechanical translations of what this
  * returns, in the order it returns them.
  *
- * Changes that carry no cookie state — index changes, and the `create-table` /
- * `add-column` variants whose optional `metadata` and `backfill` fields are
- * absent — produce no ops.
+ * Changes that carry no cookie state — index changes, empty backfill batches,
+ * and the `create-table` / `add-column` variants whose optional `metadata` and
+ * `backfill` fields are absent — produce no ops.
  */
-export function cookieOps(change: SchemaChange): CookieOp[] {
+export function cookieOps(change: CookieChange): CookieOp[] {
   switch (change.tag) {
+    case 'backfill': {
+      const {relation, columns, rowValues} = change;
+      const last = rowValues.at(-1);
+      if (last === undefined) {
+        return []; // an empty batch advances nothing
+      }
+      // Rows are emitted in row-key order (which `backfill.rowValues` requires
+      // of every change source, precisely so that this holds) and each row is
+      // `[...rowKeyValues, ...columnValues]`, so the last row's key prefix is
+      // the furthest point this batch reached. The mark lands on the row-key
+      // columns as well as the backfilled ones, matching the set that
+      // `complete-backfill` clears.
+      const keyColumns = relation.rowKey.columns;
+      if (keyColumns.length === 0) {
+        return []; // no row key, so no point to resume from
+      }
+      return [
+        {
+          op: 'advance-backfill',
+          table: {schema: relation.schema, name: relation.name},
+          columns: [...keyColumns, ...columns],
+          resumeAfter: last.slice(0, keyColumns.length),
+        },
+      ];
+    }
+
     case 'update-table-metadata':
       return [
         {op: 'upsert-metadata', table: change.table, metadata: change.new},
@@ -242,6 +309,7 @@ export class ChangeLogCookieWriter {
   readonly #deleteBackfillTable: Statement;
   readonly #renameBackfillColumn: Statement;
   readonly #deleteBackfillColumn: Statement;
+  readonly #advanceBackfillColumn: Statement;
 
   constructor(db: Database) {
     this.#upsertMetadata = db.prepare(/*sql*/ `
@@ -254,7 +322,7 @@ export class ChangeLogCookieWriter {
       INSERT INTO "${CHANGE_LOG_BACKFILLING_TABLE}"
         ("schema", "table", "column", "backfill") VALUES (?, ?, ?, ?)
         ON CONFLICT ("schema", "table", "column")
-        DO UPDATE SET "backfill" = excluded."backfill"
+        DO UPDATE SET "backfill" = excluded."backfill", "resumeAfter" = NULL
     `);
     this.#renameMetadataTable = db.prepare(/*sql*/ `
       UPDATE "${CHANGE_LOG_TABLE_METADATA_TABLE}"
@@ -280,10 +348,14 @@ export class ChangeLogCookieWriter {
       DELETE FROM "${CHANGE_LOG_BACKFILLING_TABLE}"
         WHERE "schema" = ? AND "table" = ? AND "column" = ?
     `);
+    this.#advanceBackfillColumn = db.prepare(/*sql*/ `
+      UPDATE "${CHANGE_LOG_BACKFILLING_TABLE}" SET "resumeAfter" = ?
+        WHERE "schema" = ? AND "table" = ? AND "column" = ?
+    `);
   }
 
   /** Applies the change's cookie ops, returning the ops that were applied. */
-  apply(change: SchemaChange): CookieOp[] {
+  apply(change: CookieChange): CookieOp[] {
     const ops = cookieOps(change);
     for (const op of ops) {
       this.#run(op);
@@ -360,10 +432,39 @@ export class ChangeLogCookieWriter {
         }
         break;
 
+      case 'advance-backfill': {
+        // Per-column for the same reason as `complete-backfill`. A column that
+        // has no row here — one whose backfill finished or was dropped earlier
+        // in this same transaction — updates nothing, which is what should
+        // happen.
+        const mark = BigIntJSON.stringify(op.resumeAfter);
+        for (const column of op.columns) {
+          this.#advanceBackfillColumn.run(
+            mark,
+            op.table.schema,
+            op.table.name,
+            column,
+          );
+        }
+        break;
+      }
+
       default:
         unreachable(op);
     }
   }
+}
+
+/**
+ * Reads a stored progress mark. Shared by the change log's and the replica's
+ * readers so that the two cannot disagree on how an absent mark is spelled.
+ */
+export function parseMark(
+  mark: string | null | undefined,
+): readonly JSONValue[] | undefined {
+  return mark === null || mark === undefined
+    ? undefined
+    : (BigIntJSON.parse(mark) as JSONValue[]);
 }
 
 const tableKey = (schema: string, table: string) =>
@@ -391,7 +492,7 @@ const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
  */
 export function foldCookies(
   cookies: CookieSet,
-  changes: Iterable<SchemaChange>,
+  changes: Iterable<CookieChange>,
 ): CookieSet {
   const metadata = new Map<string, TableMetadataCookie>(
     cookies.tableMetadata.map(c => [tableKey(c.schema, c.table), c]),
@@ -414,6 +515,7 @@ export function foldCookies(
           break;
 
         case 'upsert-backfill':
+          // No `resumeAfter`: a (re)started backfill has no progress yet.
           backfilling.set(
             columnKey(op.table.schema, op.table.name, op.column),
             {
@@ -484,6 +586,23 @@ export function foldCookies(
           }
           break;
 
+        case 'advance-backfill': {
+          const {schema, name} = op.table;
+          // Through the same encoding the two stores hold the mark in, so that
+          // all three interpreters produce equal sets: `BigIntJSON` renders an
+          // integer that fits a double back as a number, so a `1n` row key
+          // read out of either store is a `1`.
+          const mark = parseMark(BigIntJSON.stringify(op.resumeAfter));
+          for (const column of op.columns) {
+            const key = columnKey(schema, name, column);
+            const cookie = backfilling.get(key);
+            if (cookie) {
+              backfilling.set(key, {...cookie, resumeAfter: mark});
+            }
+          }
+          break;
+        }
+
         default:
           unreachable(op);
       }
@@ -508,6 +627,13 @@ const backfillRequestsSchema = v.array(backfillRequestSchema);
 /**
  * Returns one {@link BackfillRequest} for each table with an active backfill.
  * Each request contains the stored table metadata, if available.
+ *
+ * A table is resumed only when *every* one of its backfilling columns carries
+ * the same progress mark. A table backfills as a unit, so its columns advance
+ * together and normally agree; a column that disagrees is one whose backfill
+ * started later (its mark is absent) and which therefore has no rows before the
+ * others' mark. Restarting the table from the beginning is the only thing that
+ * populates it, and is always safe because backfills are idempotent.
  */
 export function backfillRequestsFrom(cookies: CookieSet): BackfillRequest[] {
   const metadata = new Map(
@@ -515,8 +641,23 @@ export function backfillRequestsFrom(cookies: CookieSet): BackfillRequest[] {
   );
   const requests: BackfillRequest[] = [];
   let curr: BackfillRequest | undefined;
-  for (const {schema, table, column, backfill} of cookies.backfilling) {
+  // The mark agreed on by the columns of `curr` so far, as its canonical
+  // rendering, or `null` once any column has disagreed.
+  let currMark: string | null | undefined;
+  const finish = () => {
+    if (curr && typeof currMark === 'string') {
+      curr.resumeAfter = BigIntJSON.parse(currMark) as JSONValue[];
+    }
+  };
+  for (const {
+    schema,
+    table,
+    column,
+    backfill,
+    resumeAfter,
+  } of cookies.backfilling) {
     if (curr?.table.schema !== schema || curr.table.name !== table) {
+      finish();
       curr = {
         table: {
           schema,
@@ -527,10 +668,14 @@ export function backfillRequestsFrom(cookies: CookieSet): BackfillRequest[] {
         },
         columns: {},
       };
+      currMark = undefined;
       requests.push(curr);
     }
     curr.columns[column] = backfill;
+    const mark = resumeAfter ? BigIntJSON.stringify(resumeAfter) : null;
+    currMark = currMark === undefined || currMark === mark ? mark : null;
   }
+  finish();
   return v.parse(requests, backfillRequestsSchema);
 }
 
@@ -555,16 +700,23 @@ export function readCookies(db: Database): CookieSet {
 
   const backfilling = db
     .prepare(/*sql*/ `
-      SELECT "schema", "table", "column", "backfill"
+      SELECT "schema", "table", "column", "backfill", "resumeAfter"
         FROM "${CHANGE_LOG_BACKFILLING_TABLE}"
         ORDER BY "schema", "table", "column"
     `)
-    .all<{schema: string; table: string; column: string; backfill: string}>()
-    .map(({schema, table, column, backfill}) => ({
+    .all<{
+      schema: string;
+      table: string;
+      column: string;
+      backfill: string;
+      resumeAfter: string | null;
+    }>()
+    .map(({schema, table, column, backfill, resumeAfter}) => ({
       schema,
       table,
       column,
       backfill: BigIntJSON.parse(backfill) as BackfillID,
+      resumeAfter: parseMark(resumeAfter),
     }));
 
   return {tableMetadata, backfilling};
@@ -595,10 +747,23 @@ export function replaceCookies(db: Database, cookies: CookieSet): void {
   if (cookies.backfilling.length > 0) {
     const insert = db.prepare(/*sql*/ `
       INSERT INTO "${CHANGE_LOG_BACKFILLING_TABLE}"
-        ("schema", "table", "column", "backfill") VALUES (?, ?, ?, ?)
+        ("schema", "table", "column", "backfill", "resumeAfter")
+        VALUES (?, ?, ?, ?, ?)
     `);
-    for (const {schema, table, column, backfill} of cookies.backfilling) {
-      insert.run(schema, table, column, BigIntJSON.stringify(backfill));
+    for (const {
+      schema,
+      table,
+      column,
+      backfill,
+      resumeAfter,
+    } of cookies.backfilling) {
+      insert.run(
+        schema,
+        table,
+        column,
+        BigIntJSON.stringify(backfill),
+        resumeAfter ? BigIntJSON.stringify(resumeAfter) : null,
+      );
     }
   }
 }

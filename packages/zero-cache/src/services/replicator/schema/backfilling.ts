@@ -44,13 +44,14 @@ import {liteTableName} from '../../../types/names.ts';
 import type {
   BackfillID,
   Identifier,
-  SchemaChange,
   TableMetadata,
 } from '../../change-source/protocol/current/data.ts';
 import type {BackfillRequest} from '../../change-source/protocol/current/upstream.ts';
 import {
   backfillRequestsFrom,
   cookieOps,
+  parseMark,
+  type CookieChange,
   type CookieOp,
   type CookieSet,
 } from '../change-log-cookies.ts';
@@ -62,12 +63,34 @@ export const BACKFILLING_TABLE = '_zero.backfilling';
 // handed back to the change source verbatim.
 export const CREATE_BACKFILLING_TABLE = /*sql*/ `
   CREATE TABLE "${BACKFILLING_TABLE}" (
+    "schema"      TEXT NOT NULL,
+    "table"       TEXT NOT NULL,
+    "column"      TEXT NOT NULL,
+    "backfill"    TEXT NOT NULL,
+    "resumeAfter" TEXT,
+    PRIMARY KEY ("schema", "table", "column")
+  );
+`;
+
+/**
+ * The table as v17 created it, frozen. An incremental migration has to build
+ * the shape of *its own* version rather than the current one: v18 adds
+ * `resumeAfter` to whatever v17 left behind, and would fail on a column that
+ * the current DDL had already created.
+ */
+export const CREATE_BACKFILLING_TABLE_V17 = /*sql*/ `
+  CREATE TABLE "${BACKFILLING_TABLE}" (
     "schema"   TEXT NOT NULL,
     "table"    TEXT NOT NULL,
     "column"   TEXT NOT NULL,
     "backfill" TEXT NOT NULL,
     PRIMARY KEY ("schema", "table", "column")
   );
+`;
+
+/** The v18 migration: the backfill progress mark. */
+export const ADD_BACKFILLING_RESUME_AFTER = /*sql*/ `
+  ALTER TABLE "${BACKFILLING_TABLE}" ADD COLUMN "resumeAfter" TEXT;
 `;
 
 /**
@@ -97,6 +120,7 @@ export class BackfillingTracker {
   #dropTable: Statement | undefined;
   #renameColumn: Statement | undefined;
   #dropColumn: Statement | undefined;
+  #advance: Statement | undefined;
 
   constructor(db: Database) {
     this.#db = db;
@@ -108,7 +132,7 @@ export class BackfillingTracker {
    * updates, and the `create-table` / `add-column` variants from a change source
    * that does not support backfill — apply nothing.
    */
-  apply(change: SchemaChange): CookieOp[] {
+  apply(change: CookieChange): CookieOp[] {
     const ops = cookieOps(change);
     for (const op of ops) {
       this.#run(op);
@@ -127,7 +151,8 @@ export class BackfillingTracker {
           INSERT INTO "${BACKFILLING_TABLE}"
             ("schema", "table", "column", "backfill") VALUES (?, ?, ?, ?)
             ON CONFLICT ("schema", "table", "column")
-            DO UPDATE SET "backfill" = excluded."backfill"
+            DO UPDATE SET
+              "backfill" = excluded."backfill", "resumeAfter" = NULL
         `)).run(
           op.table.schema,
           op.table.name,
@@ -169,6 +194,18 @@ export class BackfillingTracker {
           this.#deleteColumn(op.table, column);
         }
         break;
+
+      case 'advance-backfill': {
+        const stmt = (this.#advance ??= this.#db.prepare(/*sql*/ `
+          UPDATE "${BACKFILLING_TABLE}" SET "resumeAfter" = ?
+            WHERE "schema" = ? AND "table" = ? AND "column" = ?
+        `));
+        const mark = BigIntJSON.stringify(op.resumeAfter);
+        for (const column of op.columns) {
+          stmt.run(mark, op.table.schema, op.table.name, column);
+        }
+        break;
+      }
 
       default:
         unreachable(op);
@@ -227,16 +264,23 @@ export function readReplicaCookies(db: Database): CookieSet {
 
   const backfilling = db
     .prepare(/*sql*/ `
-      SELECT "schema", "table", "column", "backfill"
+      SELECT "schema", "table", "column", "backfill", "resumeAfter"
         FROM "${BACKFILLING_TABLE}"
         ORDER BY "schema", "table", "column"
     `)
-    .all<{schema: string; table: string; column: string; backfill: string}>()
-    .map(({schema, table, column, backfill}) => ({
+    .all<{
+      schema: string;
+      table: string;
+      column: string;
+      backfill: string;
+      resumeAfter: string | null;
+    }>()
+    .map(({schema, table, column, backfill, resumeAfter}) => ({
       schema,
       table,
       column,
       backfill: BigIntJSON.parse(backfill) as BackfillID,
+      resumeAfter: parseMark(resumeAfter),
     }));
 
   return {tableMetadata, backfilling};

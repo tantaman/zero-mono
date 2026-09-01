@@ -15,7 +15,8 @@ import {
 } from '../../../db/sqlite-corruption.ts';
 import {AutoResetSignal} from '../../change-streamer/schema/tables.ts';
 import {
-  CREATE_BACKFILLING_TABLE,
+  ADD_BACKFILLING_RESUME_AFTER,
+  CREATE_BACKFILLING_TABLE_V17,
   populateBackfillingFromColumnMetadata,
 } from '../../replicator/schema/backfilling.ts';
 import {populateFromExistingTables} from '../../replicator/schema/column-metadata.ts';
@@ -384,11 +385,29 @@ export const schemaVersionMigrationMap: IncrementalMigrationMap = {
   // forward again, so a rollback costs nothing but the re-seed.
   17: {
     migrateSchema: (_, db) => {
-      db.exec(CREATE_BACKFILLING_TABLE);
+      db.exec(CREATE_BACKFILLING_TABLE_V17);
     },
 
     migrateData: (lc, db) => {
       populateBackfillingFromColumnMetadata(lc, db);
+    },
+  },
+
+  // A backfill is now resumable: `_zero.backfilling.resumeAfter` records the
+  // row key of the last backfilled row the replica has taken, so an
+  // interrupted backfill restarts after it rather than from the beginning.
+  // See `replicator/change-log-cookies.ts`.
+  //
+  // Nullable and added empty: a backfill that is in flight at the upgrade has
+  // no mark, which is exactly how "start from the beginning" is spelled.
+  //
+  // No `minSafeVersion`: a v17 zero-cache runs fine against a v18 replica. It
+  // does not know the column exists, so it neither reads nor advances it, and
+  // rolling forward again finds the marks it left behind stale but never
+  // wrong — every one of them is a point the replica had already passed.
+  18: {
+    migrateSchema: (_, db) => {
+      db.exec(ADD_BACKFILLING_RESUME_AFTER);
     },
   },
 };

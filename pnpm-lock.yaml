@@ -1044,6 +1044,9 @@ importers:
 
   packages/zero-cache:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.1048.0
+        version: 3.1048.0
       '@badrap/valita':
         specifier: 0.3.11
         version: 0.3.11

@@ -7,6 +7,7 @@ import {
 import type {PostgresDB, PostgresTransaction} from '../../../types/pg.ts';
 import {cdcSchema, type ShardID} from '../../../types/shards.ts';
 import {
+  addBackfillResumeAfter,
   createBackfillTables,
   createReplicationStateTable,
   setupCDCTables,
@@ -98,12 +99,23 @@ export async function initChangeStreamerSchema(
     },
   };
 
+  // The backfill progress mark: the row key of the last backfilled row the
+  // change log holds, which `backfillRequestsFrom` turns into the
+  // `resumeAfter` of the next request. Nullable and added empty, since a
+  // backfill in flight at the upgrade has no mark and starts over.
+  const migrateV6ToV7 = {
+    migrateSchema: async (_: LogContext, db: PostgresTransaction) => {
+      await db.unsafe(addBackfillResumeAfter(shard));
+    },
+  };
+
   const schemaVersionMigrationMap: IncrementalMigrationMap = {
     2: {migrateSchema: migrateV1toV2},
     3: migrateV2ToV3,
     4: migrateV3ToV4,
     5: migrateV4ToV5,
     6: migrateV5ToV6,
+    7: migrateV6ToV7,
   };
 
   await runSchemaMigrations(

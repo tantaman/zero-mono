@@ -40,6 +40,9 @@ const inlinedModules = new Set([
 // the allowlist for the post-build check that every bare import in the output
 // is either a declared dependency or a known integration.
 const allowedUndeclaredImports = new Set([
+  // Loaded lazily, and only when an s3:// --backup-archive-url is
+  // configured; deployments using the experimental archive mode install it.
+  '@aws-sdk/client-s3',
   '@op-engineering/op-sqlite',
   'drizzle-orm',
   'expo-sqlite',

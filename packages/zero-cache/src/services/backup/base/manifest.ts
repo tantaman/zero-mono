@@ -1,0 +1,94 @@
+import * as v from '../../../../../shared/src/valita.ts';
+
+/**
+ * The publication protocol of a SQLite base: `intent.json` is written first,
+ * then the chunks, and `complete.json` strictly last — a base exists if and
+ * only if its complete manifest does, so a crash at any earlier boundary
+ * leaves debris that is invisible to restore and reclaimable by GC.
+ */
+
+export const BASE_FORMAT = 'zero-archive-base';
+export const BASE_FORMAT_VERSION = 1;
+
+const baseIntentSchema = v.object({
+  format: v.literal(BASE_FORMAT),
+  version: v.number(),
+  replicaVersion: v.string(),
+  /** The watermark embedded in the frozen SQLite file. */
+  cursor: v.string(),
+  startedAt: v.number(),
+});
+
+export type BaseIntent = v.Infer<typeof baseIntentSchema>;
+
+const baseChunkSchema = v.object({
+  size: v.number(),
+  /** Hex SHA-256 of the chunk. */
+  sha256: v.string(),
+});
+
+const baseManifestSchema = v.object({
+  format: v.literal(BASE_FORMAT),
+  version: v.number(),
+  replicaVersion: v.string(),
+  /** The watermark embedded in the SQLite file the chunks reassemble. */
+  cursor: v.string(),
+  fileSize: v.number(),
+  /** Hex SHA-256 of the whole file. */
+  fileSha256: v.string(),
+  /** Chunk size; every chunk but the last is exactly this many bytes. */
+  chunkBytes: v.number(),
+  /** In offset order: chunk `i` occupies `[i * chunkBytes, ...)`. */
+  chunks: v.array(baseChunkSchema),
+  completedAt: v.number(),
+
+  // Additive metadata (absent from the earliest manifests): what a restorer
+  // or drill tool needs to judge compatibility without opening the file.
+  /** The SQLite page size of the base file. */
+  pageSize: v.number().optional(),
+  /** The replica schema version the applier had migrated the file to. */
+  replicaSchemaVersion: v.number().optional(),
+  /** The archive log segment format version in use when this base froze. */
+  logFormatVersion: v.number().optional(),
+});
+
+export type BaseManifest = v.Infer<typeof baseManifestSchema>;
+
+export const BASE_REQUEST_FORMAT = 'zero-archive-base-request';
+
+const baseRequestSchema = v.object({
+  format: v.literal(BASE_REQUEST_FORMAT),
+  version: v.number(),
+  /** The requesting task, for logs; the marker name is derived from it. */
+  taskID: v.string(),
+  requestedAt: v.number(),
+});
+
+export type BaseRequest = v.Infer<typeof baseRequestSchema>;
+
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+export function encodeBaseRequest(request: BaseRequest): Uint8Array {
+  return utf8Encoder.encode(JSON.stringify(request));
+}
+
+export function decodeBaseRequest(data: Uint8Array): BaseRequest {
+  return v.parse(JSON.parse(utf8Decoder.decode(data)), baseRequestSchema);
+}
+
+export function encodeBaseIntent(intent: BaseIntent): Uint8Array {
+  return utf8Encoder.encode(JSON.stringify(intent));
+}
+
+export function decodeBaseIntent(data: Uint8Array): BaseIntent {
+  return v.parse(JSON.parse(utf8Decoder.decode(data)), baseIntentSchema);
+}
+
+export function encodeBaseManifest(manifest: BaseManifest): Uint8Array {
+  return utf8Encoder.encode(JSON.stringify(manifest));
+}
+
+export function decodeBaseManifest(data: Uint8Array): BaseManifest {
+  return v.parse(JSON.parse(utf8Decoder.decode(data)), baseManifestSchema);
+}

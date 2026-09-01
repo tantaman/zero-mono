@@ -1,15 +1,22 @@
 import {describe, expect, test} from 'vitest';
 import {createSilentLogContext} from '../../../../shared/src/logging-test-utils.ts';
 import {Database} from '../../../../zqlite/src/db.ts';
-import type {SchemaChange} from '../change-source/protocol/current/data.ts';
+import type {
+  MessageBackfill,
+  SchemaChange,
+} from '../change-source/protocol/current/data.ts';
+import {schemaChangeTags} from '../change-source/protocol/current/schema-change-tags.ts';
 import {
+  backfillRequestsFrom,
   ChangeLogCookieWriter,
   CREATE_CHANGE_LOG_COOKIE_SCHEMA,
   cookieOps,
   EMPTY_COOKIE_SET,
+  foldCookies,
   readCookieRowCounts,
   readCookies,
   replaceCookies,
+  type CookieChange,
   type CookieOp,
   type CookieSet,
 } from './change-log-cookies.ts';
@@ -23,7 +30,7 @@ function createCookieJar(): Database {
 }
 
 /** Folds a change sequence through the SQLite interpreter. */
-function fold(db: Database, ...changes: SchemaChange[]): CookieSet {
+function fold(db: Database, ...changes: CookieChange[]): CookieSet {
   const writer = new ChangeLogCookieWriter(db);
   changes.forEach(change => writer.apply(change));
   return readCookies(db);
@@ -33,6 +40,20 @@ const ROW_KEY: {columns: string[]; type: 'default'} = {
   columns: ['id'],
   type: 'default',
 };
+
+/** A batch of two rows of `my.foo`, whose row key is `id`. */
+function backfillBatch(
+  rowValues: MessageBackfill['rowValues'],
+  columns = ['a', 'b'],
+): MessageBackfill {
+  return {
+    tag: 'backfill',
+    relation: {schema: 'my', name: 'foo', rowKey: {columns: ['id']}},
+    columns,
+    watermark: '05',
+    rowValues,
+  };
+}
 
 const CREATE_FOO: SchemaChange = {
   tag: 'create-table',
@@ -48,7 +69,7 @@ describe('replicator/change-log-cookies', () => {
   describe('cookieOps', () => {
     // The fold is what keeps the Postgres and SQLite change logs from drifting,
     // so each transition's ops are pinned rather than round-tripped.
-    const cases: [name: string, change: SchemaChange, ops: CookieOp[]][] = [
+    const cases: [name: string, change: CookieChange, ops: CookieOp[]][] = [
       [
         'create-table with metadata and backfills',
         CREATE_FOO,
@@ -227,16 +248,36 @@ describe('replicator/change-log-cookies', () => {
         {tag: 'drop-index', id: {schema: 'my', name: 'foo_idx'}},
         [],
       ],
+      [
+        "backfill marks the row key of the batch's last row",
+        backfillBatch([
+          [1n, 'a1', 'b1'],
+          [2n, 'a2', 'b2'],
+        ]),
+        [
+          {
+            op: 'advance-backfill',
+            table: {schema: 'my', name: 'foo'},
+            // The row key columns are marked along with the backfilled ones,
+            // matching the set `complete-backfill` clears.
+            columns: ['id', 'a', 'b'],
+            resumeAfter: [2n],
+          },
+        ],
+      ],
+      ['backfill with no rows', backfillBatch([]), []],
     ];
 
     test.each(cases)('%s', (_name, change, ops) => {
       expect(cookieOps(change)).toEqual(ops);
     });
 
-    test('covers every schema-change tag', () => {
+    test('covers every change the jar folds', () => {
       // The fold is exhaustive at compile time; this is the reminder that a new
       // tag also needs a case above, including if its answer is "no ops".
-      expect(new Set(cases.map(([, change]) => change.tag)).size).toBe(10);
+      expect(new Set(cases.map(([, change]) => change.tag))).toEqual(
+        new Set<string>([...schemaChangeTags, 'backfill']),
+      );
     });
   });
 
@@ -424,6 +465,145 @@ describe('replicator/change-log-cookies', () => {
           },
         }),
       ).toEqual([]);
+    });
+  });
+
+  describe('the progress mark', () => {
+    const marksOf = (cookies: CookieSet) =>
+      cookies.backfilling.map(c => [c.column, c.resumeAfter]);
+
+    test('a batch marks the table, and the next batch overwrites it', () => {
+      using db = createCookieJar();
+      const writer = new ChangeLogCookieWriter(db);
+      writer.apply(CREATE_FOO); // backfilling columns a and b
+
+      // Marks round trip through the stores' text encoding, which renders an
+      // integer that fits a double back as a number.
+      writer.apply(backfillBatch([[1n, 'a1', 'b1']]));
+      expect(marksOf(readCookies(db))).toEqual([
+        ['a', [1]],
+        ['b', [1]],
+      ]);
+
+      writer.apply(
+        backfillBatch([
+          [2n, 'a2', 'b2'],
+          [9007199254740993n, '', ''],
+        ]),
+      );
+      expect(marksOf(readCookies(db))).toEqual([
+        ['a', [9007199254740993n]],
+        ['b', [9007199254740993n]],
+      ]);
+    });
+
+    test('a column that is not backfilling is not marked', () => {
+      using db = createCookieJar();
+      const writer = new ChangeLogCookieWriter(db);
+      writer.apply(CREATE_FOO);
+
+      // `c` is in the batch but has no cookie row, so nothing to advance.
+      writer.apply(backfillBatch([[1n, 'a1', 'c1']], ['a', 'c']));
+      expect(readCookies(db).backfilling.map(c => c.column)).toEqual([
+        'a',
+        'b',
+      ]);
+      expect(marksOf(readCookies(db))).toEqual([
+        ['a', [1]],
+        ['b', undefined],
+      ]);
+    });
+
+    test('a restarted backfill drops the mark', () => {
+      using db = createCookieJar();
+      const writer = new ChangeLogCookieWriter(db);
+      writer.apply(CREATE_FOO);
+      writer.apply(backfillBatch([[1n, 'a1', 'b1']]));
+
+      writer.apply({
+        tag: 'add-column',
+        table: {schema: 'my', name: 'foo'},
+        column: {name: 'a', spec: {dataType: 'text', pos: 3}},
+        backfill: {fooID: 111},
+      });
+      expect(marksOf(readCookies(db))).toEqual([
+        ['a', undefined],
+        ['b', [1]],
+      ]);
+    });
+
+    test('the in-memory interpreter agrees with the SQLite one', () => {
+      using db = createCookieJar();
+      const changes: CookieChange[] = [
+        CREATE_FOO,
+        backfillBatch([[1n, 'a1', 'b1']]),
+        backfillBatch([[4n, 'a4', 'b4']]),
+      ];
+      expect(foldCookies(EMPTY_COOKIE_SET, changes)).toEqual(
+        fold(db, ...changes),
+      );
+    });
+
+    test('a request resumes only when every column agrees', () => {
+      using db = createCookieJar();
+      const writer = new ChangeLogCookieWriter(db);
+      writer.apply(CREATE_FOO);
+
+      // No mark yet: the request starts from the beginning.
+      expect(backfillRequestsFrom(readCookies(db))[0].resumeAfter).toBe(
+        undefined,
+      );
+
+      writer.apply(backfillBatch([[7n, 'a7', 'b7']]));
+      expect(backfillRequestsFrom(readCookies(db))[0].resumeAfter).toEqual([7]);
+
+      // A column whose backfill started later has no rows before the mark the
+      // others reached, so the table restarts rather than skipping them.
+      writer.apply({
+        tag: 'add-column',
+        table: {schema: 'my', name: 'foo'},
+        column: {name: 'c', spec: {dataType: 'text', pos: 4}},
+        backfill: {fooID: 222},
+      });
+      const [request] = backfillRequestsFrom(readCookies(db));
+      expect(Object.keys(request.columns)).toEqual(['a', 'b', 'c']);
+      expect(request.resumeAfter).toBe(undefined);
+    });
+
+    test('marks are per table', () => {
+      using db = createCookieJar();
+      const writer = new ChangeLogCookieWriter(db);
+      writer.apply(CREATE_FOO);
+      writer.apply({
+        tag: 'create-table',
+        spec: {schema: 'your', name: 'bar', columns: {}},
+        backfill: {c: {barID: 3}},
+      });
+
+      writer.apply(backfillBatch([[5n, 'a5', 'b5']]));
+      const requests = backfillRequestsFrom(readCookies(db));
+      expect(requests.map(r => [r.table.name, r.resumeAfter])).toEqual([
+        ['foo', [5]],
+        ['bar', undefined],
+      ]);
+    });
+
+    test('a completed backfill takes its mark with it', () => {
+      using db = createCookieJar();
+      const writer = new ChangeLogCookieWriter(db);
+      writer.apply(CREATE_FOO);
+      writer.apply(backfillBatch([[5n, 'a5', 'b5']]));
+      writer.apply({
+        tag: 'backfill-completed',
+        relation: {schema: 'my', name: 'foo', rowKey: {columns: ['id']}},
+        columns: ['a', 'b'],
+        watermark: '09',
+      });
+      expect(readCookies(db)).toEqual({
+        ...readCookies(db),
+        backfilling: [],
+      });
+      expect(backfillRequestsFrom(readCookies(db))).toEqual([]);
     });
   });
 

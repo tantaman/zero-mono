@@ -135,6 +135,7 @@ describe('change-streamer/schema/tables', () => {
           table: 'foo',
           column: 'boo',
           backfill: {id: 123},
+          resumeAfter: null,
         },
       ],
     });
@@ -170,6 +171,7 @@ describe('change-streamer/schema/tables', () => {
           table: 'foo',
           column: 'boo',
           backfill: {id: 123},
+          resumeAfter: null,
         },
       ],
     });

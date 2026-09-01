@@ -1216,6 +1216,140 @@ export const zeroOptions = {
     },
   },
 
+  // The logical backup archive, which replaces litestream as the canonical
+  // backup mechanism. One value flips a stack between the two worlds; there
+  // is no dual-write mode, and rollback is the value flipped back plus a
+  // resync. All flags are hidden while experimental. Only the
+  // replication-manager acts on these flags; they are accepted (and unread)
+  // on other roles because a multi-node fleet is configured from one shared
+  // environment.
+  backup: {
+    mode: {
+      type: v.literalUnion('litestream', 'archive').default('litestream'),
+      desc: [
+        `Selects the backup world. {bold litestream} is today's behavior,`,
+        `unchanged. {bold archive} archives the committed logical change stream`,
+        `to {bold --backup-archive-url}, gates upstream ACKs on the durable`,
+        `archive cursor, and serves restores from the archive. Flipping a stack`,
+        `in either direction starts a new lineage via resync.`,
+      ],
+      hidden: true,
+    },
+
+    archiveURL: {
+      type: v.string().optional(),
+      desc: [
+        `The location of the logical change archive: an {bold s3://} URL, or a`,
+        `{bold file://} URL for local development and tests. Deliberately`,
+        `distinct from {bold --litestream-backup-url}.`,
+      ],
+      hidden: true,
+    },
+
+    segmentTargetBytes: {
+      type: v.number().default(16 * 1024 * 1024),
+      desc: [
+        `The target (uncompressed) size at which an archive log segment is sealed`,
+        `and uploaded. Sized by latency — upstream ACKs advance only when a`,
+        `segment uploads — and deliberately independent of`,
+        `{bold --backup-base-chunk-bytes}, which is sized for bulk transfer.`,
+      ],
+      hidden: true,
+    },
+
+    segmentSealIntervalSeconds: {
+      type: v.number().default(30),
+      desc: [
+        `The maximum time a non-empty archive log segment stays open before it is`,
+        `sealed and uploaded regardless of size. This bounds the archive's RPO.`,
+      ],
+      hidden: true,
+    },
+
+    baseMaxReplaySeconds: {
+      type: v.number().default(300),
+      desc: [
+        `The early base-production trigger: a new SQLite base is published ahead`,
+        `of the regular cadence when the estimated time to replay the archived`,
+        `tail from the newest base exceeds this budget.`,
+      ],
+      hidden: true,
+    },
+
+    baseMaxIntervalHours: {
+      type: v.number().default(24),
+      desc: [
+        `The base-production cadence: a new base is published at least this`,
+        `often (daily by default), with everything in between served by the`,
+        `archived log.`,
+      ],
+      hidden: true,
+    },
+
+    baseCheckIntervalSeconds: {
+      type: v.number().default(30),
+      desc: [
+        `How often the base producer re-evaluates what it has to do: adopt a`,
+        `new lineage, take up a genesis offer, or resume tailing after a`,
+        `failed session. It also bounds cold-start latency — a producer that`,
+        `starts a moment before the gateway posts its genesis offer waits one`,
+        `interval before seeing it — so tests and impatient single-node`,
+        `deployments turn it down.`,
+      ],
+      hidden: true,
+    },
+
+    baseChunkBytes: {
+      type: v.number().default(64 * 1024 * 1024),
+      desc: [
+        `The size of the chunks in which a SQLite base is uploaded to and`,
+        `downloaded from the archive. Sized for bulk-transfer throughput on`,
+        `multi-GiB files (no cursor waits on any single chunk), and deliberately`,
+        `independent of {bold --backup-segment-target-bytes}, which is sized by`,
+        `ACK latency.`,
+      ],
+      hidden: true,
+    },
+
+    baseIntegrityCheck: {
+      type: v.literalUnion('full', 'quick').default('full'),
+      desc: [
+        `The SQLite integrity check ({bold integrity_check} or {bold quick_check})`,
+        `run on a frozen base before it is published.`,
+      ],
+      hidden: true,
+    },
+
+    gcEnabled: {
+      type: v.boolean().default(true),
+      desc: [
+        `Garbage collection of archived bases and log segments; an emergency`,
+        `off switch. Only read in {bold --backup-mode=archive}, where the`,
+        `archive is authoritative and its own retention rules apply.`,
+      ],
+      hidden: true,
+    },
+
+    gcRetainBases: {
+      type: v.number().default(2),
+      desc: [
+        `The minimum number of newest complete bases retained by garbage`,
+        `collection. Must be at least 2, so that a base publication failure can`,
+        `never leave fewer than one usable base.`,
+      ],
+      hidden: true,
+    },
+
+    gcPitrHours: {
+      type: v.number().default(24),
+      desc: [
+        `The point-in-time-recovery window: garbage collection retains the bases`,
+        `and log segments needed to restore to any point within this many hours.`,
+      ],
+      hidden: true,
+    },
+  },
+
   storageDBTmpDir: {
     type: v.string().optional(),
     desc: [
