@@ -24,32 +24,40 @@ read-only connection samples `max(seq)` and the newest applied row's
 `clock_timestamp()` twice a second, giving both the applied rate and the
 end-to-end latency of the newest row the view-syncer holds.
 
-## Headline: the gateway is ~60% faster, and the reason is subscriber count
+## Headline: the gateway is faster, and the reason is subscriber count
 
 The replication-manager's shape, not its per-change CPU, is what moves this
-number. Three shapes under an identical 8000 rows/s offered load (20 rows
-per transaction, 256B incompressible payloads, one serving view-syncer whose
-replica is what gets measured; the first two shapes were each run twice, and
-both runs are shown):
+number. (These are post-batching numbers; the write-worker batching described
+under "Batching the write-worker hop" lifted every shape here, and the
+sections between are labelled where they predate it.) Two shapes under an identical 8000 rows/s offered load (20 rows per
+transaction, 256B incompressible payloads, one serving view-syncer whose
+replica is what gets measured):
 
-| replication-manager shape                               | live subscribers | vs-0 applied          | vs-0 replicator  | lag p50      |
-| ------------------------------------------------------- | ---------------- | --------------------- | ---------------- | ------------ |
-| **archive gateway**, applier off the live stream        | 1                | **5290, 5349 rows/s** | 0.89 cores       | 8.7s, 9.0s   |
-| litestream-shaped: serving VS **+ backup-replicator**   | 2                | 3247, 3446 rows/s     | 0.65, 0.68 cores | 15.3s, 14.1s |
-| control: archive gateway **+ a second live subscriber** | 2                | 3362 rows/s           | 0.66 cores       | 14.6s        |
+| replication-manager shape                             | live subscribers | vs-0 applied    | vs-0 replicator | lag p50 |
+| ----------------------------------------------------- | ---------------- | --------------- | --------------- | ------- |
+| **archive gateway**, applier off the live stream      | 1                | **7813 rows/s** | 0.79 cores      | 1.5s    |
+| litestream-shaped: serving VS **+ backup-replicator** | 2                | 6593 rows/s     | 0.63 cores      | 4.1s    |
 
-And at a load the gateway can actually hold (5000 rows/s):
+Before the write-worker batching described below, the same three shapes ran
+at 5290-5349, 3247-3446, and (the control: an _archive_ gateway with a
+second live subscriber) 3362 rows/s. Batching lifted every shape and
+narrowed the gap between them, because the per-hop cost the second
+subscriber used to double is now amortized across a batch.
 
-| shape                                      | vs-0 applied    | lag p50 | lag p95 | verdict     |
-| ------------------------------------------ | --------------- | ------- | ------- | ----------- |
-| archive gateway, applier off-stream        | **5043 rows/s** | 164ms   | 417ms   | SUSTAINED   |
-| litestream-shaped (VS + backup-replicator) | 3515 rows/s     | 8591ms  | 12481ms | FELL BEHIND |
+And at loads each shape can actually hold:
 
-**+43% at a sustainable load, +63% at the plateau, and two orders of
-magnitude on lag.** The third row is the control that explains it: an
-_archive_ gateway with a second live subscriber lands on the litestream
-number (3362 vs 3247). The variable is not the backup world. It is **how
-many subscribers gate the live stream.**
+| shape                                      | target | vs-0 applied    | lag p50 | lag p95 | verdict   |
+| ------------------------------------------ | ------ | --------------- | ------- | ------- | --------- |
+| archive gateway, applier off-stream        | 7000/s | **6997 rows/s** | 93ms    | 156ms   | SUSTAINED |
+| litestream-shaped (VS + backup-replicator) | 6000/s | 5968 rows/s     | 156ms   | 538ms   | SUSTAINED |
+
+**+18% at the plateau and +17% on the sustainable rate.** Before batching
+the same comparison was +55%, and the control that explained it was an
+_archive_ gateway with a second live subscriber, which landed on the
+litestream number (3362 vs 3247): the variable was never the backup world,
+it was **how many subscribers gate the live stream.** That is still the
+mechanism; batching just made each gating event carry ~20 changes instead of
+one, so the same structural advantage is worth proportionally less.
 
 ### Why: flow control waits for a majority of subscribers
 
@@ -128,7 +136,8 @@ called out wherever they matter:
 
 ## The rate ladder
 
-40s of writes per point, 20 rows per transaction, one view-syncer. "Held"
+**(Pre-batching numbers; see "Batching the write-worker hop" for what these
+became.)** 40s of writes per point, 20 rows per transaction, one view-syncer. "Held"
 means the backlog was flat and the replica caught up after the writers
 stopped. The third mode here is a **no-backup control** -- backup mode
 `litestream` with no backup URL, so the manager runs _neither_ an archive
@@ -163,8 +172,8 @@ Two readings:
 
 ## What the ceiling is made of
 
-Steady-state CPU, in ms of CPU per applied row (equivalently, cores per
-1000 rows/s), one view-syncer:
+**(Pre-batching.)** Steady-state CPU, in ms of CPU per applied row
+(equivalently, cores per 1000 rows/s), one view-syncer:
 
 | RM shape          | rm/change-streamer | rm/base-producer | vs-0/replicator | postgres |
 | ----------------- | ------------------ | ---------------- | --------------- | -------- |
@@ -240,7 +249,8 @@ at 0.89 cores with neither thread above ~0.45.
 
 ### The per-row budget
 
-5290-5349 rows/s to one view-syncer is **187-189us per row**. Where it goes,
+**(The pre-batching analysis that motivated the change below.)** 5290-5349
+rows/s to one view-syncer is **187-189us per row**. Where it goes,
 from the profile shares above converted to us/row and cross-checked against
 direct micro-benchmarks (`pnpm --filter zero-throughput run pipeline-cost`):
 
@@ -272,15 +282,55 @@ consumer's speed, and the consumer's speed is the table above.
 one ack frame back per change (`streams.ts`), one structured-clone round trip
 to the write worker per change, one parse and one schema validation per
 change. A 20-row transaction pays all of that 22 times. That is what a 189us
-row is made of, and it is the same in either backup world.
+row was made of, and it was the same in either backup world.
+
+### Batching the write-worker hop
+
+The largest of those terms is now gone. `WriteWorkerClient.processMessages`
+takes a batch, and `IncrementalSyncer` accumulates changes into one, flushing
+when it hits **64 KiB of change JSON or 500 messages, whichever comes first**
+and -- the common case below saturation -- as soon as nothing else has
+arrived, so batching never buys throughput with latency it does not need.
+
+The caps are the point: a batch is resident memory that `postMessage`
+transiently doubles, so **a transaction is never held in it**. A transaction
+larger than the cap is flushed and applied in pieces, mid-transaction, which
+is safe because the boundary messages that make it atomic are just more
+messages in the stream -- SQLite's transaction spans the pieces, and the
+change processor's existing failure latch drops the rest of a batch after an
+error. The byte cap is deliberately the same 64 KiB the change-streamer
+pipelines before waiting on subscriber flow control, so neither side runs far
+ahead of the other.
+
+What it bought, all with the producer off the live stream:
+
+| shape                      | before             | after                  | change         |
+| -------------------------- | ------------------ | ---------------------- | -------------- |
+| 20 rows/tx, highest held   | 5000/s @ p50 164ms | **7000/s @ p50 93ms**  | +40%, lag -43% |
+| 20 rows/tx, plateau        | 5290-5349/s        | **7813/s**             | +47%           |
+| 1 row/tx, highest held     | ~1250/s            | **3000/s @ p50 198ms** | +2.4x          |
+| 1 row/tx, plateau          | 1271/s             | **3201/s**             | +2.5x          |
+| 500 rows/tx, plateau       | 7717/s             | **11760/s**            | +52%           |
+| litestream-shaped, plateau | 3446/s             | **6593/s**             | +91%           |
+
+The transaction-bound shape gains most because batching crosses transaction
+boundaries: at one row per transaction the old path paid three hops per row,
+and the new one pays a fraction of one. And the ceiling has **moved to the
+replication-manager**: in every 20-rows/tx run above, the gateway's
+change-streamer now sits at 1.00-1.16 cores -- saturated -- while the
+view-syncer's replicator has dropped to 0.67-0.79. The next lever is on the
+manager's side of the wire, where the unit of work is still one change.
 
 ## What the archive buys and costs
 
 **Buys:**
 
-- **An applier off the live stream.** Worth +43% at a sustainable load and
-  +63% at the plateau in a one-view-syncer deployment, for the reason in the
-  headline. Shrinks as the fleet grows, never reverses.
+- **An applier off the live stream.** Worth +17% at a sustainable load and
+  +18% at the plateau in a one-view-syncer deployment, for the reason in the
+  headline -- and it was +43%/+63% before the write-worker batching, which is
+  the honest way to read it: the advantage is a per-gating-event cost, so it
+  shrinks as each event carries more work, and as the fleet grows. It never
+  reverses.
 - **A manager with no replica**: no replica volume, no restore at startup,
   no litestream process, no backup-replicator worker.
 
@@ -328,15 +378,9 @@ See `apps/zero-throughput/README.md` for the full option list.
 
 In the order the profiles rank them:
 
-1. **Batch the replicator's write-worker calls.** One strictly-serialized
-   postMessage round trip per change is ~25% of the per-row budget, and once
-   the archive gateway removes the second subscriber, that replicator is the
-   thing that saturates. The same probe measures the alternative: 20 changes
-   in one message costs **6.7us per row against 48.8us**, so batching per
-   transaction is worth **~42us/row** -- around 6.8k rows/s from 5.3k, before
-   counting the pipelining it also unlocks (the main thread could parse the
-   next transaction while the worker writes this one, instead of the two
-   alternating). Not archive-specific.
+1. ~~**Batch the replicator's write-worker calls.**~~ Done, above. The probe
+   predicted ~6.8k rows/s from 5.3k; the real change delivered 7.8k, and 2.5x
+   on the transaction-bound shape. The ceiling moved to the manager.
 2. **The manager's per-transaction cost** (~0.6-1.2 ms) bounds
    transaction-bound workloads at ~1250 tx/s, with the change-streamer the
    busiest worker at 0.72 cores -- bound by serialized round trips, not
@@ -345,12 +389,11 @@ In the order the profiles rank them:
    timestamp conversion (it runs through `@google-cloud/precise-date`).
 4. **Per-change valita validation on the view-syncer** (4.8%) is paid on a
    stream the gateway already validated.
-5. **Then the manager becomes the co-limiter.** Its change-streamer costs
-   0.69 cores at 5.3k rows/s -- ~130us/row, the same order as the applier --
-   and its own profile is the same story: framing, stringifying and
-   timestamp-converting one change at a time. Getting the path to
-   _vastly_ faster means making the wire unit a transaction on both ends,
-   not just on the view-syncer's thread hop.
+5. **The manager is now the limiter**, saturating one core at ~7.8k rows/s
+   (~128us/row), and its profile is the same story a level up: framing,
+   stringifying, ack-parsing and timestamp-converting one change at a time.
+   The wire unit wants to become a transaction the way the thread hop just
+   did -- one frame carrying a batch, one ack for it.
 6. **The segment append (7.7% of the gateway loop)** is the only
    archive-specific item on this list, and it is last for a reason.
 

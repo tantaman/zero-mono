@@ -112,6 +112,103 @@ describe('replicator/incremental-sync', () => {
     dbFile?.delete();
   });
 
+  test('batches what has already arrived, and only that', async () => {
+    const issues = new ReplicationMessages({issues: ['issueID']});
+    const processMessages = vi.spyOn(worker, 'processMessages');
+
+    initReplicationState(mainDb, ['zero_data'], '02', {}, false);
+    initDB(
+      mainDb,
+      `
+    CREATE TABLE issues(
+      issueID INTEGER,
+      _0_version TEXT,
+      PRIMARY KEY(issueID)
+    );
+      `,
+    );
+
+    syncing = syncer.run();
+    const notifications = syncer.subscribe();
+    const versionReady = notifications[Symbol.asyncIterator]();
+    await versionReady.next();
+    await vi.waitFor(() => expect(subscribeFn).toHaveBeenCalled());
+
+    // One message, arriving alone: no batching, because there is nothing
+    // else queued to batch it with. Waiting for company would be latency
+    // spent for nothing.
+    downstream.push(['begin', issues.begin(), {commitWatermark: '06'}]);
+    await vi.waitFor(() => expect(processMessages).toHaveBeenCalledTimes(1));
+    expect(processMessages.mock.calls[0][0]).toHaveLength(1);
+
+    // A burst, pushed before the syncer can drain it: one hop for all of it.
+    processMessages.mockClear();
+    for (let i = 0; i < 8; i++) {
+      downstream.push(['data', issues.insert('issues', {issueID: i})]);
+    }
+    downstream.push(['commit', issues.commit(), {watermark: '06'}]);
+    await versionReady.next(); // the commit's version-ready notification
+
+    const batches = processMessages.mock.calls.map(([batch]) => batch.length);
+    expect(batches.reduce((a, b) => a + b, 0)).toBe(9);
+    expect(batches.length).toBeLessThan(9);
+
+    expectTables(mainDb, {
+      issues: [
+        {issueID: 0, ['_0_version']: '06'},
+        {issueID: 1, ['_0_version']: '06'},
+        {issueID: 2, ['_0_version']: '06'},
+        {issueID: 3, ['_0_version']: '06'},
+        {issueID: 4, ['_0_version']: '06'},
+        {issueID: 5, ['_0_version']: '06'},
+        {issueID: 6, ['_0_version']: '06'},
+        {issueID: 7, ['_0_version']: '06'},
+      ],
+    });
+  });
+
+  test('a batch never holds a whole transaction', async () => {
+    const issues = new ReplicationMessages({issues: ['issueID', 'body']});
+    const processMessages = vi.spyOn(worker, 'processMessages');
+
+    initReplicationState(mainDb, ['zero_data'], '02', {}, false);
+    initDB(
+      mainDb,
+      `
+    CREATE TABLE issues(
+      issueID INTEGER,
+      body TEXT,
+      _0_version TEXT,
+      PRIMARY KEY(issueID)
+    );
+      `,
+    );
+
+    syncing = syncer.run();
+    const notifications = syncer.subscribe();
+    const versionReady = notifications[Symbol.asyncIterator]();
+    await versionReady.next();
+    await vi.waitFor(() => expect(subscribeFn).toHaveBeenCalled());
+
+    // One transaction, far larger than the byte cap, pushed all at once: the
+    // batch cap has to break it up and apply the pieces, because holding a
+    // transaction in memory is the thing the cap exists to prevent.
+    const body = 'x'.repeat(4096);
+    const rows = 64; // 64 * 4KiB = 256KiB, four times MAX_BATCH_BYTES
+    downstream.push(['begin', issues.begin(), {commitWatermark: '06'}]);
+    for (let i = 0; i < rows; i++) {
+      downstream.push(['data', issues.insert('issues', {issueID: i, body})]);
+    }
+    downstream.push(['commit', issues.commit(), {watermark: '06'}]);
+    await versionReady.next();
+
+    const sizes = processMessages.mock.calls.map(([batch]) => batch.length);
+    expect(sizes.length).toBeGreaterThan(1);
+    expect(
+      mainDb.prepare('SELECT count(*) AS n FROM issues').get<{n: number}>().n,
+    ).toBe(rows);
+  });
+
   test('a commit is durable before it is acked', async () => {
     const issues = new ReplicationMessages({issues: ['issueID']});
 
@@ -181,7 +278,7 @@ describe('replicator/incremental-sync', () => {
 
   test('replicates transactions', async () => {
     const issues = new ReplicationMessages({issues: ['issueID', 'bool']});
-    const processMessage = vi.spyOn(worker, 'processMessage');
+    const processMessages = vi.spyOn(worker, 'processMessages');
 
     initReplicationState(mainDb, ['zero_data'], '02', {}, false);
 
@@ -473,10 +570,14 @@ describe('replicator/incremental-sync', () => {
         },
       ]
     `);
-    expect(processMessage).toHaveBeenCalledTimes(11);
+    // Messages reach the write worker in batches whose boundaries depend on
+    // what has arrived, so assert on the flattened sequence rather than on
+    // the number of hops it took.
+    const applied = processMessages.mock.calls.flatMap(([batch]) => [...batch]);
+    expect(applied).toHaveLength(11);
     // The parsed change, and nothing else: the canonical JSON went to the write
     // worker only for the change log, which the change-streamer now writes.
-    expect(processMessage).toHaveBeenNthCalledWith(1, firstBegin);
+    expect(applied[0]).toEqual(firstBegin);
   });
 
   test('replicates schema changes', async () => {
@@ -909,7 +1010,7 @@ describe('replicator/incremental-sync', () => {
 
   test('shut down on change-streamer error message', async () => {
     initReplicationState(mainDb, ['zero_data'], '02', {}, false);
-    const processMessage = vi.spyOn(worker, 'processMessage');
+    const processMessages = vi.spyOn(worker, 'processMessages');
 
     const syncing = syncer.run();
 
@@ -920,7 +1021,7 @@ describe('replicator/incremental-sync', () => {
 
     // Should stop / resolve
     await syncing;
-    expect(processMessage).not.toHaveBeenCalled();
+    expect(processMessages).not.toHaveBeenCalled();
 
     expect(existsSync(dbFile.path)).toBe(false);
   });

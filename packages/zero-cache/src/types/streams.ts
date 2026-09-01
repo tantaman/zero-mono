@@ -47,6 +47,16 @@ export type Source<T> = AsyncIterable<T> & {
   readonly signal: AbortSignal;
 
   /**
+   * The number of messages that have already arrived and are waiting to be
+   * dequeued, when the source knows. This lets a consumer batch work that is
+   * *already* in hand -- draining what has arrived and processing it in one
+   * go -- without adding any latency when nothing else has arrived. A source
+   * that does not track it leaves this undefined, and consumers fall back to
+   * processing one message at a time.
+   */
+  readonly queued?: number | undefined;
+
+  /**
    * The presence of a `pipeline` iterable allows the usual "consumed-on-iterate" semantics
    * to be overridden.
    *

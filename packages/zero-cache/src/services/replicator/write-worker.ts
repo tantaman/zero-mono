@@ -12,7 +12,11 @@ import {
 import {StatementRunner} from '../../db/statements.ts';
 import {createLogContext} from '../../server/logging.ts';
 import type {ChangeStreamData} from '../change-source/protocol/current/downstream.ts';
-import {ChangeProcessor, type ChangeProcessorMode} from './change-processor.ts';
+import {
+  ChangeProcessor,
+  type ChangeProcessorMode,
+  type CommitResult,
+} from './change-processor.ts';
 import {getSubscriptionState} from './schema/replication-state.ts';
 import {
   applyPragmas,
@@ -107,9 +111,18 @@ function createAPI(): API {
       }
     },
 
-    processMessage(downstream: ChangeStreamData) {
+    processMessages(batch: readonly ChangeStreamData[]) {
+      const log = must(lc);
+      const p = must(processor);
+      const results: (CommitResult | null)[] = [];
       try {
-        return must(processor).processMessage(must(lc), downstream);
+        for (const downstream of batch) {
+          // A message that fails latches the processor into its failure
+          // state, from which it drops the rest of the batch and reports the
+          // error out-of-band -- so the loop needs no early exit of its own.
+          results.push(p.processMessage(log, downstream));
+        }
+        return results;
       } catch (e) {
         handleCorruptedDb(e);
         throw e;

@@ -73,8 +73,7 @@ describe('write-worker', () => {
     ];
 
     let commitResult = null;
-    for (let i = 0; i < messages.length; i++) {
-      const result = await worker.processMessage(messages[i]);
+    for (const result of await worker.processMessages(messages)) {
       if (result) {
         commitResult = result;
       }
@@ -112,7 +111,7 @@ describe('write-worker', () => {
       ['data', issues.insert('issues', {issueID: 1, bool: true})],
       ['commit', issues.commit(), {watermark: '06'}],
     ] satisfies ChangeStreamData[]) {
-      await worker.processMessage(message);
+      await worker.processMessages([message]);
     }
 
     expect(existsSync(changeLogFileName(dbFile.path))).toBe(false);
@@ -122,14 +121,9 @@ describe('write-worker', () => {
     const issues = new ReplicationMessages({issues: ['issueID', 'bool']});
 
     // Start a transaction but don't commit
-    await worker.processMessage([
-      'begin',
-      issues.begin(),
-      {commitWatermark: '06'},
-    ]);
-    await worker.processMessage([
-      'data',
-      issues.insert('issues', {issueID: 123, bool: true}),
+    await worker.processMessages([
+      ['begin', issues.begin(), {commitWatermark: '06'}],
+      ['data', issues.insert('issues', {issueID: 123, bool: true})],
     ]);
 
     // Abort should roll back
@@ -146,9 +140,7 @@ describe('write-worker', () => {
       ['commit', issues.commit(), {watermark: '07'}],
     ];
 
-    for (let i = 0; i < messages.length; i++) {
-      await worker.processMessage(messages[i]);
-    }
+    await worker.processMessages(messages);
 
     const rowsAfter = mainDb.prepare('SELECT issueID FROM issues').all();
     expect(rowsAfter).toEqual([{issueID: 789}]);
@@ -173,17 +165,19 @@ describe('write-worker', () => {
 
     // Send a processMessage without a begin - should cause a failure
     await expect(
-      worker.processMessage([
-        'data',
-        {
-          tag: 'insert',
-          relation: {
-            schema: 'public',
-            name: 'nonexistent',
-            rowKey: {columns: ['id'], type: 'default'},
+      worker.processMessages([
+        [
+          'data',
+          {
+            tag: 'insert',
+            relation: {
+              schema: 'public',
+              name: 'nonexistent',
+              rowKey: {columns: ['id'], type: 'default'},
+            },
+            new: {id: [1, 'int4']},
           },
-          new: {id: [1, 'int4']},
-        },
+        ],
       ]),
     ).rejects.toThrow();
 
@@ -207,9 +201,9 @@ describe('write-worker', () => {
       },
     ];
     const request = {
-      method: 'processMessage',
-      args: [data],
-    } satisfies Request<'processMessage'>;
+      method: 'processMessages',
+      args: [[data]],
+    } satisfies Request<'processMessages'>;
     const echoWorker = new Worker(
       /*js*/ `
         const {parentPort} = require('node:worker_threads');
@@ -224,7 +218,7 @@ describe('write-worker', () => {
       const [roundTripped] = (await response) as [typeof request];
 
       expect(roundTripped).toEqual(request);
-      expect(roundTripped.args[0][1]).toMatchObject({
+      expect(roundTripped.args[0][0][1]).toMatchObject({
         new: {issueID: 9007199254740993n, text: 'before\0after'},
       });
     } finally {

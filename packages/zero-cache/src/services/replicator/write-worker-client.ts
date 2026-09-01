@@ -31,7 +31,22 @@ type ErrorHandler = (err: Error) => void;
  */
 export interface WriteWorkerClient {
   getSubscriptionState(): Promise<SubscriptionState>;
-  processMessage(downstream: ChangeStreamData): Promise<CommitResult | null>;
+  /**
+   * Applies a batch of change-stream messages, in order, returning each
+   * message's result positionally (i.e. `null` for everything but a commit).
+   *
+   * The batch is the unit of the hop to the worker, not the unit of atomicity:
+   * transaction boundaries are still the messages themselves, so a batch may
+   * contain part of a transaction, several whole ones, or both. It exists
+   * because the hop costs ~45us and the SQLite write it carries costs ~10us,
+   * so sending one message per change spends most of the applier's time in
+   * structured clone and thread wakeups. Callers must bound what they
+   * accumulate: a batch is resident memory, and the clone transiently doubles
+   * it.
+   */
+  processMessages(
+    batch: readonly ChangeStreamData[],
+  ): Promise<(CommitResult | null)[]>;
   abort(): void;
   stop(): Promise<void>;
   onError(handler: ErrorHandler): void;
@@ -99,7 +114,7 @@ export function deserializeError(serialized: SerializedError): Error {
 export type ArgsMap = {
   init: [string, ChangeProcessorMode, PragmaConfig, LogConfig];
   getSubscriptionState: [];
-  processMessage: [ChangeStreamData];
+  processMessages: [readonly ChangeStreamData[]];
   abort: [];
   stop: [];
 };
@@ -111,7 +126,7 @@ export type Request<M extends Method = Method> = {method: M; args: ArgsMap[M]};
 export type ResultMap = {
   init: void;
   getSubscriptionState: SubscriptionState;
-  processMessage: CommitResult | null;
+  processMessages: (CommitResult | null)[];
   abort: void;
   stop: void;
 };
@@ -219,8 +234,10 @@ export class ThreadWriteWorkerClient implements WriteWorkerClient {
     return this.#call('getSubscriptionState', []);
   }
 
-  processMessage(downstream: ChangeStreamData): Promise<CommitResult | null> {
-    return this.#call('processMessage', [downstream]);
+  processMessages(
+    batch: readonly ChangeStreamData[],
+  ): Promise<(CommitResult | null)[]> {
+    return this.#call('processMessages', [batch]);
   }
 
   abort(): void {

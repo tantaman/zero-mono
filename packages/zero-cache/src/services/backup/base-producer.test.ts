@@ -71,8 +71,12 @@ class InProcessWorkerClient {
     );
   }
 
-  processMessage(downstream: ChangeStreamData): Promise<CommitResult | null> {
-    return Promise.resolve(this.#processor!.processMessage(lc, downstream));
+  processMessages(
+    batch: readonly ChangeStreamData[],
+  ): Promise<(CommitResult | null)[]> {
+    return Promise.resolve(
+      batch.map(downstream => this.#processor!.processMessage(lc, downstream)),
+    );
   }
 
   abort(): void {
