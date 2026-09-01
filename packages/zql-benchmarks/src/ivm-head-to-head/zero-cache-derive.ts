@@ -163,11 +163,15 @@ function createReplica(
     }
   });
 
-  // Same indexes as every other contestant (triangle-bench fairness rule 1).
+  // Same indexes as every other contestant (triangle-bench fairness rule 1):
+  // every column a shape filters or correlates on. `Album(ArtistId)` is easy to
+  // forget because only the artist-keyed shapes use it, and without it each of
+  // V queries re-scans Album — measuring the schema, not the engine.
   db.exec(`
     CREATE INDEX "ix_Track_0" ON "Track" ("AlbumId");
     CREATE INDEX "ix_Track_1" ON "Track" ("GenreId");
     CREATE INDEX "ix_Track_2" ON "Track" ("Milliseconds");
+    CREATE INDEX "ix_Album_0" ON "Album" ("ArtistId");
     ANALYZE;
   `);
   populateFromExistingTables(db, listTables(db, false));
