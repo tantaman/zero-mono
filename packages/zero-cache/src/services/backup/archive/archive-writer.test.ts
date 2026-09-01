@@ -1,5 +1,8 @@
+import {mkdtempSync, readdirSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {resolver} from '@rocicorp/resolver';
-import {beforeEach, describe, expect, test, vi} from 'vitest';
+import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest';
 import {createSilentLogContext} from '../../../../../shared/src/logging-test-utils.ts';
 import {must} from '../../../../../shared/src/must.ts';
 import {InMemoryObjectStore, wireTransaction} from '../test-utils.ts';
@@ -44,17 +47,24 @@ describe('backup/archive/archive-writer', () => {
   let store: InMemoryObjectStore;
   let durable: string[];
   let timers: ReturnType<typeof fakeTimers>;
+  let spoolDir: string;
 
   beforeEach(() => {
     store = new InMemoryObjectStore();
     durable = [];
     timers = fakeTimers();
+    spoolDir = mkdtempSync(join(tmpdir(), 'zero-archive-writer-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(spoolDir, {recursive: true, force: true});
   });
 
   function newWriter(opts: Partial<ArchiveWriterOptions> = {}) {
     return new ArchiveWriter(lc, {
       store,
       replicaVersion: '02',
+      spoolDir,
       segmentTargetBytes: 1, // seal at every commit unless overridden
       sealIntervalMs: 30_000,
       onDurable: watermark => durable.push(watermark),
@@ -131,6 +141,44 @@ describe('backup/archive/archive-writer', () => {
     timers.fire();
     await until(() => durable.length === 1);
     expect([...store.objects.keys()]).toEqual([segmentKey('02', '02', '03')]);
+  });
+
+  test('spool and sealed files are reclaimed once segments are durable', async () => {
+    const writer = newWriter();
+    await writer.reconcile('02');
+    writeTransaction(writer, '03');
+    writeTransaction(writer, '05');
+    await until(() => durable.length === 2);
+
+    // Each boundary seal rotated to a fresh spool file; everything sealed
+    // and uploaded has been deleted. Only the current (empty) spool remains.
+    expect(readdirSync(spoolDir)).toEqual(['000002.spool']);
+    await writer.close();
+  });
+
+  test('a timer seal mid-transaction archives the committed prefix without disturbing the open transaction', async () => {
+    const writer = newWriter({segmentTargetBytes: 1024 * 1024});
+    await writer.reconcile('02');
+    writeTransaction(writer, '03');
+
+    const {parsed, messages} = wireTransaction('05', 2);
+    // begin + first data row, then the seal timer fires mid-transaction.
+    writer.write(parsed[0], messages[0]);
+    writer.write(parsed[1], messages[1]);
+    timers.fire();
+    await until(() => durable.length === 1);
+    expect([...store.objects.keys()]).toEqual([segmentKey('02', '02', '03')]);
+
+    // The rest of the transaction commits and seals on the next timer.
+    writer.write(parsed[2], messages[2]);
+    writer.write(parsed[3], messages[3]);
+    timers.fire();
+    await until(() => durable.length === 2);
+    const segment = decodeSegment(
+      store.objects.get(segmentKey('02', '03', '05'))!,
+    );
+    expect(segment.transactions.map(t => t.watermark)).toEqual(['05']);
+    expect(segment.transactions[0].messages).toEqual(parsed);
   });
 
   test('a rolled-back or aborted transaction is not archived', async () => {

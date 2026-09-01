@@ -305,6 +305,9 @@ export default async function runWorker(
             ? {
                 store: archiveStore,
                 replicaVersion: subscriptionState.replicaVersion,
+                // Beside the replica file: local disk with room for the
+                // replica has room for the (re-derivable) spool.
+                spoolDir: `${replica.file}-archive-spool`,
                 segmentTargetBytes: backup.segmentTargetBytes,
                 sealIntervalMs: backup.segmentSealIntervalSeconds * 1000,
               }

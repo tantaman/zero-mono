@@ -1,3 +1,6 @@
+import {createReadStream, statSync, unlinkSync} from 'node:fs';
+import {join} from 'node:path';
+import {Readable} from 'node:stream';
 import type {LogContext} from '@rocicorp/logger';
 import {resolver, type Resolver} from '@rocicorp/resolver';
 import {max} from '../../../types/lexi-version.ts';
@@ -12,18 +15,27 @@ import {
   type ObjectStore,
 } from '../object-store/object-store.ts';
 import {logPrefix, parseSegmentKey, segmentKey} from './layout.ts';
-import {encodeSegment} from './segment-format.ts';
+import {writeSealedSegmentFile} from './segment-format.ts';
+import {SegmentSpool, type SpoolRange} from './segment-spool.ts';
 
 export type ArchiveWriterOptions = {
   store: ObjectStore;
   /** The lineage the archive is namespaced by. */
   replicaVersion: string;
+  /**
+   * The local directory for the message spool and sealed segments awaiting
+   * upload. Its contents are re-derivable from the replication slot, so it
+   * needs durability only across a process's own lifetime, but it must have
+   * room for the spool plus the sealed segments in flight (bounded by
+   * {@link maxBufferedBytes} plus the open transaction).
+   */
+  spoolDir: string;
   /** Uncompressed bytes at which the open segment is sealed. */
   segmentTargetBytes: number;
   /** Time after which a non-empty open segment is sealed. Bounds archive RPO. */
   sealIntervalMs: number;
   /**
-   * Bytes buffered (open segment plus upload queue) beyond which
+   * On-disk bytes (open segment plus upload queue) beyond which
    * {@link readyForMore} applies back-pressure. Defaults to
    * {@link DEFAULT_MAX_BUFFERED_BYTES}.
    */
@@ -48,9 +60,9 @@ export type ArchiveWriterState = {
   enabled: boolean;
   /** End of the highest contiguous durable segment, if any. */
   durableWatermark: string | undefined;
-  /** Last committed watermark buffered or durable (the replay filter). */
+  /** Last committed watermark spooled or durable (the replay filter). */
   lastBufferedWatermark: string | undefined;
-  /** Open segment plus upload queue, in uncompressed message bytes. */
+  /** Open segment plus upload queue, in uncompressed message bytes on disk. */
   bufferedBytes: number;
   queuedSegments: number;
   /** Discontinuities observed at reconcile time. Should stay zero. */
@@ -62,60 +74,56 @@ const DEFAULT_FLUSH_TIMEOUT_MS = 5_000;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
 const MAX_RETRY_DELAY_MS = 30_000;
 
-type BufferedTransaction = {
-  watermark: string;
-  messages: string[];
-};
-
-type SealedSegment = {
-  key: string;
-  data: Uint8Array;
+/** A sealed committed range awaiting compression and upload, in order. */
+type SegmentJob = {
+  range: SpoolRange;
+  /** Exclusive: the watermark the segment resumes after. */
+  start: string;
+  /** Inclusive: the segment's last commit watermark. */
   end: string;
-  /** Uncompressed bytes, released from the buffer accounting when durable. */
-  bytes: number;
+  txCount: number;
 };
 
 /**
  * Archives the committed change stream, from the change-streamer's own stream
- * loop: buffers each transaction's messages, appends committed transactions
- * to the open segment, seals on size or time, uploads asynchronously in
- * order, and exposes the highest **contiguous** durable cursor via
- * `onDurable`.
+ * loop: appends each message to a local uncompressed disk spool as it
+ * arrives, seals the committed range on size or time, compresses and uploads
+ * sealed segments asynchronously in order, and exposes the highest
+ * **contiguous** durable cursor via `onDurable`.
  *
  * ### Ordering and replay
  *
- * {@link write} is synchronous (sealing compresses in-line; uploads are
- * async), so buffering a transaction always precedes anything that can
- * advance the watermark the stream would resume from — the same invariant
- * the SQLite change-log writer relies on. Replayed transactions after a
- * reconnect (the stream resumes from the last ACK, which can trail the
- * archive) are filtered by commit watermark in {@link write}, which is where
- * replay suppression lives for the other stream consumers too.
+ * {@link write} is synchronous (spool appends are positional `writeSync`s;
+ * sealing hands a byte range to the async pump), so buffering a transaction
+ * always precedes anything that can advance the watermark the stream would
+ * resume from — the same invariant the SQLite change-log writer relies on.
+ * Replayed transactions after a reconnect (the stream resumes from the last
+ * ACK, which can trail the archive) are filtered by commit watermark in
+ * {@link write}, which is where replay suppression lives for the other
+ * stream consumers too.
  *
  * ### Failure posture: fail-stall
  *
  * The archive is authoritative, so unlike the fail-soft SQLite change-log
- * writer (a cache), this writer never disables itself: an upload failure
- * retries indefinitely while the durable cursor — and with it, upstream
- * ACKs — stops advancing, and {@link readyForMore} applies back-pressure
- * once the buffer fills. The stalled cursor is the alerting signal. A
- * stream-invariant violation in {@link write} throws, which the stream loop
- * turns into a reconnect-and-reconcile. Segment names are deterministic from
- * stream identity and cursor interval, so a retried upload that finds its
- * object already present (a crash between upload and ACK in a previous
- * incarnation) is treated as durable rather than an error.
+ * writer (a cache), this writer never disables itself: a seal or upload
+ * failure retries indefinitely while the durable cursor — and with it,
+ * upstream ACKs — stops advancing, and {@link readyForMore} applies
+ * back-pressure once the on-disk buffer fills. The stalled cursor is the
+ * alerting signal. A stream-invariant violation in {@link write} throws,
+ * which the stream loop turns into a reconnect-and-reconcile. Segment names
+ * are deterministic from stream identity and cursor interval, so a retried
+ * upload that finds its object already present (a crash between upload and
+ * ACK in a previous incarnation) is treated as durable rather than an error.
  *
- * ### Memory
+ * ### Memory: spool, don't buffer
  *
- * This implementation buffers the open segment and upload queue in memory,
- * bounded only by back-pressure — which violates the streaming discipline in
- * ZERO_BACKUP_ARCHIVE_MODE_DESIGN.md ("never O(transaction)") for
- * transactions approaching the buffer cap. The planned retrofit replaces the
- * buffers with a disk spool (streaming compression, truncate-on-rollback,
- * streaming upload) and allows oversized transactions to span segment parts;
- * until it lands, no production stack should flip to mode `archive` with
- * workloads whose transactions approach
- * {@link ArchiveWriterOptions.maxBufferedBytes}.
+ * Resident memory is O(bounded buffer), never O(transaction) or O(segment):
+ * messages spool to disk uncompressed (a rollback is an `ftruncate` back to
+ * the last committed offset), sealing compresses the spooled range in a
+ * streaming pass into a sealed local file — the upload/retry unit — and the
+ * upload streams that file to the store. Disk holds the spool plus sealed
+ * files, both bounded by back-pressure plus the open transaction, and both
+ * re-derivable from the replication slot after a crash.
  */
 export class ArchiveWriter {
   readonly #lc: LogContext;
@@ -124,19 +132,20 @@ export class ArchiveWriter {
   readonly #clearTimeout: typeof clearTimeout;
   readonly #maxBufferedBytes: number;
 
+  #spool: SegmentSpool | undefined;
   #segmentStart: string | undefined;
+  /** Last commit watermark in the open segment; undefined when it is empty. */
+  #segmentEnd: string | undefined;
+  #segmentTxCount = 0;
   #lastBuffered: string | undefined;
   #durable: string | undefined;
 
-  #currentTx: BufferedTransaction | undefined;
-  #currentTxBytes = 0;
+  #openTxWatermark: string | undefined;
   #skipCurrentTx = false;
 
-  #pending: BufferedTransaction[] = [];
-  #pendingBytes = 0;
   #sealTimer: ReturnType<typeof setTimeout> | undefined;
 
-  #queue: SealedSegment[] = [];
+  #queue: SegmentJob[] = [];
   #queuedBytes = 0;
   #pumping = false;
   #idle: Resolver<void> | undefined;
@@ -220,6 +229,18 @@ export class ArchiveWriter {
       this.#gapsDetected++;
       backupArchiveGaps().add(1);
     }
+    if (this.#spool === undefined) {
+      this.#spool = new SegmentSpool(this.#opts.spoolDir);
+    } else {
+      // The stream re-sends everything that was not sealed, so the open
+      // segment's un-sealed spool content would duplicate it. Segments
+      // already sealed (in the upload queue) keep going: their ranges lie
+      // below the discarded region.
+      this.abort();
+      this.#spool.discardSegment();
+    }
+    this.#segmentTxCount = 0;
+    this.#segmentEnd = undefined;
     this.#segmentStart =
       head !== undefined ? max(head, resumeWatermark) : resumeWatermark;
     this.#lastBuffered = this.#segmentStart;
@@ -230,17 +251,18 @@ export class ArchiveWriter {
   }
 
   /**
-   * Buffers one stream message, sealing at transaction boundaries when the
+   * Spools one stream message, sealing at transaction boundaries when the
    * open segment reaches its size target. Throws only on a stream-invariant
-   * violation (a message before {@link reconcile}, or outside a
-   * begin..commit envelope), which the stream loop turns into a
-   * reconnect-and-reconcile.
+   * violation (a message before {@link reconcile}, outside a begin..commit
+   * envelope, or a spool append failure such as a full disk), which the
+   * stream loop turns into a reconnect-and-reconcile.
    */
   write(change: ChangeStreamData, json: string): void {
     if (this.#closed) {
       return;
     }
-    if (this.#segmentStart === undefined) {
+    const spool = this.#spool;
+    if (this.#segmentStart === undefined || spool === undefined) {
       throw new Error('archive writer received a change before reconcile()');
     }
     const [type] = change;
@@ -255,8 +277,13 @@ export class ArchiveWriter {
           this.#skipCurrentTx = true;
           return;
         }
-        this.#currentTx = {watermark, messages: [json]};
-        this.#currentTxBytes = json.length;
+        if (this.#openTxWatermark !== undefined) {
+          // A begin inside an open transaction: the interrupted
+          // transaction's partial spool content is discarded.
+          this.abort();
+        }
+        this.#openTxWatermark = watermark;
+        spool.append(json);
         break;
       }
       case 'commit': {
@@ -264,17 +291,17 @@ export class ArchiveWriter {
           this.#skipCurrentTx = false;
           return;
         }
-        const tx = this.#currentTx;
-        if (tx === undefined) {
+        const watermark = this.#openTxWatermark;
+        if (watermark === undefined) {
           throw new Error(`commit ${change[2].watermark} without a begin`);
         }
-        tx.messages.push(json);
-        this.#currentTx = undefined;
-        this.#pending.push(tx);
-        this.#pendingBytes += this.#currentTxBytes + json.length;
-        this.#currentTxBytes = 0;
-        this.#lastBuffered = tx.watermark;
-        if (this.#pendingBytes >= this.#opts.segmentTargetBytes) {
+        spool.append(json);
+        spool.commit();
+        this.#openTxWatermark = undefined;
+        this.#lastBuffered = watermark;
+        this.#segmentEnd = watermark;
+        this.#segmentTxCount++;
+        if (spool.committedBytes >= this.#opts.segmentTargetBytes) {
           this.#seal();
         } else if (this.#sealTimer === undefined) {
           this.#sealTimer = this.#setTimeout(() => {
@@ -291,30 +318,30 @@ export class ArchiveWriter {
         if (this.#skipCurrentTx) {
           return;
         }
-        if (this.#currentTx === undefined) {
+        if (this.#openTxWatermark === undefined) {
           throw new Error(`data message without a begin`);
         }
-        this.#currentTx.messages.push(json);
-        this.#currentTxBytes += json.length;
+        spool.append(json);
         break;
     }
   }
 
   /**
-   * Discards the open transaction, if any. Called when the change stream is
-   * interrupted mid-transaction.
+   * Discards the open transaction, if any — one `ftruncate` back to the last
+   * committed spool offset. Called when the change stream is interrupted
+   * mid-transaction.
    */
   abort(): void {
-    this.#currentTx = undefined;
-    this.#currentTxBytes = 0;
+    this.#openTxWatermark = undefined;
     this.#skipCurrentTx = false;
+    this.#spool?.rollback();
   }
 
   /**
    * Back-pressure for the stream loop, in the manner of the storer's
    * `readyForMore()`: `undefined` while there is room, otherwise a promise
    * that resolves when queued uploads drain. This is the fail-stall bound on
-   * memory while uploads lag: replication waits for the archive rather than
+   * disk while uploads lag: replication waits for the archive rather than
    * outrunning it.
    */
   readyForMore(): Promise<void> | undefined {
@@ -326,7 +353,7 @@ export class ArchiveWriter {
   }
 
   /**
-   * Seals any buffered transactions and waits (bounded) for queued uploads,
+   * Seals any spooled transactions and waits (bounded) for queued uploads,
    * then closes the writer. An unfinished upload at timeout is safe to
    * abandon: the un-ACKed transactions will be re-sent to the next
    * incarnation, and the deterministic segment name makes a
@@ -350,10 +377,11 @@ export class ArchiveWriter {
     this.#clearSealTimer();
     this.#backpressure?.resolve();
     this.#backpressure = undefined;
+    this.#spool?.close();
   }
 
   #bufferedBytes(): number {
-    return this.#currentTxBytes + this.#pendingBytes + this.#queuedBytes;
+    return (this.#spool?.segmentBytes ?? 0) + this.#queuedBytes;
   }
 
   #clearSealTimer(): void {
@@ -365,33 +393,33 @@ export class ArchiveWriter {
 
   #seal(): void {
     this.#clearSealTimer();
-    if (this.#pending.length === 0 || this.#segmentStart === undefined) {
+    const spool = this.#spool;
+    const start = this.#segmentStart;
+    const end = this.#segmentEnd;
+    if (
+      spool === undefined ||
+      start === undefined ||
+      end === undefined ||
+      this.#segmentTxCount === 0
+    ) {
       return;
     }
-    const {replicaVersion} = this.#opts;
-    const start = this.#segmentStart;
     try {
-      const {data, end} = encodeSegment({
-        replicaVersion,
-        start,
-        transactions: this.#pending,
-      });
-      this.#queue.push({
-        key: segmentKey(replicaVersion, start, end),
-        data,
-        end,
-        bytes: this.#pendingBytes,
-      });
-      this.#queuedBytes += this.#pendingBytes;
+      const range = spool.sealCommitted();
+      if (range === undefined) {
+        return;
+      }
+      this.#queue.push({range, start, end, txCount: this.#segmentTxCount});
+      this.#queuedBytes += range.bytes;
       this.#segmentStart = end;
-      this.#pending = [];
-      this.#pendingBytes = 0;
+      this.#segmentEnd = undefined;
+      this.#segmentTxCount = 0;
       void this.#pump();
     } catch (e) {
       // Fail-stall, and never throw: sealing can run from the timer, where a
-      // throw would be an unhandled exception. The pending buffer is kept —
-      // the next seal retries — while the stalled durable cursor (and
-      // therefore stalled ACKs) is the alerting signal.
+      // throw would be an unhandled exception. The committed range stays in
+      // the spool — the next seal retries — while the stalled durable cursor
+      // (and therefore stalled ACKs) is the alerting signal.
       this.#lc.error?.(
         `error sealing an archive segment; the durable archive cursor is stalled`,
         e,
@@ -406,15 +434,16 @@ export class ArchiveWriter {
     this.#pumping = true;
     try {
       while (this.#queue.length > 0 && !this.#closed) {
-        const segment = this.#queue[0];
-        const uploaded = await this.#upload(segment);
+        const job = this.#queue[0];
+        const uploaded = await this.#sealAndUpload(job);
         if (!uploaded) {
           return; // closed
         }
         this.#queue.shift();
-        this.#queuedBytes -= segment.bytes;
-        this.#durable = segment.end;
-        this.#opts.onDurable?.(segment.end);
+        this.#queuedBytes -= job.range.bytes;
+        job.range.release();
+        this.#durable = job.end;
+        this.#opts.onDurable?.(job.end);
         if (
           this.#backpressure !== undefined &&
           this.#bufferedBytes() <= this.#maxBufferedBytes / 2
@@ -430,22 +459,50 @@ export class ArchiveWriter {
     }
   }
 
-  async #upload(segment: SealedSegment): Promise<boolean> {
-    const {store} = this.#opts;
+  /**
+   * Compresses the job's spool range into a sealed local file (a streaming
+   * pass) and streams that file to the store, retrying both indefinitely
+   * with backoff. The sealed file is rebuilt on retry — it may be partial
+   * after a failure — and deleted once the object is durable.
+   */
+  async #sealAndUpload(job: SegmentJob): Promise<boolean> {
+    const {store, replicaVersion, spoolDir} = this.#opts;
+    const key = segmentKey(replicaVersion, job.start, job.end);
+    const sealedPath = join(spoolDir, `${job.start}-${job.end}.sealed`);
     const baseDelay = this.#opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
     for (let attempt = 1; ; attempt++) {
       if (this.#closed) {
         return false;
       }
       try {
-        await store.putIfAbsent(segment.key, segment.data);
+        await writeSealedSegmentFile(
+          {
+            replicaVersion,
+            start: job.start,
+            end: job.end,
+            txCount: job.txCount,
+          },
+          () => job.range.createStream(),
+          sealedPath,
+        );
+        const {size} = statSync(sealedPath);
+        await store.putStreamIfAbsent(
+          key,
+          () =>
+            Readable.toWeb(
+              createReadStream(sealedPath),
+            ) as ReadableStream<Uint8Array>,
+          size,
+        );
         backupArchiveSegmentsUploaded().add(1, {result: 'uploaded'});
+        this.#deleteSealed(sealedPath);
         return true;
       } catch (e) {
         if (e instanceof ObjectAlreadyExistsError) {
           // A previous incarnation crashed between upload and ACK; the
           // deterministic name makes this retry durable by definition.
           backupArchiveSegmentsUploaded().add(1, {result: 'exists'});
+          this.#deleteSealed(sealedPath);
           return true;
         }
         backupArchiveUploadErrors().add(1);
@@ -454,12 +511,20 @@ export class ArchiveWriter {
           MAX_RETRY_DELAY_MS,
         );
         this.#lc.warn?.(
-          `error uploading ${segment.key} (attempt ${attempt}); ` +
+          `error sealing/uploading ${key} (attempt ${attempt}); ` +
             `retrying in ${delay}ms. The durable archive cursor is stalled.`,
           e,
         );
         await new Promise(resolve => this.#setTimeout(resolve, delay));
       }
+    }
+  }
+
+  #deleteSealed(sealedPath: string): void {
+    try {
+      unlinkSync(sealedPath);
+    } catch (e) {
+      this.#lc.warn?.(`error deleting sealed segment ${sealedPath}`, e);
     }
   }
 }

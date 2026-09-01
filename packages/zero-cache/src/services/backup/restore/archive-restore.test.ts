@@ -383,6 +383,7 @@ class SourceReplica {
     this.#writer = new ArchiveWriter(lc, {
       store,
       replicaVersion: '02',
+      spoolDir: `${file}-archive-spool`,
       segmentTargetBytes: 1, // seal every transaction
       sealIntervalMs: 60_000,
     });

@@ -1,5 +1,12 @@
 import {createHash} from 'node:crypto';
-import {zstdCompressSync, zstdDecompressSync} from 'node:zlib';
+import {closeSync, createWriteStream, openSync, writeSync} from 'node:fs';
+import {Transform, type Readable} from 'node:stream';
+import {pipeline} from 'node:stream/promises';
+import {
+  createZstdCompress,
+  zstdCompressSync,
+  zstdDecompressSync,
+} from 'node:zlib';
 import * as v from '../../../../../shared/src/valita.ts';
 import {
   changeStreamDataSchema,
@@ -43,6 +50,8 @@ const segmentHeaderSchema = v.object({
   end: v.string(),
   txCount: v.number(),
 });
+
+export type SegmentHeader = v.Infer<typeof segmentHeaderSchema>;
 
 export type SegmentTransaction = {
   /** The transaction's commit watermark. */
@@ -114,6 +123,53 @@ export function encodeSegment(input: EncodeSegmentInput): {
   data.set(createHash('sha256').update(payload).digest(), MAGIC.length + 1);
   data.set(payload, HEADER_BYTES);
   return {data, end};
+}
+
+/**
+ * The streaming counterpart of {@link encodeSegment}: seals a segment to a
+ * local file, holding only the compression window and a hash context in
+ * memory regardless of segment size. `body` produces the payload's message
+ * bytes — each message prefixed by its `\n` separator, which is exactly what
+ * the segment spool stores — and is compressed behind the JSON header line.
+ * The checksum of the compressed payload is computed as the bytes pass and
+ * patched into the preamble afterwards, so the sealed file is complete
+ * before anything uploads it.
+ */
+export async function writeSealedSegmentFile(
+  header: SegmentHeader,
+  body: () => Readable,
+  outPath: string,
+): Promise<void> {
+  const hash = createHash('sha256');
+  const out = createWriteStream(outPath);
+  const preamble = new Uint8Array(HEADER_BYTES);
+  preamble.set(MAGIC, 0);
+  preamble[MAGIC.length] = FORMAT_VERSION; // checksum bytes stay zero for now
+  out.write(preamble);
+
+  const headerLine = Buffer.from(JSON.stringify(header), 'utf8');
+  await pipeline(
+    async function* () {
+      yield headerLine;
+      yield* body();
+    },
+    createZstdCompress(),
+    new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        hash.update(chunk);
+        callback(null, chunk);
+      },
+    }),
+    out,
+  );
+
+  const fd = openSync(outPath, 'r+');
+  try {
+    const digest = hash.digest();
+    writeSync(fd, digest, 0, digest.length, MAGIC.length + 1);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function decodeSegment(data: Uint8Array): DecodedSegment {
