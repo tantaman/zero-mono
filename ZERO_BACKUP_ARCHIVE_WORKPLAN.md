@@ -375,7 +375,51 @@ with no row key, and the emission-order expectation in
 `change-source.backfill.pg.test.ts`), so ordered emission and resume are
 now validated against Postgres rather than only in unit tests.
 
+### End-to-end against zbugs (single-node, `file://` archive)
+
+The single-node path has now been run end to end against `apps/zbugs` on a
+real Postgres 16 — `--backup-mode=archive`, no replica file, no litestream,
+no object-store configuration (M3.5's dev default puts the archive next to
+the replica path). It works, and getting there took three fixes, each of
+which only ever failed outside the unit tests:
+
+- **Cold-boot deadlock.** `main.ts` started the base producer only after
+  awaiting change-streamer readiness, but genesis blocks the change-streamer
+  until the producer publishes the first base. Nothing ever answered the
+  offer; genesis abandoned it after the heartbeat timeout and the process
+  exited 255. The producer now starts alongside the change-streamer.
+- **Genesis left the `replicas` row unusable.** The producer's initial sync
+  deliberately leaves that record to the gateway, and the gateway never
+  wrote it, so the read-back that ends `performGenesis` always returned null
+  ("genesis created no replica at version X") — after the copy and the base
+  publication had both succeeded. The gateway now records `initialSchema`
+  (read at the offered snapshot) and `initialSyncContext`.
+- **Tail replay could not decode a real segment.** Both segment decoders
+  parsed change-stream messages strictly, while the wire parses them in
+  `passthrough` mode; the Postgres source's `begin`/`commit` carry
+  `commitLsn`, `commitTime` and `xid`, so every archived transaction was
+  rejected on replay. The synthetic transactions the tests build carry only
+  the schema-declared fields, which is why this was invisible until a real
+  upstream produced a segment.
+
+What the run then demonstrated: genesis (2,089 rows, 13 tables) performed by
+the producer at the gateway's exported snapshot; the first base published and
+the serving replica restored from it with the gateway holding no replica file
+of its own; live inserts, updates and deletes flowing to sealed log segments;
+a restart resuming the existing lineage rather than re-running genesis; and
+`zero-archive-drill` reporting `match` — a replica restored purely from the
+archive is identical to the live one, before and after the restart.
+
+Two environment limits are worth recording, since neither is a defect in
+this work: `http-service.ts` binds `::`, so every test and every worker that
+listens fails on a host without IPv6; and `view-syncer/inspect-handler.ts`
+uses a `using` declaration, which needs the Node 24 that CI runs (`.nvmrc`
+and `engines` both say 22).
+
+### Still outstanding
+
 What remains needs infrastructure this environment does not have: the
 scratch-stack chaos orchestration, the Flux machinery (fleet repo, M4.4),
 the flip drills (M4.5), and the follow-ups called out inline (the fs-store
-CI drill, oracle layer 1 over producer bases).
+CI drill, oracle layer 1 over producer bases). The zbugs run above is
+single-node and hand-driven; it is not a substitute for the CI drill.
