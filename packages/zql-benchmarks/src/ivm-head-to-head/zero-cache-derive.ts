@@ -32,6 +32,7 @@
  * Output: `res|zero_cache|shape|scaleS|viewsV|metric|value` lines.
  */
 import {spawnSync} from 'node:child_process';
+import {readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {testLogConfig} from '../../../otel/src/test-log-config.ts';
@@ -200,7 +201,52 @@ const clientSchema = createSchema({tables: [albumTable, trackTable]});
 
 const genreFor = (i: number) => (i % 25) + 1;
 
-function astFor(shape: string, i: number): AST {
+/**
+ * The high-cardinality keys the `*_key` shapes are parameterized by, so V
+ * registered queries are V genuinely DISTINCT queries rather than V copies of
+ * one. Derived from the loaded data exactly as the rindle side derives them
+ * (sorted, deduped), so both engines register the same V queries.
+ */
+export type Keys = {albums: number[]; artists: number[]};
+
+export function keysFrom(data: TableData): Keys {
+  const uniq = (xs: number[]) =>
+    [...new Set(xs)].toSorted((a: number, b: number) => a - b);
+  return {
+    albums: uniq(data.Album.map(r => r.AlbumId as number)),
+    artists: uniq(data.Album.map(r => r.ArtistId as number)),
+  };
+}
+
+/** Resident set size of this process, in bytes — the same `/proc/self/status`
+ * `VmRSS` the rindle side reads. Whole-process, so it counts the engine, the
+ * SQLite page cache and the runtime alike on both sides; unlike a heap delta it
+ * is genuinely the same instrument across a Node process and a Rust one. */
+const WHITESPACE = /\s+/;
+
+function rssBytes(): number {
+  try {
+    for (const line of readFileSync('/proc/self/status', 'utf8').split('\n')) {
+      if (line.startsWith('VmRSS:')) {
+        return Number(line.split(WHITESPACE)[1]) * 1024;
+      }
+    }
+  } catch {
+    // not Linux, or /proc unreadable — reported as 0 rather than guessed
+  }
+  return 0;
+}
+
+function eq(name: string, value: number) {
+  return {
+    type: 'simple',
+    op: '=',
+    left: {type: 'column', name},
+    right: {type: 'literal', value},
+  } as const;
+}
+
+function astFor(shape: string, i: number, keys: Keys): AST {
   const g = genreFor(i);
   const genreEq = {
     type: 'simple',
@@ -230,28 +276,103 @@ function astFor(shape: string, i: number): AST {
       },
     };
   }
+  const album = keys.albums[i % keys.albums.length];
+  const artist = keys.artists[i % keys.artists.length];
+  // one album's tracks
+  if (shape === 'filter_key') {
+    return {
+      table: 'Track',
+      orderBy: [['TrackId', 'asc']],
+      where: eq('AlbumId', album),
+    };
+  }
+  // one album's five longest tracks
+  if (shape === 'take_key') {
+    return {
+      table: 'Track',
+      where: eq('AlbumId', album),
+      orderBy: [['Milliseconds', 'desc']],
+      limit: 5,
+    };
+  }
+  // one artist's albums, each with its tracks nested
+  if (shape === 'related_key') {
+    return {
+      table: 'Album',
+      orderBy: [['AlbumId', 'asc']],
+      where: eq('ArtistId', artist),
+      related: [
+        {
+          correlation: {parentField: ['AlbumId'], childField: ['AlbumId']},
+          subquery: {
+            table: 'Track',
+            alias: 'tracks',
+            orderBy: [['TrackId', 'asc']],
+          },
+        },
+      ],
+    };
+  }
+  // one artist's albums that have a rock track
+  if (shape === 'exists_key') {
+    return {
+      table: 'Album',
+      orderBy: [['AlbumId', 'asc']],
+      where: {
+        type: 'and',
+        conditions: [
+          eq('ArtistId', artist),
+          {
+            type: 'correlatedSubquery',
+            op: 'EXISTS',
+            related: {
+              correlation: {parentField: ['AlbumId'], childField: ['AlbumId']},
+              subquery: {
+                table: 'Track',
+                alias: 'has_genre',
+                orderBy: [['TrackId', 'asc']],
+                where: eq('GenreId', 1),
+              },
+            },
+          },
+        ],
+      },
+    };
+  }
   throw new Error(`unknown shape ${shape}`);
 }
 
 /**
- * The organic write stream, identical in construction to the other harnesses.
+ * The organic write stream, batched into transactions and identical in
+ * construction to the rindle harness: `txns` transactions of `rowsPerTxn` rows.
  * Returned as plain JSON rows because that is what a replication message
  * carries; an absent cell is `null` on the wire, never `undefined`.
+ *
+ * Transaction SIZE is a first-class knob because it moves the two systems
+ * differently — per-transaction cost is amortized over the batch, per-row cost
+ * is not — so holding it equal is the precondition for comparing writes/sec.
  */
-function streamRows(
+function streamTxns(
   data: TableData,
-  w: number,
-): Record<string, ReadonlyJSONValue>[] {
+  txns: number,
+  rowsPerTxn: number,
+): Record<string, ReadonlyJSONValue>[][] {
   const base = data.Track;
   const stride = 7919;
-  return Array.from({length: w}, (_, i) => {
-    const row: Record<string, ReadonlyJSONValue> = {};
-    for (const [k, v] of Object.entries(base[(i * stride) % base.length])) {
-      row[k] = v ?? null;
-    }
-    row.TrackId = STREAM_ID_BASE + i;
-    return row;
-  });
+  let next = 0;
+  return Array.from({length: txns}, () =>
+    Array.from({length: rowsPerTxn}, () => {
+      const row: Record<string, ReadonlyJSONValue> = {};
+      for (const [k, v] of Object.entries(
+        base[(next * stride) % base.length],
+      )) {
+        row[k] = v ?? null;
+      }
+      row.TrackId = STREAM_ID_BASE + next;
+      next++;
+      return row;
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -259,10 +380,16 @@ function streamRows(
 // ---------------------------------------------------------------------------
 
 function runCell(shape: string, scale: number, views: number) {
-  const w = Number(process.env.DERIVE_W ?? 200);
+  // `DERIVE_W` is the transaction count, `DERIVE_ROWS_PER_TXN` the batch size.
+  // The rindle harness reads the same two knobs and the runner passes them
+  // through unchanged.
+  const txns = Number(process.env.DERIVE_W ?? 200);
+  const rowsPerTxn = Number(process.env.DERIVE_ROWS_PER_TXN ?? 1);
   const lc = createSilentLogContext();
   const path = join(tmpdir(), `zero-cache-derive-${randInt(1e6, 9e6)}.db`);
+  const rssBase = rssBytes();
   const data = loadScaled(lc, scale, ['Album', 'Track']);
+  const keys = keysFrom(data);
 
   const db = createReplica(lc, path, data);
   const storage = new Database(lc, ':memory:');
@@ -288,6 +415,23 @@ function runCell(shape: string, scale: number, views: number) {
   try {
     pipelines.init(clientSchema);
 
+    // V must not exceed the distinct-key budget, or the "V unique queries"
+    // premise quietly becomes "V queries, some identical" — which would flatter
+    // whichever engine dedupes or caches better. A hard error, not a warning.
+    if (shape.endsWith('_key')) {
+      const budget =
+        shape === 'related_key' || shape === 'exists_key'
+          ? keys.artists.length
+          : keys.albums.length;
+      if (views > budget) {
+        throw new Error(
+          `views=${views} exceeds the ${budget} distinct keys available for ` +
+            `shape ${shape} at scale ${scale}: the queries would repeat. ` +
+            `Raise the scale.`,
+        );
+      }
+    }
+
     // hydrate: register + hydrate all V queries, cold.
     const t0 = process.hrtime.bigint();
     let hydrated = 0;
@@ -295,7 +439,7 @@ function runCell(shape: string, scale: number, views: number) {
       for (const change of pipelines.addQuery(
         `hash${i}`,
         `query${i}`,
-        astFor(shape, i),
+        astFor(shape, i, keys),
         NO_BUDGET,
       )) {
         if (change !== 'yield') {
@@ -304,6 +448,9 @@ function runCell(shape: string, scale: number, views: number) {
       }
     }
     const hydrateNs = Number(process.hrtime.bigint() - t0);
+    // RSS with all V queries hydrated and held — the cost of HOLDING them,
+    // sampled before the write stream puts deltas in flight.
+    const rssHydrated = rssBytes();
 
     // derive: W replication transactions, each one row, each fully drained.
     const messages = new ReplicationMessages({
@@ -311,15 +458,15 @@ function runCell(shape: string, scale: number, views: number) {
       Track: 'TrackId',
       [MUTATIONS_TABLE]: ['clientGroupID', 'clientID', 'mutationID'],
     });
-    const writes = streamRows(data, w);
+    const batches = streamTxns(data, txns, rowsPerTxn);
     const replicator = fakeReplicator(lc, db);
 
     let derived = 0;
     const t1 = process.hrtime.bigint();
-    for (let i = 0; i < writes.length; i++) {
+    for (let i = 0; i < batches.length; i++) {
       replicator.processTransaction(
         String(200 + i),
-        messages.insert('Track', writes[i]),
+        ...batches[i].map(row => messages.insert('Track', row)),
       );
       // The changes MUST be iterated in full — that is what advances the
       // snapshot, and it is where the derivation actually happens.
@@ -330,14 +477,24 @@ function runCell(shape: string, scale: number, views: number) {
       }
     }
     const deriveNs = Number(process.hrtime.bigint() - t1);
+    const rssPeak = rssBytes();
 
     const emit = (metric: string, value: number) =>
       process.stdout.write(
         `res|zero_cache|${shape}|scale${scale}|views${views}|${metric}|${value.toFixed(1)}\n`,
       );
+    const rowsWritten = txns * rowsPerTxn;
     emit('hydrate_all_ns', hydrateNs);
-    emit('derive_ns_per_write', deriveNs / w);
-    emit('writes_per_sec', 1e9 / (deriveNs / w));
+    emit('derive_ns_per_write', deriveNs / txns);
+    emit('writes_per_sec', 1e9 / (deriveNs / txns));
+    emit('rows_per_sec', rowsWritten / (deriveNs / 1e9));
+    emit('rows_per_txn', rowsPerTxn);
+    emit('rss_hydrated_bytes', rssHydrated);
+    emit('rss_peak_bytes', rssPeak);
+    emit(
+      'rss_per_query_bytes',
+      views === 0 ? 0 : Math.max(0, rssHydrated - rssBase) / views,
+    );
     // Named to match the rindle side: `hydrate_rows` is the initial result set
     // (the cross-engine parity number for the flat `filter` shape), `delta_rows`
     // the per-write deltas. `updates` has no Zero counterpart — zero-cache does
