@@ -1,5 +1,6 @@
 import {consoleLogSink, LogContext} from '@rocicorp/logger';
 import {must} from '../../../shared/src/must.ts';
+import {getServerContext} from '../config/server-context.ts';
 import {getNormalizedZeroConfig} from '../config/zero-config.ts';
 import {initEventSink} from '../observability/events.ts';
 import {getOrCreateGauge} from '../observability/metrics.ts';
@@ -8,12 +9,15 @@ import {
   type BaseProducerState,
 } from '../services/backup/base-producer.ts';
 import {createObjectStore} from '../services/backup/object-store/create-object-store.ts';
+import {initReplica} from '../services/change-source/common/replica-schema.ts';
+import {initialSync} from '../services/change-source/pg/initial-sync.ts';
 import {exitAfter, runUntilKilled} from '../services/life-cycle.ts';
 import {
   parentWorker,
   singleProcessMode,
   type Worker,
 } from '../types/processes.ts';
+import {getShardConfig} from '../types/shards.ts';
 import {createLogContext} from './logging.ts';
 import {startOtelAuto} from './otel-start.ts';
 
@@ -37,11 +41,19 @@ export default async function runWorker(
   lc = createLogContext(config, 'base-producer');
   initEventSink(lc, config);
 
-  const {taskID, backup, litestream, replica} = config;
+  const {
+    taskID,
+    backup,
+    litestream,
+    replica,
+    upstream,
+    initialSync: syncConfig,
+  } = config;
   const archiveURL = must(
     backup.archiveURL,
     '--backup-archive-url is required when --backup-mode is not litestream',
   );
+  const shard = getShardConfig(config);
   const store = await createObjectStore(archiveURL, {
     // The archive shares the litestream bucket's S3 configuration; only
     // the URL (bucket/prefix) is deliberately distinct.
@@ -66,6 +78,30 @@ export default async function runWorker(
       ? {retainBases: backup.gcRetainBases, pitrHours: backup.gcPitrHours}
       : null,
     logConfig: config.log,
+    // Lineage genesis: the real initial-sync code fed the gateway's
+    // exported snapshot; only the snapshot handoff is new.
+    genesisCopier: (glc, targetFile, offer) =>
+      upstream.type === 'pg'
+        ? initReplica(glc, 'base-producer-genesis', targetFile, (log, tx) =>
+            initialSync(
+              log,
+              shard,
+              tx,
+              upstream.db,
+              {
+                tableCopyWorkers: syncConfig.tableCopyWorkers,
+                textCopy: syncConfig.textCopy,
+                providedSnapshot: {
+                  snapshotID: offer.snapshotID,
+                  lsn: offer.lsn,
+                },
+              },
+              getServerContext(config),
+            ).then(() => {}),
+          )
+        : Promise.reject(
+            new Error(`genesis is not supported for upstream ${upstream.type}`),
+          ),
   });
   registerProducerGauges(() => service.state());
 

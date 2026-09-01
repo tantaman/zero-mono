@@ -91,6 +91,24 @@ export type InitialSyncOptions = {
         maxRowsPerTable: number;
       }
     | undefined;
+  /**
+   * When set, copy at this externally created snapshot instead of creating
+   * a replication slot: lineage genesis in the archive world, where the
+   * gateway created the slot, exported the creating session's snapshot, and
+   * holds that transaction open while this (producer-side) sync copies.
+   * Produces a real, complete replica — tables, indexes, and replication
+   * state at the slot's consistent point — with no upstream mutations: the
+   * gateway owns the slot, the `replicas` record, and the publication DDL,
+   * so this mode only reads. Mutually exclusive with `shadow`.
+   */
+  providedSnapshot?:
+    | {
+        /** From `pg_export_snapshot()` in the slot-creating session. */
+        snapshotID: string;
+        /** The slot's consistent point. */
+        lsn: string;
+      }
+    | undefined;
 };
 
 export type ReplicaOptions = {
@@ -102,7 +120,7 @@ export type ServerContext = JSONObject;
 
 /**
  * @returns The {@link ReplicaState} of the initialized replica, or `undefined`
- *          for a shadow sync.
+ *          for a shadow or genesis (provided-snapshot) sync.
  */
 export async function initialSync(
   lc: LogContext,
@@ -124,8 +142,17 @@ export async function initialSync(
     textCopy = false,
     replicationSlotFailover = false,
     shadow,
+    providedSnapshot,
   } = syncOptions;
-  const syncMode: InitialSyncMode = shadow ? 'shadow' : 'initial';
+  assert(
+    !(shadow && providedSnapshot),
+    'shadow and providedSnapshot are mutually exclusive',
+  );
+  const syncMode: InitialSyncMode = shadow
+    ? 'shadow'
+    : providedSnapshot
+      ? 'genesis'
+      : 'initial';
   const copyFormat: CopyFormat = textCopy ? 'text' : 'binary';
   const start = performance.now();
   let sql: PostgresDB | undefined;
@@ -141,13 +168,15 @@ export async function initialSync(
     sql = await connectPgClient(lc, upstreamURI, 'initial-sync');
     const pgVersion = await checkUpstreamConfig(sql);
 
-    // In shadow mode we assume the shard is already initialized and just
-    // read back the existing publications. `ensurePublishedTables` would
-    // otherwise run DDL and potentially call `dropShard`, which must never
-    // happen during a shadow run.
-    const {publications} = shadow
-      ? await getInternalShardConfig(sql, shard)
-      : await ensurePublishedTables(lc, sql, shard);
+    // In shadow and genesis modes we assume the shard is already initialized
+    // and just read back the existing publications. `ensurePublishedTables`
+    // would otherwise run DDL and potentially call `dropShard`, which must
+    // never happen during those runs (in genesis, the gateway ran it at slot
+    // creation).
+    const {publications} =
+      shadow || providedSnapshot
+        ? await getInternalShardConfig(sql, shard)
+        : await ensurePublishedTables(lc, sql, shard);
     lc.info?.(`Upstream is setup with publications [${publications}]`);
 
     const {database, host} = sql.options;
@@ -225,6 +254,11 @@ export async function initialSync(
       );
       lsn = exported.lsn;
       snapshotResult = exported.result;
+    } else if (providedSnapshot) {
+      // Genesis: the copy reads at the gateway's exported snapshot; the
+      // slot (and the session holding the snapshot open) live elsewhere.
+      lsn = providedSnapshot.lsn;
+      snapshotResult = await captureSnapshot(providedSnapshot.snapshotID);
     } else {
       const replication = await createReplicaAndSlot(
         lc,
@@ -310,13 +344,20 @@ export async function initialSync(
 
       if (slotName && replicaID) {
         await initReplica(sql, shard, replicaID, published, context);
-      } else {
-        assert(shadow, 'expected to be in shadow sync if there is no slotName');
+      } else if (shadow) {
         const rowsByTable = new Map<string, number>();
         for (let i = 0; i < downloads.length; i++) {
           rowsByTable.set(downloads[i].status.table, copyResults[i].rows);
         }
         verifyShadowReplica(lc, tx, published, rowsByTable);
+      } else {
+        // Genesis: the gateway owns the slot and the `replicas` record; the
+        // built replica is published as the lineage's first base by the
+        // caller.
+        assert(
+          providedSnapshot,
+          'expected shadow or genesis sync if there is no slotName',
+        );
       }
 
       const elapsed = performance.now() - start;
@@ -815,7 +856,7 @@ type DownloadState = {
 };
 
 type CopyFormat = 'binary' | 'text';
-type InitialSyncMode = 'initial' | 'shadow';
+type InitialSyncMode = 'initial' | 'shadow' | 'genesis';
 
 type InitialSyncMetricAttrs = {
   syncMode: InitialSyncMode;

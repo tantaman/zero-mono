@@ -29,6 +29,7 @@ import {
 } from './base-producer.ts';
 import {publishBase} from './base/base-publisher.ts';
 import {decodeBaseManifest, encodeBaseRequest} from './base/manifest.ts';
+import {encodeGenesisOffer, genesisOfferKey} from './genesis.ts';
 import {InMemoryObjectStore, wireTransaction} from './test-utils.ts';
 
 const lc = createSilentLogContext();
@@ -253,6 +254,52 @@ describe('backup/base-producer', () => {
     const running = producer.run();
     try {
       await until(() => completeBases().includes('05'));
+    } finally {
+      await producer.stop();
+      await running;
+    }
+  });
+
+  test('a genesis offer bootstraps the first base and flows into tailing', async () => {
+    // No base anywhere; a gateway posts a genesis offer for lineage '02'.
+    await store.putIfAbsent(
+      genesisOfferKey('02'),
+      encodeGenesisOffer({
+        format: 'zero-archive-genesis-offer',
+        version: 1,
+        replicaVersion: '02',
+        snapshotID: '00000003-000001A8-1',
+        lsn: '0/1A82F58',
+        taskID: 'gateway-task',
+        offeredAt: Date.now(),
+      }),
+    );
+
+    const copied: string[] = [];
+    const producer = newProducer({
+      checkIntervalMs: 10,
+      genesisHeartbeatIntervalMs: 5,
+      genesisCopier: (glc, targetFile, offer) => {
+        copied.push(offer.snapshotID);
+        const db = new Database(glc, targetFile);
+        initReplicationState(db, ['zero_data'], offer.replicaVersion);
+        db.exec(
+          `CREATE TABLE issues(issueID TEXT PRIMARY KEY, val TEXT, _0_version TEXT)`,
+        );
+        db.close();
+        return Promise.resolve();
+      },
+    });
+    const running = producer.run();
+    try {
+      await until(() => completeBases().includes('02'));
+      expect(copied).toEqual(['00000003-000001A8-1']);
+      // The genesis markers are cleaned up with the publication.
+      expect(store.objects.has(genesisOfferKey('02'))).toBe(false);
+
+      // ... and the producer tails the new lineage without a restart.
+      await putSegment('02', ['03']);
+      await until(() => completeBases().includes('03'));
     } finally {
       await producer.stop();
       await running;

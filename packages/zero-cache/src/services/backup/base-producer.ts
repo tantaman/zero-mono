@@ -32,6 +32,12 @@ import type {SegmentMessage} from './archive/segment-format.ts';
 import {publishBase} from './base/base-publisher.ts';
 import {decodeBaseManifest, decodeBaseRequest} from './base/manifest.ts';
 import {runArchiveGC, type GCOptions} from './gc.ts';
+import {
+  cleanupGenesis,
+  readGenesisOffer,
+  writeGenesisHeartbeat,
+  type GenesisOffer,
+} from './genesis.ts';
 import {backupBasePublications, backupGCObjectsDeleted} from './metrics.ts';
 import type {ObjectStore} from './object-store/object-store.ts';
 import {archiveRestore} from './restore/archive-restore.ts';
@@ -68,6 +74,21 @@ export type BaseProducerOptions = {
   gc: GCOptions | null;
   /** For the write worker's own LogContext. */
   logConfig: LogConfig;
+  /**
+   * Performs the genesis table copy into `targetFile` at the offer's
+   * exported snapshot — the server wires this to the real initial-sync code
+   * (`providedSnapshot` mode). Without it the producer waits for someone
+   * else to publish a first base.
+   */
+  genesisCopier?:
+    | ((
+        lc: LogContext,
+        targetFile: string,
+        offer: GenesisOffer,
+      ) => Promise<void>)
+    | undefined;
+  /** How often a genesis copy heartbeats. Default 5s. */
+  genesisHeartbeatIntervalMs?: number | undefined;
   /** Overridable for tests (e.g. an in-process worker). */
   createWorkerClient?: (() => InitializableWorkerClient) | undefined;
 };
@@ -240,11 +261,13 @@ export class BaseProducerService implements Service {
       {mode: 'backup'},
     );
     if (restored === 'no_backup') {
-      // Pre-genesis: nothing to build on yet.
-      lc.debug?.(`lineage ${lineage} has no complete base yet; waiting`);
-      return;
-    }
-    if (restored !== 'success') {
+      // Pre-genesis: build the first base from a genesis offer if one is
+      // posted; otherwise there is nothing to build on yet.
+      if (!(await this.#tryGenesis(lineage))) {
+        lc.debug?.(`lineage ${lineage} has no complete base yet; waiting`);
+        return;
+      }
+    } else if (restored !== 'success') {
       throw new Error(`restore of the working replica returned ${restored}`);
     }
     this.#lastBase = await newestCompleteBase(store, lineage);
@@ -259,6 +282,69 @@ export class BaseProducerService implements Service {
         return; // stopped, or the session failed: re-evaluate from the top
       }
       await this.#publish(lineage);
+    }
+  }
+
+  /**
+   * Lineage genesis, producer side: copies the published tables at the
+   * offered snapshot into the working file (through the copier the server
+   * wires to the real initial-sync code), heartbeating so the gateway can
+   * tell a live copy from a dead one, and publishes the result as the
+   * lineage's first base. Returns false when there is no offer or no
+   * copier. A failure mid-copy throws — the heap of a half-built file is
+   * discarded on the next pass, and the gateway abandons the offer when
+   * the heartbeats stop.
+   */
+  async #tryGenesis(lineage: string): Promise<boolean> {
+    const lc = this.#lc;
+    const {store, replicaFile, taskID, genesisCopier} = this.#opts;
+    const offer = await readGenesisOffer(store, lineage);
+    if (offer === undefined || genesisCopier === undefined) {
+      return false;
+    }
+    if (offer.replicaVersion !== lineage) {
+      lc.warn?.(
+        `genesis offer under ${lineage} claims lineage ${offer.replicaVersion}; ignoring`,
+      );
+      return false;
+    }
+    lc.info?.(
+      `starting genesis for ${lineage} at snapshot ${offer.snapshotID} ` +
+        `(offered by ${offer.taskID})`,
+    );
+    deleteLiteDB(replicaFile);
+    deleteChangeLogDB(replicaFile);
+    this.#fileConsistent = false;
+
+    const heartbeat = setInterval(() => {
+      void writeGenesisHeartbeat(store, lineage, taskID).catch(e =>
+        lc.warn?.('error writing the genesis heartbeat', e),
+      );
+    }, this.#opts.genesisHeartbeatIntervalMs ?? 5_000);
+    try {
+      await writeGenesisHeartbeat(store, lineage, taskID);
+      await genesisCopier(lc, replicaFile, offer);
+      const built = readWatermark(lc, replicaFile);
+      const db = new Database(lc, replicaFile);
+      const {replicaVersion: builtVersion} = getSubscriptionState(
+        new StatementRunner(db),
+      );
+      db.close();
+      if (builtVersion !== lineage) {
+        throw new Error(
+          `genesis copy produced replica version ${builtVersion}; ` +
+            `the offer is for lineage ${lineage}`,
+        );
+      }
+      this.#fileConsistent = true;
+      await this.#publish(lineage);
+      // The gateway also cleans these up when it sees the base; doing it
+      // here too covers a gateway that gave up waiting.
+      await cleanupGenesis(store, lineage);
+      lc.info?.(`genesis for ${lineage} published its first base at ${built}`);
+      return true;
+    } finally {
+      clearInterval(heartbeat);
     }
   }
 
