@@ -134,6 +134,7 @@ export default async function runWorker(
 
   let changeStreamer: ChangeStreamerService | undefined;
   let backupURL: string | undefined;
+  let replicaVersion: string | undefined;
 
   const context = getServerContext(config);
   const sqliteChangeLogEnabled = sqliteChangeLogMode !== 'off';
@@ -232,12 +233,22 @@ export default async function runWorker(
         changeSource,
         replicationStatusPublisher,
         subscriptionState,
-        destinationBackupURL
+        // In backup mode `archive`, subscribers restore from the archive:
+        // the snapshot status advertises the archive URL and format, and a
+        // canary flip on the replication-manager alone carries every
+        // view-syncer with it.
+        archiveStore
           ? {
-              backupURL: destinationBackupURL,
-              litestreamVersion: litestream.backupUsingV5 ? 'v5' : 'legacy',
+              backupURL: must(backup.archiveURL),
+              litestreamVersion: 'legacy', // ACKs gate on the archive cursor
+              backupFormat: 'archive',
             }
-          : null,
+          : destinationBackupURL
+            ? {
+                backupURL: destinationBackupURL,
+                litestreamVersion: litestream.backupUsingV5 ? 'v5' : 'legacy',
+              }
+            : null,
         purgeLock,
         autoReset ?? false,
         {
@@ -316,6 +327,7 @@ export default async function runWorker(
         setTimeout,
       );
       backupURL = destinationBackupURL;
+      replicaVersion = subscriptionState.replicaVersion;
       waitForFirstBackupBeforeServing = waitForBackupBeforeServing;
       break;
     } catch (e) {
@@ -393,6 +405,11 @@ export default async function runWorker(
     config,
     replicaFile: replica.file,
     changeStreamer,
+    // In backup mode `archive`, the purge floor and snapshot confirmation
+    // come from the archive's complete-base listing.
+    archive: archiveStore
+      ? {store: archiveStore, replicaVersion: must(replicaVersion)}
+      : undefined,
   });
 
   let readinessGate = promiseVoid;

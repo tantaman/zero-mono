@@ -1,4 +1,4 @@
-import {stat} from 'node:fs/promises';
+import {rm, stat} from 'node:fs/promises';
 import {pid} from 'node:process';
 import type {ObservableCallback} from '@opentelemetry/api';
 import {consoleLogSink, LogContext} from '@rocicorp/logger';
@@ -14,8 +14,14 @@ import {getNormalizedZeroConfig} from '../config/zero-config.ts';
 import {registerSQLiteCorruptionDiagnosticTarget} from '../db/sqlite-corruption.ts';
 import {initEventSink} from '../observability/events.ts';
 import {getOrCreateGauge} from '../observability/metrics.ts';
+import {createObjectStore} from '../services/backup/object-store/create-object-store.ts';
+import {archiveRestore} from '../services/backup/restore/archive-restore.ts';
+import {requestLiveBase} from '../services/backup/restore/live-base.ts';
 import {ChangeStreamerHttpClient} from '../services/change-streamer/change-streamer-http.ts';
-import {reserveAndGetSnapshotStatus} from '../services/change-streamer/snapshot.ts';
+import {
+  reserveAndGetSnapshotStatus,
+  type SnapshotStatus,
+} from '../services/change-streamer/snapshot.ts';
 import {exitAfter, runUntilKilled} from '../services/life-cycle.ts';
 import {
   tryRestore,
@@ -79,12 +85,16 @@ export default async function runWorker(
   initEventSink(lc, config);
 
   // Remote view-syncers restore from the replication-manager, which supplies
-  // the backup URL. A local change-streamer owns the canonical replica and
-  // must not infer backup configuration from bundled executable paths.
+  // the backup URL (and, in backup mode `archive`, the format — no
+  // litestream executable is involved in an archive restore).
+  // A local change-streamer owns the canonical replica and must not infer
+  // backup configuration from bundled executable paths.
   if (
     fileMode === 'serving' &&
     !runningLocalChangeStreamer &&
-    (config.litestream.executable || config.litestream.executableV5)
+    (config.litestream.executable ||
+      config.litestream.executableV5 ||
+      config.backup.mode === 'archive')
   ) {
     await restoreReplica(lc, config);
   }
@@ -227,6 +237,22 @@ async function restoreReplica(lc: LogContext, config: NormalizedZeroConfig) {
       const snapshotStatus = await reserveAndGetSnapshotStatus(lc, config);
       // The backupURL comes from the replication-manager's snapshot response.
       ({backupURL} = snapshotStatus);
+      // The replication-manager decides the restore path: a view-syncer
+      // restores in whatever format it advertises, which is what lets a
+      // canary flip of --backup-mode on the replication-manager alone carry
+      // every view-syncer with it.
+      if (snapshotStatus.backupFormat === 'archive') {
+        result = await restoreFromArchive(lc, config, snapshotStatus);
+        if (result === 'success') {
+          return;
+        }
+        lc.info?.(
+          `archive restore returned ${result}. ` +
+            `retrying in ${RETRY_INTERVAL_MS / 1000} seconds`,
+        );
+        await sleep(RETRY_INTERVAL_MS);
+        continue;
+      }
       const litestream: LitestreamConfig = {...config.litestream, backupURL};
       const attempt = await tryRestore(
         lc,
@@ -253,6 +279,44 @@ async function restoreReplica(lc: LogContext, config: NormalizedZeroConfig) {
     const labels = {...attrs, result: result ?? 'error'};
     litestreamRestoreRuns().add(1, labels);
     litestreamRestoreDuration().recordMs(performance.now() - start, labels);
+  }
+}
+
+/** How long to wait for the producer to answer a live-base request. */
+const LIVE_BASE_TIMEOUT_MS = 2 * 60_000;
+
+/**
+ * The archive-mode restore: ask the producer for a fresh base (bounding the
+ * tail replay, and prefetching its chunks while they upload), then restore
+ * from the newest complete base — which is also what every degraded outcome
+ * of the request falls back to. The existing post-restore `prepare()` path
+ * handles journal-mode promotion, exactly as for a litestream restore.
+ */
+async function restoreFromArchive(
+  lc: LogContext,
+  config: NormalizedZeroConfig,
+  snapshotStatus: SnapshotStatus,
+): Promise<RestoreResult> {
+  const store = await createObjectStore(snapshotStatus.backupURL, {
+    endpoint: config.litestream.endpoint,
+    region: config.litestream.region,
+  });
+  const replicaFile = config.replica.file;
+  const prefetchDir = `${replicaFile}-live-base-prefetch`;
+  try {
+    await requestLiveBase(
+      lc,
+      store,
+      snapshotStatus.replicaVersion,
+      config.taskID,
+      {timeoutMs: LIVE_BASE_TIMEOUT_MS, prefetchDir},
+    );
+    return await archiveRestore(lc, store, replicaFile, snapshotStatus, {
+      mode: 'backup',
+      chunkCacheDir: prefetchDir,
+    });
+  } finally {
+    await rm(prefetchDir, {recursive: true, force: true}).catch(() => {});
   }
 }
 
