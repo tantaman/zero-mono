@@ -33,30 +33,53 @@ import {
  * Layout:
  * ```
  * bytes 0..3   magic "ZARC"
- * byte  4      format version (1)
+ * byte  4      format version (2)
  * bytes 5..36  SHA-256 of the compressed payload
  * bytes 37..   zstd-compressed payload
  * ```
  *
- * The payload is UTF-8 text: a JSON header line
- * (`{replicaVersion, start, end, txCount}`) followed by one JSON message per
- * line. {@link decodeSegment} rejects — rather than tolerates — a checksum
- * mismatch, a malformed transaction sequence, a watermark at or below
- * `start`, non-ascending watermarks, or a header that disagrees with the
- * content, so that corruption is caught at read time instead of surfacing as
- * a wrong replica.
+ * The payload is UTF-8 text: a JSON header line followed by one JSON message
+ * per line. The header carries `{replicaVersion, start, end, txCount}` plus,
+ * since format 2, the upstream commit timestamps of the object's first and
+ * last transactions (`firstCommitTimeMs`/`lastCommitTimeMs`, the
+ * point-in-time index for PITR tooling; null when the change source reports
+ * none) and `part` — null for an ordinary segment, or
+ * `{number, final, watermark}` for a member of a **part chain**: a
+ * transaction larger than the segment target spans interior parts (which end
+ * mid-transaction: `end` null, `txCount` 0) and a final part carrying the
+ * commit. The decoders reject — rather than tolerate — a checksum mismatch,
+ * a malformed transaction sequence, a watermark at or below `start`,
+ * non-ascending watermarks, or a header that disagrees with the content or
+ * with the range and chain position the caller expects, so that corruption
+ * is caught at read time instead of surfacing as a wrong replica.
  */
 
 const MAGIC = new Uint8Array([0x5a, 0x41, 0x52, 0x43]); // "ZARC"
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 const CHECKSUM_BYTES = 32;
 const HEADER_BYTES = MAGIC.length + 1 + CHECKSUM_BYTES;
 
 const segmentHeaderSchema = v.object({
   replicaVersion: v.string(),
   start: v.string(),
-  end: v.string(),
+  /** Inclusive last commit watermark; null for interior parts. */
+  end: v.string().nullable(),
+  /** Committed transactions in this object; 0 for interior parts. */
   txCount: v.number(),
+  /** Upstream commit time (ms epoch) of the first/last transaction. */
+  firstCommitTimeMs: v.number().nullable(),
+  lastCommitTimeMs: v.number().nullable(),
+  /** Chain position, or null for an ordinary (single-object) segment. */
+  part: v
+    .object({
+      /** 1-based position in the chain. */
+      number: v.number(),
+      /** True for the part carrying the commit. */
+      final: v.boolean(),
+      /** The commit watermark of the transaction spanning the chain. */
+      watermark: v.string(),
+    })
+    .nullable(),
 });
 
 export type SegmentHeader = v.Infer<typeof segmentHeaderSchema>;
@@ -114,13 +137,16 @@ export function encodeSegment(input: EncodeSegmentInput): {
     }
     end = watermark;
   }
-  const header = JSON.stringify({
+  const header: SegmentHeader = {
     replicaVersion,
     start,
     end,
     txCount: transactions.length,
-  });
-  const lines = [header];
+    firstCommitTimeMs: commitTimeOf(transactions[0]),
+    lastCommitTimeMs: commitTimeOf(transactions.at(-1)),
+    part: null,
+  };
+  const lines = [JSON.stringify(header)];
   for (const {messages} of transactions) {
     lines.push(...messages);
   }
@@ -131,6 +157,26 @@ export function encodeSegment(input: EncodeSegmentInput): {
   data.set(createHash('sha256').update(payload).digest(), MAGIC.length + 1);
   data.set(payload, HEADER_BYTES);
   return {data, end};
+}
+
+/**
+ * The upstream commit time of an already-serialized transaction, from its
+ * final (commit) message. Tooling-path only — the writer tracks commit times
+ * from the parsed stream instead of re-parsing.
+ */
+function commitTimeOf(
+  transaction: {messages: string[]} | undefined,
+): number | null {
+  const last = transaction?.messages.at(-1);
+  if (last === undefined) {
+    return null;
+  }
+  try {
+    const message = JSON.parse(last) as ChangeStreamData;
+    return message[0] === 'commit' ? (message[1].commitTimeMs ?? null) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -214,6 +260,15 @@ export function decodeSegment(data: Uint8Array): DecodedSegment {
   }
   const lines = text.split('\n');
   const header = parseLine(lines[0], segmentHeaderSchema, 'header');
+  if (header.part !== null) {
+    throw new SegmentFormatError(
+      `segment is part ${header.part.number} of a transaction chain, which ` +
+        `requires the streaming decoder`,
+    );
+  }
+  if (header.end === null) {
+    throw new SegmentFormatError('segment header has no end watermark');
+  }
 
   const transactions: SegmentTransaction[] = [];
   let current: SegmentTransaction | undefined;
@@ -336,22 +391,51 @@ export async function verifySegmentFile(path: string): Promise<void> {
 }
 
 /**
+ * What the caller expects the file at hand to be, from its object name and
+ * the surrounding listing. A `segment` is an ordinary single-object segment
+ * when `parts` is 0, or a chain's final part when its listing showed `parts`
+ * interior parts before it; an `interior` is one interior part of a chain.
+ */
+export type SegmentFileRole =
+  | {
+      kind: 'segment';
+      replicaVersion: string;
+      start: string;
+      end: string;
+      /** Interior parts preceding this object; 0 for an ordinary segment. */
+      parts: number;
+    }
+  | {
+      kind: 'interior';
+      replicaVersion: string;
+      start: string;
+      /** The commit watermark of the transaction spanning the chain. */
+      watermark: string;
+      /** 1-based position in the chain. */
+      part: number;
+    };
+
+/**
  * The streaming counterpart of {@link decodeSegment}: verifies a segment
  * file ({@link verifySegmentFile}), then decompresses and parses it one
  * message line at a time, yielding each message tagged with its
  * transaction's commit watermark. Memory is O(largest single message) — the
  * unit the applier consumes anyway — never O(transaction) or O(segment).
  *
- * Structural validation matches {@link decodeSegment} exactly; checks that
- * need the whole segment (txCount, the header's `end`) throw at the end of
- * iteration, after the checksum has already vouched that the content is the
- * sealed bytes. `expected` additionally pins the header to the range the
- * object's name claims, so a renamed or misplaced object cannot smuggle the
- * wrong range into a replay.
+ * Unlike the in-memory decoder, this one also speaks part chains: an
+ * interior part begins the spanning transaction (part 1) or continues it,
+ * and ends inside it; only a final part or ordinary segment ends at a
+ * commit. Structural validation otherwise matches {@link decodeSegment};
+ * checks that need the whole object (txCount, the header's `end`) throw at
+ * the end of iteration, after the checksum has already vouched that the
+ * content is the sealed bytes. `role` pins the header to the range and
+ * chain position the object's name and listing claim, so a renamed or
+ * misplaced object cannot smuggle the wrong content into a replay; without
+ * it (tooling), the header's own claims are validated for self-consistency.
  */
 export async function* decodeSegmentFile(
   path: string,
-  expected?: {replicaVersion: string; start: string; end: string},
+  role?: SegmentFileRole,
 ): AsyncGenerator<SegmentMessage> {
   await verifySegmentFile(path);
 
@@ -371,19 +455,16 @@ export async function* decodeSegmentFile(
   for await (const line of decompressedLines(unzip)) {
     if (header === undefined) {
       header = parseLine(line, segmentHeaderSchema, 'header');
-      if (
-        expected !== undefined &&
-        (header.replicaVersion !== expected.replicaVersion ||
-          header.start !== expected.start ||
-          header.end !== expected.end)
-      ) {
-        throw new SegmentFormatError(
-          `segment contains ${header.replicaVersion}/${header.start}-` +
-            `${header.end}; expected ${expected.replicaVersion}/` +
-            `${expected.start}-${expected.end}`,
-        );
+      if (role !== undefined) {
+        checkRole(header, role);
+      } else {
+        checkSelfConsistent(header);
       }
       last = header.start;
+      if (header.part !== null && header.part.number > 1) {
+        // The file continues a transaction begun in an earlier part.
+        current = header.part.watermark;
+      }
       continue;
     }
     i++;
@@ -401,6 +482,12 @@ export async function* decodeSegmentFile(
           `message ${i}: watermark ${watermark} is not after ${last}`,
         );
       }
+      if (header.part !== null && watermark !== header.part.watermark) {
+        throw new SegmentFormatError(
+          `message ${i}: watermark ${watermark} in a chain part of ` +
+            `${header.part.watermark}`,
+        );
+      }
       current = watermark;
       yield {watermark, message};
     } else if (current === undefined) {
@@ -408,6 +495,11 @@ export async function* decodeSegmentFile(
         `message ${i}: ${type} outside of a transaction`,
       );
     } else if (type === 'commit') {
+      if (header.part !== null && !header.part.final) {
+        throw new SegmentFormatError(
+          `message ${i}: commit in interior part ${header.part.number}`,
+        );
+      }
       if (message[2].watermark !== current) {
         throw new SegmentFormatError(
           `message ${i}: commit watermark ${message[2].watermark} does not ` +
@@ -430,6 +522,19 @@ export async function* decodeSegmentFile(
   if (header === undefined) {
     throw new SegmentFormatError('segment header is not JSON: empty payload');
   }
+  if (header.part !== null && !header.part.final) {
+    // An interior part must end inside its (sole) transaction.
+    if (current !== header.part.watermark) {
+      throw new SegmentFormatError(
+        `interior part ${header.part.number} does not end inside ` +
+          `transaction ${header.part.watermark}`,
+      );
+    }
+    if (i === 0) {
+      throw new SegmentFormatError('interior part contains no messages');
+    }
+    return;
+  }
   if (current !== undefined) {
     throw new SegmentFormatError(`segment ends inside transaction ${current}`);
   }
@@ -444,6 +549,73 @@ export async function* decodeSegmentFile(
   if (last !== header.end) {
     throw new SegmentFormatError(
       `header end ${header.end} does not match last commit watermark ${last}`,
+    );
+  }
+}
+
+/** Pins a header to the role the object's name and listing claim. */
+function checkRole(header: SegmentHeader, role: SegmentFileRole): void {
+  checkSelfConsistent(header);
+  const mismatch = (what: string) => {
+    throw new SegmentFormatError(
+      `segment header does not match its name and listing (${what}): ` +
+        `${JSON.stringify(header)} vs ${JSON.stringify(role)}`,
+    );
+  };
+  if (
+    header.replicaVersion !== role.replicaVersion ||
+    header.start !== role.start
+  ) {
+    mismatch('lineage/start');
+  }
+  if (role.kind === 'interior') {
+    if (
+      header.part === null ||
+      header.part.final ||
+      header.part.number !== role.part ||
+      header.part.watermark !== role.watermark
+    ) {
+      mismatch('chain position');
+    }
+  } else {
+    if (header.end !== role.end) {
+      mismatch('end');
+    }
+    if (role.parts === 0) {
+      if (header.part !== null) {
+        mismatch('unexpected chain');
+      }
+    } else if (
+      header.part === null ||
+      !header.part.final ||
+      header.part.number !== role.parts + 1
+    ) {
+      mismatch('chain position');
+    }
+  }
+}
+
+/** The header invariants that hold with or without a caller-supplied role. */
+function checkSelfConsistent(header: SegmentHeader): void {
+  const {part, end, txCount} = header;
+  if (part === null) {
+    if (end === null) {
+      throw new SegmentFormatError('segment header has no end watermark');
+    }
+    return;
+  }
+  if (part.number < 1) {
+    throw new SegmentFormatError(`invalid part number ${part.number}`);
+  }
+  if (part.final) {
+    if (end !== part.watermark || txCount !== 1) {
+      throw new SegmentFormatError(
+        `final part header is inconsistent: ${JSON.stringify(header)}`,
+      );
+    }
+  } else if (end !== null || txCount !== 0) {
+    throw new SegmentFormatError(
+      `interior part header is inconsistent: ${JSON.stringify(header)}`,
     );
   }
 }

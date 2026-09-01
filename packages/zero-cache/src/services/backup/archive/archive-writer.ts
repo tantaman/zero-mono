@@ -1,5 +1,5 @@
 import {createReadStream, statSync, unlinkSync} from 'node:fs';
-import {join} from 'node:path';
+import {basename, join} from 'node:path';
 import {Readable} from 'node:stream';
 import type {LogContext} from '@rocicorp/logger';
 import {resolver, type Resolver} from '@rocicorp/resolver';
@@ -14,8 +14,14 @@ import {
   ObjectAlreadyExistsError,
   type ObjectStore,
 } from '../object-store/object-store.ts';
-import {logPrefix, parseSegmentKey, segmentKey} from './layout.ts';
-import {writeSealedSegmentFile} from './segment-format.ts';
+import {
+  logPrefix,
+  parseSegmentKey,
+  parseSegmentPartKey,
+  segmentKey,
+  segmentPartKey,
+} from './layout.ts';
+import {writeSealedSegmentFile, type SegmentHeader} from './segment-format.ts';
 import {SegmentSpool, type SpoolRange} from './segment-spool.ts';
 
 export type ArchiveWriterOptions = {
@@ -32,6 +38,13 @@ export type ArchiveWriterOptions = {
   spoolDir: string;
   /** Uncompressed bytes at which the open segment is sealed. */
   segmentTargetBytes: number;
+  /**
+   * Uncompressed open-transaction bytes at which the transaction starts (or
+   * grows) a part chain. Defaults to {@link segmentTargetBytes}, which is
+   * the design's single-knob behavior; tests pin it independently to
+   * exercise per-commit sealing and chains separately.
+   */
+  partTargetBytes?: number | undefined;
   /** Time after which a non-empty open segment is sealed. Bounds archive RPO. */
   sealIntervalMs: number;
   /**
@@ -74,14 +87,24 @@ const DEFAULT_FLUSH_TIMEOUT_MS = 5_000;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
 const MAX_RETRY_DELAY_MS = 30_000;
 
-/** A sealed committed range awaiting compression and upload, in order. */
+/** A sealed spool range awaiting compression and upload, in order. */
 type SegmentJob = {
   range: SpoolRange;
-  /** Exclusive: the watermark the segment resumes after. */
-  start: string;
-  /** Inclusive: the segment's last commit watermark. */
-  end: string;
-  txCount: number;
+  header: SegmentHeader;
+  key: string;
+  /**
+   * The watermark the durable cursor advances to once this object lands;
+   * undefined for interior parts, which by themselves make nothing durable.
+   */
+  durable: string | undefined;
+};
+
+/** The open transaction's part chain, once it has outgrown a segment. */
+type PartChain = {
+  /** The spanning transaction's commit watermark. */
+  watermark: string;
+  /** The next part number to seal. */
+  nextPart: number;
 };
 
 /**
@@ -124,6 +147,18 @@ type SegmentJob = {
  * upload streams that file to the store. Disk holds the spool plus sealed
  * files, both bounded by back-pressure plus the open transaction, and both
  * re-derivable from the replication slot after a crash.
+ *
+ * ### Transactions larger than a segment: part chains
+ *
+ * A transaction that outgrows the segment target must not force an
+ * unbounded segment (or spool range), so its spooled prefix seals as
+ * interior parts as it grows and its commit seals the chain's final part.
+ * Interior parts upload in order but advance nothing: only the final part
+ * carries a durable watermark, so a crash or rollback mid-chain re-sends
+ * the whole transaction — exactly as an unsealed segment would — and the
+ * abandoned parts are debris that reconcile (and GC) reclaim. Interior
+ * names embed the transaction's commit watermark, keeping retries
+ * idempotent and debris collision-free.
  */
 export class ArchiveWriter {
   readonly #lc: LogContext;
@@ -137,16 +172,20 @@ export class ArchiveWriter {
   /** Last commit watermark in the open segment; undefined when it is empty. */
   #segmentEnd: string | undefined;
   #segmentTxCount = 0;
+  #segmentFirstCommitTimeMs: number | null = null;
+  #segmentLastCommitTimeMs: number | null = null;
   #lastBuffered: string | undefined;
   #durable: string | undefined;
 
   #openTxWatermark: string | undefined;
   #skipCurrentTx = false;
+  #chain: PartChain | undefined;
 
   #sealTimer: ReturnType<typeof setTimeout> | undefined;
 
   #queue: SegmentJob[] = [];
   #queuedBytes = 0;
+  #inFlight: SegmentJob | undefined;
   #pumping = false;
   #idle: Resolver<void> | undefined;
   #backpressure: Resolver<void> | undefined;
@@ -201,19 +240,43 @@ export class ArchiveWriter {
     }
     const {store, replicaVersion} = this.#opts;
     const objects = await store.list(logPrefix(replicaVersion));
+    // Continuity considers ordinary/final segment names only: an interior
+    // part never advances the durable cursor, so a chain with no final part
+    // is re-sent work, not a gap.
     let gaps = 0;
     let prev: string | undefined;
+    const finals = new Set<string>();
     for (const {key} of objects) {
       const segment = parseSegmentKey(replicaVersion, key);
       if (segment === undefined) {
         continue;
       }
+      finals.add(`${segment.start}/${segment.end}`);
       if (prev !== undefined && segment.start !== prev) {
         gaps++;
       }
       prev = segment.end;
     }
     const head = prev;
+
+    // Interior parts whose chain never completed are debris from an
+    // interrupted transaction that will be re-sent. Delete them now so the
+    // re-sent transaction can re-seal under any part boundaries — the
+    // segment target may have changed across restarts, and a stale part
+    // under the same deterministic name must not shadow the re-sealed one.
+    const staleParts = objects
+      .map(({key}) => parseSegmentPartKey(replicaVersion, key))
+      .filter(part => part !== undefined)
+      .filter(part => !finals.has(`${part.start}/${part.watermark}`));
+    for (const part of staleParts) {
+      await store.delete(part.key);
+    }
+    if (staleParts.length > 0) {
+      this.#lc.info?.(
+        `deleted ${staleParts.length} interior part(s) of incomplete ` +
+          `transaction chains; their transactions will be re-sent`,
+      );
+    }
     if (gaps > 0) {
       this.#lc.error?.(
         `the archive for ${replicaVersion} has ${gaps} gap(s) in its segment chain`,
@@ -235,12 +298,15 @@ export class ArchiveWriter {
       // The stream re-sends everything that was not sealed, so the open
       // segment's un-sealed spool content would duplicate it. Segments
       // already sealed (in the upload queue) keep going: their ranges lie
-      // below the discarded region.
+      // below the discarded region. abort() also cancels an open chain's
+      // queued interior parts.
       this.abort();
       this.#spool.discardSegment();
     }
     this.#segmentTxCount = 0;
     this.#segmentEnd = undefined;
+    this.#segmentFirstCommitTimeMs = null;
+    this.#segmentLastCommitTimeMs = null;
     this.#segmentStart =
       head !== undefined ? max(head, resumeWatermark) : resumeWatermark;
     this.#lastBuffered = this.#segmentStart;
@@ -299,8 +365,22 @@ export class ArchiveWriter {
         spool.commit();
         this.#openTxWatermark = undefined;
         this.#lastBuffered = watermark;
+        const commitTimeMs = change[1].commitTimeMs ?? null;
+        if (this.#chain !== undefined) {
+          // The transaction spanned interior parts; its commit seals the
+          // chain's final part immediately (a chain never shares an object
+          // with other transactions). A seal failure here throws, which the
+          // stream loop turns into a reconnect-and-reconcile — the chain is
+          // then abandoned and the transaction re-sent.
+          this.#sealFinalPart(spool, this.#chain, watermark, commitTimeMs);
+          break;
+        }
         this.#segmentEnd = watermark;
         this.#segmentTxCount++;
+        if (this.#segmentTxCount === 1) {
+          this.#segmentFirstCommitTimeMs = commitTimeMs;
+        }
+        this.#segmentLastCommitTimeMs = commitTimeMs;
         if (spool.committedBytes >= this.#opts.segmentTargetBytes) {
           this.#seal();
         } else if (this.#sealTimer === undefined) {
@@ -322,18 +402,145 @@ export class ArchiveWriter {
           throw new Error(`data message without a begin`);
         }
         spool.append(json);
+        this.#maybeSealParts(spool);
         break;
     }
   }
 
   /**
+   * Seals interior parts once the open transaction outgrows the segment
+   * target, so no segment object — and no spool range — is ever unbounded.
+   * The first part is preceded by sealing any committed transactions as an
+   * ordinary segment: a chain contains exactly one transaction. Failures
+   * throw (from `write`), which the stream loop turns into a
+   * reconnect-and-reconcile.
+   */
+  #maybeSealParts(spool: SegmentSpool): void {
+    const target = this.#opts.partTargetBytes ?? this.#opts.segmentTargetBytes;
+    if (spool.openTxBytes < target) {
+      return;
+    }
+    const watermark = this.#openTxWatermark;
+    const start = this.#segmentStart;
+    if (watermark === undefined || start === undefined) {
+      return; // unreachable: only called mid-transaction
+    }
+    if (this.#chain === undefined) {
+      if (spool.committedBytes > 0) {
+        this.#seal();
+        if (spool.committedBytes > 0) {
+          // The seal failed (and logged); leave the committed transactions
+          // in place and retry on the next append rather than starting a
+          // chain that would mix them into an interior part.
+          return;
+        }
+      }
+      this.#chain = {watermark, nextPart: 1};
+    }
+    this.#sealInteriorPart(spool, this.#chain);
+  }
+
+  #sealInteriorPart(spool: SegmentSpool, chain: PartChain): void {
+    const {replicaVersion} = this.#opts;
+    const start = this.#segmentStart;
+    const range = spool.sealOpenTail();
+    if (start === undefined || range === undefined) {
+      return; // unreachable: only called with an open, non-empty tail
+    }
+    this.#queue.push({
+      range,
+      key: segmentPartKey(
+        replicaVersion,
+        start,
+        chain.watermark,
+        chain.nextPart,
+      ),
+      header: {
+        replicaVersion,
+        start,
+        end: null,
+        txCount: 0,
+        firstCommitTimeMs: null,
+        lastCommitTimeMs: null,
+        part: {
+          number: chain.nextPart,
+          final: false,
+          watermark: chain.watermark,
+        },
+      },
+      durable: undefined,
+    });
+    this.#queuedBytes += range.bytes;
+    chain.nextPart++;
+    void this.#pump();
+  }
+
+  #sealFinalPart(
+    spool: SegmentSpool,
+    chain: PartChain,
+    watermark: string,
+    commitTimeMs: number | null,
+  ): void {
+    const {replicaVersion} = this.#opts;
+    const start = this.#segmentStart;
+    const range = spool.sealCommitted();
+    if (start === undefined || range === undefined) {
+      return; // unreachable: the commit was just appended
+    }
+    this.#queue.push({
+      range,
+      key: segmentKey(replicaVersion, start, watermark),
+      header: {
+        replicaVersion,
+        start,
+        end: watermark,
+        txCount: 1,
+        firstCommitTimeMs: commitTimeMs,
+        lastCommitTimeMs: commitTimeMs,
+        part: {number: chain.nextPart, final: true, watermark},
+      },
+      durable: watermark,
+    });
+    this.#queuedBytes += range.bytes;
+    this.#segmentStart = watermark;
+    this.#segmentEnd = undefined;
+    this.#segmentTxCount = 0;
+    this.#segmentFirstCommitTimeMs = null;
+    this.#segmentLastCommitTimeMs = null;
+    this.#chain = undefined;
+    void this.#pump();
+  }
+
+  /**
    * Discards the open transaction, if any — one `ftruncate` back to the last
-   * committed spool offset. Called when the change stream is interrupted
-   * mid-transaction.
+   * committed spool offset, or, when the transaction has already sealed
+   * interior parts, an abandonment of its chain: queued interior parts are
+   * cancelled (an in-flight upload completes as harmless, reclaimable
+   * debris) and the spool rotates to a fresh file so nothing under an
+   * in-flight reader is truncated. Called when the change stream is
+   * interrupted mid-transaction.
    */
   abort(): void {
     this.#openTxWatermark = undefined;
     this.#skipCurrentTx = false;
+    const chain = this.#chain;
+    if (chain !== undefined) {
+      this.#chain = undefined;
+      this.#queue = this.#queue.filter(job => {
+        if (
+          job === this.#inFlight ||
+          job.header.part === null ||
+          job.header.part.watermark !== chain.watermark
+        ) {
+          return true;
+        }
+        this.#queuedBytes -= job.range.bytes;
+        job.range.release();
+        return false;
+      });
+      this.#spool?.abandonToFreshFile();
+      return;
+    }
     this.#spool?.rollback();
   }
 
@@ -409,11 +616,26 @@ export class ArchiveWriter {
       if (range === undefined) {
         return;
       }
-      this.#queue.push({range, start, end, txCount: this.#segmentTxCount});
+      this.#queue.push({
+        range,
+        key: segmentKey(this.#opts.replicaVersion, start, end),
+        header: {
+          replicaVersion: this.#opts.replicaVersion,
+          start,
+          end,
+          txCount: this.#segmentTxCount,
+          firstCommitTimeMs: this.#segmentFirstCommitTimeMs,
+          lastCommitTimeMs: this.#segmentLastCommitTimeMs,
+          part: null,
+        },
+        durable: end,
+      });
       this.#queuedBytes += range.bytes;
       this.#segmentStart = end;
       this.#segmentEnd = undefined;
       this.#segmentTxCount = 0;
+      this.#segmentFirstCommitTimeMs = null;
+      this.#segmentLastCommitTimeMs = null;
       void this.#pump();
     } catch (e) {
       // Fail-stall, and never throw: sealing can run from the timer, where a
@@ -435,15 +657,19 @@ export class ArchiveWriter {
     try {
       while (this.#queue.length > 0 && !this.#closed) {
         const job = this.#queue[0];
+        this.#inFlight = job;
         const uploaded = await this.#sealAndUpload(job);
+        this.#inFlight = undefined;
         if (!uploaded) {
           return; // closed
         }
         this.#queue.shift();
         this.#queuedBytes -= job.range.bytes;
         job.range.release();
-        this.#durable = job.end;
-        this.#opts.onDurable?.(job.end);
+        if (job.durable !== undefined) {
+          this.#durable = job.durable;
+          this.#opts.onDurable?.(job.durable);
+        }
         if (
           this.#backpressure !== undefined &&
           this.#bufferedBytes() <= this.#maxBufferedBytes / 2
@@ -454,6 +680,7 @@ export class ArchiveWriter {
       }
     } finally {
       this.#pumping = false;
+      this.#inFlight = undefined;
       this.#idle?.resolve();
       this.#idle = undefined;
     }
@@ -466,9 +693,9 @@ export class ArchiveWriter {
    * after a failure — and deleted once the object is durable.
    */
   async #sealAndUpload(job: SegmentJob): Promise<boolean> {
-    const {store, replicaVersion, spoolDir} = this.#opts;
-    const key = segmentKey(replicaVersion, job.start, job.end);
-    const sealedPath = join(spoolDir, `${job.start}-${job.end}.sealed`);
+    const {store, spoolDir} = this.#opts;
+    const key = job.key;
+    const sealedPath = join(spoolDir, `${basename(key)}.sealed`);
     const baseDelay = this.#opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
     for (let attempt = 1; ; attempt++) {
       if (this.#closed) {
@@ -476,12 +703,7 @@ export class ArchiveWriter {
       }
       try {
         await writeSealedSegmentFile(
-          {
-            replicaVersion,
-            start: job.start,
-            end: job.end,
-            txCount: job.txCount,
-          },
+          job.header,
           () => job.range.createStream(),
           sealedPath,
         );

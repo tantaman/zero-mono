@@ -5,10 +5,17 @@ import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import type {ReadableStream as NodeReadableStream} from 'node:stream/web';
 import type {ObjectStore} from '../object-store/object-store.ts';
-import {logPrefix, parseSegmentKey, type SegmentRef} from './layout.ts';
+import {
+  logPrefix,
+  parseSegmentKey,
+  parseSegmentPartKey,
+  type SegmentPartRef,
+  type SegmentRef,
+} from './layout.ts';
 import {
   decodeSegment,
   decodeSegmentFile,
+  type SegmentFileRole,
   type SegmentMessage,
   type SegmentTransaction,
 } from './segment-format.ts';
@@ -26,20 +33,43 @@ export class ArchiveContinuityError extends Error {
   readonly name = 'ArchiveContinuityError';
 }
 
-/** Lists and parses the lineage's segments, in watermark order. */
-export async function listLogSegments(
+/**
+ * Lists and parses the lineage's log objects, in watermark order:
+ * `segments` are ordinary segments and chain-final parts — the names that
+ * establish continuity — and `parts` the interior parts of transaction
+ * chains. An interior part whose chain has no final is re-sent work and
+ * simply never matches a covering segment.
+ */
+export async function listLogObjects(
   store: ObjectStore,
   replicaVersion: string,
-): Promise<SegmentRef[]> {
+): Promise<{segments: SegmentRef[]; parts: SegmentPartRef[]}> {
   const objects = await store.list(logPrefix(replicaVersion));
   const segments: SegmentRef[] = [];
+  const parts: SegmentPartRef[] = [];
   for (const {key} of objects) {
     const segment = parseSegmentKey(replicaVersion, key);
     if (segment !== undefined) {
       segments.push(segment);
+      continue;
+    }
+    const part = parseSegmentPartKey(replicaVersion, key);
+    if (part !== undefined) {
+      parts.push(part);
     }
   }
-  return segments;
+  return {segments, parts};
+}
+
+/**
+ * Lists and parses the lineage's segments (ordinary and chain-final), in
+ * watermark order. These are the names continuity is judged by.
+ */
+export async function listLogSegments(
+  store: ObjectStore,
+  replicaVersion: string,
+): Promise<SegmentRef[]> {
+  return (await listLogObjects(store, replicaVersion)).segments;
 }
 
 /**
@@ -105,25 +135,36 @@ export async function* iterateMessages(
   upTo: string,
   tempDir: string,
 ): AsyncGenerator<SegmentMessage> {
-  const segments = await listLogSegments(store, replicaVersion);
+  const {segments, parts} = await listLogObjects(store, replicaVersion);
   for (const ref of selectCoveringSegments(segments, after, upTo)) {
-    const tempFile = join(tempDir, `${crypto.randomUUID()}.seg`);
-    try {
-      await pipeline(
-        // The DOM and node:stream/web ReadableStream types disagree on BYOB
-        // reader details; the runtime objects are interchangeable.
-        Readable.fromWeb(
-          (await store.getStream(
-            ref.key,
-          )) as unknown as NodeReadableStream<Uint8Array>,
-        ),
-        createWriteStream(tempFile),
-      );
-      for await (const item of decodeSegmentFile(tempFile, {
-        replicaVersion,
-        start: ref.start,
-        end: ref.end,
-      })) {
+    // A segment completing a transaction chain is preceded by its interior
+    // parts, streamed in order; decodeSegmentFile carries the transaction
+    // across the file boundaries and pins each file to its chain position.
+    const chain = chainOf(parts, ref);
+    const files: {key: string; role: SegmentFileRole}[] = [
+      ...chain.map(part => ({
+        key: part.key,
+        role: {
+          kind: 'interior' as const,
+          replicaVersion,
+          start: part.start,
+          watermark: part.watermark,
+          part: part.part,
+        },
+      })),
+      {
+        key: ref.key,
+        role: {
+          kind: 'segment' as const,
+          replicaVersion,
+          start: ref.start,
+          end: ref.end,
+          parts: chain.length,
+        },
+      },
+    ];
+    for (const {key, role} of files) {
+      for await (const item of messagesOf(store, key, role, tempDir)) {
         if (item.watermark <= after) {
           continue;
         }
@@ -132,18 +173,66 @@ export async function* iterateMessages(
         }
         yield item;
       }
-    } finally {
-      await rm(tempFile, {force: true});
     }
+  }
+}
+
+/**
+ * The interior parts of the chain `ref` completes — consecutive from part 1
+ * — or an empty array for an ordinary segment. A broken sequence is a
+ * continuity error: the final part exists, so its chain was fully uploaded,
+ * and a missing interior means the archive cannot reproduce the
+ * transaction.
+ */
+function chainOf(parts: SegmentPartRef[], ref: SegmentRef): SegmentPartRef[] {
+  const chain = parts
+    .filter(part => part.start === ref.start && part.watermark === ref.end)
+    .toSorted((a, b) => a.part - b.part);
+  chain.forEach((part, i) => {
+    if (part.part !== i + 1) {
+      throw new ArchiveContinuityError(
+        `the chain completed by ${ref.key} is missing interior part ${i + 1}`,
+      );
+    }
+  });
+  return chain;
+}
+
+/**
+ * Downloads one log object to a temp file (the bounded buffer that
+ * preserves verify-then-use) and streams its decoded messages.
+ */
+async function* messagesOf(
+  store: ObjectStore,
+  key: string,
+  role: SegmentFileRole,
+  tempDir: string,
+): AsyncGenerator<SegmentMessage> {
+  const tempFile = join(tempDir, `${crypto.randomUUID()}.seg`);
+  try {
+    await pipeline(
+      // The DOM and node:stream/web ReadableStream types disagree on BYOB
+      // reader details; the runtime objects are interchangeable.
+      Readable.fromWeb(
+        (await store.getStream(
+          key,
+        )) as unknown as NodeReadableStream<Uint8Array>,
+      ),
+      createWriteStream(tempFile),
+    );
+    yield* decodeSegmentFile(tempFile, role);
+  } finally {
+    await rm(tempFile, {force: true});
   }
 }
 
 /**
  * Iterates the committed transactions in `(after, upTo]` in stream order,
  * downloading, verifying, and decoding each covering segment **in memory**.
- * For tooling and small-segment tests; the replay path is
+ * For tooling and small-segment tests only — the replay path is
  * {@link iterateMessages}, which never holds a whole segment or transaction
- * resident. Transactions outside the range (a segment can straddle either
+ * resident and also speaks transaction part chains (this iterator rejects
+ * them). Transactions outside the range (a segment can straddle either
  * bound) are filtered by commit watermark, which is where replay dedup lives
  * for the stream's other consumers too.
  */

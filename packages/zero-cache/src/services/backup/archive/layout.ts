@@ -6,6 +6,9 @@
  *
  * ```
  * v1/<replicaVersion>/log/<start>-<end>.seg     sealed change-stream segments
+ * v1/<replicaVersion>/log/<start>-.<watermark>.NNNNNNNN.seg
+ *                                               interior parts of a
+ *                                               transaction spanning segments
  * v1/<replicaVersion>/base/<cursor>/intent.json
  * v1/<replicaVersion>/base/<cursor>/chunk/<index>
  * v1/<replicaVersion>/base/<cursor>/complete.json
@@ -19,6 +22,18 @@
  * upload retries idempotent (`putIfAbsent`) rather than duplicating. A base
  * is named by the cursor embedded in its SQLite file, and exists only once
  * its `complete.json` does: the manifest is always published last.
+ *
+ * A transaction larger than the segment target spans a **part chain**:
+ * interior parts named by the spanning transaction's commit watermark and a
+ * fixed-width part number, then a final part named like an ordinary segment
+ * (`<start>-<watermark>.seg`, since the chain ends at the transaction's
+ * commit). `.` sorts before every watermark character, so a chain lists as
+ * `05-.0g.00000001.seg, 05-.0g.00000002.seg, 05-0g.seg` — interior parts
+ * immediately before their final. Only the final part advances the durable
+ * cursor, and continuity from a listing considers final/ordinary names only:
+ * a chain with no final part is re-sent work, not a gap. The watermark in
+ * interior names is what keeps retries idempotent: an abandoned chain's
+ * debris can never collide with a different transaction's chain.
  */
 
 export const ARCHIVE_ROOT = 'v1/';
@@ -68,6 +83,53 @@ export function parseSegmentKey(
   }
   const [, start, end] = match;
   return {key, start, end};
+}
+
+/** The fixed width of interior part numbers, for offset-ordered listings. */
+const PART_NUMBER_WIDTH = 8;
+
+export function segmentPartKey(
+  replicaVersion: string,
+  start: string,
+  watermark: string,
+  part: number,
+): string {
+  return (
+    `${logPrefix(replicaVersion)}${start}-.${watermark}.` +
+    `${String(part).padStart(PART_NUMBER_WIDTH, '0')}.seg`
+  );
+}
+
+export type SegmentPartRef = {
+  key: string;
+  /** Exclusive: the watermark the part's chain resumes after. */
+  start: string;
+  /** The commit watermark of the transaction spanning the chain. */
+  watermark: string;
+  /** 1-based position in the chain. */
+  part: number;
+};
+
+const SEGMENT_PART_NAME = /^([0-9a-z]+)-\.([0-9a-z]+)\.([0-9]{8})\.seg$/;
+
+/**
+ * Parses a listed key relative to {@link logPrefix} as an interior part
+ * name, or `undefined` for any other key.
+ */
+export function parseSegmentPartKey(
+  replicaVersion: string,
+  key: string,
+): SegmentPartRef | undefined {
+  const prefix = logPrefix(replicaVersion);
+  if (!key.startsWith(prefix)) {
+    return undefined;
+  }
+  const match = SEGMENT_PART_NAME.exec(key.slice(prefix.length));
+  if (match === null) {
+    return undefined;
+  }
+  const [, start, watermark, part] = match;
+  return {key, start, watermark, part: Number(part)};
 }
 
 export function basePrefix(replicaVersion: string): string {

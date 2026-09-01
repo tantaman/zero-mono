@@ -207,6 +207,45 @@ export class SegmentSpool {
   }
 
   /**
+   * Seals everything appended so far — the open transaction's tail included —
+   * as an interior part of a transaction chain, advancing the segment base
+   * past it while the transaction keeps appending to the same file. Returns
+   * `undefined` when nothing is appended.
+   *
+   * This co-opts the committed marker: after an interior-part seal the open
+   * transaction can no longer be dropped by {@link rollback}'s truncation
+   * (the sealed ranges below would be destroyed under an in-flight reader),
+   * so a chain's rollback must go through {@link abandonToFreshFile}. The
+   * archive writer owns that distinction.
+   */
+  sealOpenTail(): SpoolRange | undefined {
+    if (this.#appended === this.#base) {
+      return undefined;
+    }
+    const range = new SpoolRange(this.#file, this.#base, this.#appended);
+    this.#file.outstanding++;
+    this.#base = this.#committed = this.#appended;
+    return range;
+  }
+
+  /**
+   * Abandons the open segment by rotating to a fresh file rather than
+   * truncating, leaving every sealed range of the old file intact for its
+   * in-flight readers; the file is unlinked once the last range releases.
+   * Used to roll back a transaction whose chain has already sealed interior
+   * parts.
+   */
+  abandonToFreshFile(): void {
+    const next = this.#openFile();
+    const abandoned = this.#file;
+    abandoned.current = false;
+    closeSync(abandoned.fd);
+    this.#file = next;
+    this.#base = this.#committed = this.#appended = 0;
+    maybeUnlink(abandoned);
+  }
+
+  /**
    * Closes the spool's file descriptor. Files are left on disk for the next
    * incarnation's constructor to delete; in-flight {@link SpoolRange}
    * readers remain valid.

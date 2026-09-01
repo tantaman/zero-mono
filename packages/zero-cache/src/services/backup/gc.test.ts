@@ -1,6 +1,6 @@
 import {describe, expect, test, vi} from 'vitest';
 import {createSilentLogContext} from '../../../../shared/src/logging-test-utils.ts';
-import {segmentKey, type SegmentRef} from './archive/layout.ts';
+import {segmentKey, segmentPartKey, type SegmentRef} from './archive/layout.ts';
 import {encodeSegment} from './archive/segment-format.ts';
 import {
   encodeBaseIntent,
@@ -202,6 +202,51 @@ describe('backup/gc runArchiveGC', () => {
       'v1/02/base/0m/chunk/00000000',
       'v1/02/base/0m/chunk/00000001',
       'v1/02/base/0m/intent.json',
+      'v1/02/log/0g-0k.seg',
+    ]);
+  });
+
+  test('a transaction chain is collected atomically, and orphaned parts below the floor with it', async () => {
+    const store = new InMemoryObjectStore();
+    await putBase(store, '0g', NOW - 2 * HOUR);
+    await putBase(store, '0k', NOW - 1 * HOUR);
+    // A complete chain below the floor: interior parts + final 05-0g.
+    await store.putIfAbsent(
+      segmentPartKey('02', '05', '0g', 1),
+      new Uint8Array(),
+    );
+    await store.putIfAbsent(
+      segmentPartKey('02', '05', '0g', 2),
+      new Uint8Array(),
+    );
+    await putSegment(store, seg('02', '05'));
+    await putSegment(store, seg('05', '0g'));
+    // An abandoned chain (no final) below the floor, and one above it.
+    await store.putIfAbsent(
+      segmentPartKey('02', '02', '04', 1),
+      new Uint8Array(),
+    );
+    await store.putIfAbsent(
+      segmentPartKey('02', '0g', '0m', 1),
+      new Uint8Array(),
+    );
+    // A live chain above the floor.
+    await store.putIfAbsent(
+      segmentPartKey('02', '0g', '0k', 1),
+      new Uint8Array(),
+    );
+    await putSegment(store, seg('0g', '0k'));
+
+    await runArchiveGC(lc, store, '02', {retainBases: 2, pitrHours: 1}, NOW);
+    expect(
+      [...store.objects.keys()]
+        .filter(key => key.startsWith('v1/02/log/'))
+        .toSorted(),
+    ).toEqual([
+      // The above-floor abandoned chain is re-sent work, not yet reclaimable;
+      // the live chain and its final are retained.
+      'v1/02/log/0g-.0k.00000001.seg',
+      'v1/02/log/0g-.0m.00000001.seg',
       'v1/02/log/0g-0k.seg',
     ]);
   });

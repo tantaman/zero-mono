@@ -1,5 +1,5 @@
 import type {LogContext} from '@rocicorp/logger';
-import {listLogSegments} from './archive/archive-reader.ts';
+import {listLogObjects} from './archive/archive-reader.ts';
 import {
   baseCompleteKey,
   baseIntentKey,
@@ -22,7 +22,10 @@ import type {ObjectStore} from './object-store/object-store.ts';
  *   completed before it (which serves the window's left edge).
  * - Log segments are kept from the oldest retained base's cursor through the
  *   current archive head; a segment entirely at or below that floor is
- *   reclaimable.
+ *   reclaimable. A transaction chain is treated atomically: its interior
+ *   parts share the fate of the final part that names the chain's range,
+ *   and interior parts whose chain never completed (re-sent work) are
+ *   reclaimed once their transaction's watermark is at or below the floor.
  * - A crashed publication (an `intent.json` without a `complete.json`) is
  *   invisible to restore; its debris is reclaimed once its intent is older
  *   than the debris grace period, which is long enough that it cannot be an
@@ -146,7 +149,7 @@ export async function runArchiveGC(
     );
     bases.push({cursor, completedAt: manifest.completedAt});
   }
-  const segments = await listLogSegments(store, replicaVersion);
+  const {segments, parts} = await listLogObjects(store, replicaVersion);
 
   const plan = computeGCPlan({bases, segments}, opts, nowMs);
 
@@ -177,8 +180,33 @@ export async function runArchiveGC(
     deletedDebrisCursors.push(cursor);
   }
 
+  // A chain is deleted atomically with the final part that names its range:
+  // the final goes first (rendering the chain incomplete, i.e. invisible to
+  // continuity), then its interior parts. Interior parts whose chain never
+  // completed are re-sent work; they are reclaimable once their
+  // transaction's watermark is at or below the floor a retained base covers.
+  const deletedChains = new Set(
+    plan.deletedSegments.map(({start, end}) => `${start}/${end}`),
+  );
+  const keptChains = new Set(
+    segments
+      .map(({start, end}) => `${start}/${end}`)
+      .filter(chain => !deletedChains.has(chain)),
+  );
   for (const segment of plan.deletedSegments) {
     await store.delete(segment.key);
+  }
+  for (const part of parts) {
+    const chain = `${part.start}/${part.watermark}`;
+    if (keptChains.has(chain)) {
+      continue;
+    }
+    if (
+      deletedChains.has(chain) ||
+      (plan.segmentFloor !== undefined && part.watermark <= plan.segmentFloor)
+    ) {
+      await store.delete(part.key);
+    }
   }
 
   if (

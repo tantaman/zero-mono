@@ -104,7 +104,11 @@ export type WireTransaction = {
  * Builds one committed transaction of `rows` inserts into an `issues` table,
  * as both parsed {@link ChangeStreamData} tuples and their JSON encodings.
  */
-export function wireTransaction(watermark: string, rows = 1): WireTransaction {
+export function wireTransaction(
+  watermark: string,
+  rows = 1,
+  commitTimeMs?: number,
+): WireTransaction {
   const parsed: ChangeStreamData[] = [
     ['begin', {tag: 'begin'}, {commitWatermark: watermark}],
   ];
@@ -118,6 +122,10 @@ export function wireTransaction(watermark: string, rows = 1): WireTransaction {
       },
     ]);
   }
-  parsed.push(['commit', {tag: 'commit'}, {watermark}]);
+  parsed.push([
+    'commit',
+    {tag: 'commit', ...(commitTimeMs !== undefined ? {commitTimeMs} : {})},
+    {watermark},
+  ]);
   return {watermark, messages: parsed.map(m => JSON.stringify(m)), parsed};
 }

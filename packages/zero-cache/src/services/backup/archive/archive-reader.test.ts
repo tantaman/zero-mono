@@ -1,6 +1,7 @@
-import {mkdtempSync, readdirSync, rmSync} from 'node:fs';
+import {mkdtempSync, readdirSync, readFileSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Readable} from 'node:stream';
 import {afterEach, beforeEach, describe, expect, test} from 'vitest';
 import {InMemoryObjectStore, wireTransaction} from '../test-utils.ts';
 import {
@@ -10,8 +11,13 @@ import {
   listLogSegments,
   selectCoveringSegments,
 } from './archive-reader.ts';
-import {segmentKey, type SegmentRef} from './layout.ts';
-import {encodeSegment, SegmentFormatError} from './segment-format.ts';
+import {segmentKey, segmentPartKey, type SegmentRef} from './layout.ts';
+import {
+  encodeSegment,
+  SegmentFormatError,
+  writeSealedSegmentFile,
+  type SegmentHeader,
+} from './segment-format.ts';
 
 function ref(start: string, end: string): SegmentRef {
   return {key: segmentKey('02', start, end), start, end};
@@ -248,6 +254,87 @@ describe('backup/archive/archive-reader', () => {
         collect(iterateMessages(store, '02', '09', '0c', tempDir)),
       ).rejects.toThrow(SegmentFormatError);
       expect(readdirSync(tempDir)).toEqual([]);
+    });
+
+    test('replays a transaction chain, and detects a missing interior part', async () => {
+      // A transaction spanning two interior parts and a final, continuing
+      // the archive from '0b'.
+      const spanning = wireTransaction('0d', 4);
+      const sealed = async (header: SegmentHeader, lines: string[]) => {
+        const path = join(tempDir, 'seal.tmp');
+        await writeSealedSegmentFile(
+          header,
+          () => Readable.from(lines.map(line => Buffer.from(`\n${line}`))),
+          path,
+        );
+        const data = readFileSync(path);
+        rmSync(path);
+        return data;
+      };
+      const interior = (part: number): SegmentHeader => ({
+        replicaVersion: '02',
+        start: '0b',
+        end: null,
+        txCount: 0,
+        firstCommitTimeMs: null,
+        lastCommitTimeMs: null,
+        part: {number: part, final: false, watermark: '0d'},
+      });
+      await store.putIfAbsent(
+        segmentPartKey('02', '0b', '0d', 1),
+        await sealed(interior(1), spanning.messages.slice(0, 2)),
+      );
+      await store.putIfAbsent(
+        segmentPartKey('02', '0b', '0d', 2),
+        await sealed(interior(2), spanning.messages.slice(2, 4)),
+      );
+      await store.putIfAbsent(
+        segmentKey('02', '0b', '0d'),
+        await sealed(
+          {
+            replicaVersion: '02',
+            start: '0b',
+            end: '0d',
+            txCount: 1,
+            firstCommitTimeMs: null,
+            lastCommitTimeMs: null,
+            part: {number: 3, final: true, watermark: '0d'},
+          },
+          spanning.messages.slice(4),
+        ),
+      );
+
+      const items = [];
+      for await (const item of iterateMessages(
+        store,
+        '02',
+        '09',
+        '0d',
+        tempDir,
+      )) {
+        items.push(item);
+      }
+      expect(
+        items.filter(i => i.watermark === '0d').map(i => i.message),
+      ).toEqual(spanning.parsed);
+      expect(readdirSync(tempDir)).toEqual([]);
+
+      // A missing tail part is only detectable against the final part's
+      // header, which declares the chain's length.
+      await store.delete(segmentPartKey('02', '0b', '0d', 2));
+      await expect(
+        collect(iterateMessages(store, '02', '09', '0d', tempDir)),
+      ).rejects.toThrow('does not match its name and listing (chain position)');
+
+      // A gap in the part sequence is detectable from the listing alone.
+      await store.putIfAbsent(
+        segmentPartKey('02', '0b', '0d', 2),
+        await sealed(interior(2), spanning.messages.slice(2, 4)),
+      );
+      await store.delete(segmentPartKey('02', '0b', '0d', 1));
+      await expect(
+        collect(iterateMessages(store, '02', '09', '0d', tempDir)),
+      ).rejects.toThrow('missing interior part 1');
     });
 
     test('rejects a corrupt segment before yielding anything from it', async () => {

@@ -12,6 +12,7 @@ import {
   encodeSegment,
   SegmentFormatError,
   writeSealedSegmentFile,
+  type SegmentHeader,
   type SegmentMessage,
 } from './segment-format.ts';
 
@@ -108,9 +109,14 @@ describe('backup/archive/segment-format', () => {
     expect(() => decodeSegment(wrongMagic)).toThrow('ZARC magic');
 
     const wrongVersion = Uint8Array.from(data);
-    wrongVersion[4] = 2;
+    wrongVersion[4] = 9;
     expect(() => decodeSegment(wrongVersion)).toThrow(
-      'unsupported segment format version 2',
+      'unsupported segment format version 9',
+    );
+    // Format 1 (which never left the lab) is likewise rejected.
+    wrongVersion[4] = 1;
+    expect(() => decodeSegment(wrongVersion)).toThrow(
+      'unsupported segment format version 1',
     );
   });
 
@@ -186,23 +192,28 @@ describe('backup/archive/segment-format', () => {
       rmSync(dir, {recursive: true, force: true});
     });
 
-    /** Seals `txs` to `path` the way the writer's pump does. */
-    async function seal(
-      start: string,
-      txs: ReturnType<typeof tx>[],
-      header: Partial<Parameters<typeof writeSealedSegmentFile>[0]> = {},
-    ) {
-      const lines = txs.flatMap(t => t.messages);
+    /** Seals `lines` to `path` under an arbitrary (possibly lying) header. */
+    async function sealRaw(header: SegmentHeader, lines: string[]) {
       await writeSealedSegmentFile(
+        header,
+        () => Readable.from(lines.map(line => Buffer.from(`\n${line}`))),
+        path,
+      );
+    }
+
+    /** Seals `txs` to `path` the way the writer's pump does. */
+    async function seal(start: string, txs: ReturnType<typeof tx>[]) {
+      await sealRaw(
         {
           replicaVersion: '02',
           start,
           end: txs.at(-1)?.watermark ?? start,
           txCount: txs.length,
-          ...header,
+          firstCommitTimeMs: null,
+          lastCommitTimeMs: null,
+          part: null,
         },
-        () => Readable.from(lines.map(line => Buffer.from(`\n${line}`))),
-        path,
+        txs.flatMap(t => t.messages),
       );
     }
 
@@ -233,9 +244,11 @@ describe('backup/archive/segment-format', () => {
 
       // The streaming decoder yields the same content, message by message.
       const items = await collectFile({
+        kind: 'segment',
         replicaVersion: '02',
         start: '02',
         end: '07',
+        parts: 0,
       });
       expect(items.map(i => i.message)).toEqual(txs.flatMap(t => t.parsed));
       expect(items.map(i => i.watermark)).toEqual(
@@ -265,17 +278,30 @@ describe('backup/archive/segment-format', () => {
     test('rejects a header that disagrees with the expected range', async () => {
       await seal('02', [tx('03')]);
       await expect(
-        collectFile({replicaVersion: '02', start: '02', end: '05'}),
-      ).rejects.toThrow('expected 02/02-05');
+        collectFile({
+          kind: 'segment',
+          replicaVersion: '02',
+          start: '02',
+          end: '05',
+          parts: 0,
+        }),
+      ).rejects.toThrow('does not match its name and listing (end)');
     });
 
     test('rejects a malformed sequence at the offending message', async () => {
       // An unterminated transaction, sealed with a lying header.
       const lines = tx('03').messages.slice(0, -1);
-      await writeSealedSegmentFile(
-        {replicaVersion: '02', start: '02', end: '03', txCount: 1},
-        () => Readable.from(lines.map(line => Buffer.from(`\n${line}`))),
-        path,
+      await sealRaw(
+        {
+          replicaVersion: '02',
+          start: '02',
+          end: '03',
+          txCount: 1,
+          firstCommitTimeMs: null,
+          lastCommitTimeMs: null,
+          part: null,
+        },
+        lines,
       );
       const seen: SegmentMessage[] = [];
       await expect(
@@ -291,17 +317,163 @@ describe('backup/archive/segment-format', () => {
     });
 
     test('rejects a header claiming transactions an empty payload lacks', async () => {
-      await writeSealedSegmentFile(
-        {replicaVersion: '02', start: '02', end: '03', txCount: 1},
-        () => Readable.from([]),
-        path,
+      await sealRaw(
+        {
+          replicaVersion: '02',
+          start: '02',
+          end: '03',
+          txCount: 1,
+          firstCommitTimeMs: null,
+          lastCommitTimeMs: null,
+          part: null,
+        },
+        [],
       );
       await expect(collectFile()).rejects.toThrow(
         'header txCount 1 does not match 0 transactions',
       );
     });
+
+    test('decodes a transaction spanning a part chain', async () => {
+      const spanning = tx('05', 4); // begin, 4 data rows, commit
+      const chainDir = dir;
+      const partPaths = [
+        join(chainDir, 'part1.seg'),
+        join(chainDir, 'part2.seg'),
+        join(chainDir, 'final.seg'),
+      ];
+      const slices = [
+        spanning.messages.slice(0, 2), // begin + first row
+        spanning.messages.slice(2, 4), // two rows
+        spanning.messages.slice(4), // last row + commit
+      ];
+      const headers: SegmentHeader[] = [
+        interiorHeader('03', '05', 1),
+        interiorHeader('03', '05', 2),
+        {
+          replicaVersion: '02',
+          start: '03',
+          end: '05',
+          txCount: 1,
+          firstCommitTimeMs: null,
+          lastCommitTimeMs: null,
+          part: {number: 3, final: true, watermark: '05'},
+        },
+      ];
+      for (let i = 0; i < 3; i++) {
+        await writeSealedSegmentFile(
+          headers[i],
+          () => Readable.from(slices[i].map(line => Buffer.from(`\n${line}`))),
+          partPaths[i],
+        );
+      }
+
+      const roles: Parameters<typeof decodeSegmentFile>[1][] = [
+        {
+          kind: 'interior',
+          replicaVersion: '02',
+          start: '03',
+          watermark: '05',
+          part: 1,
+        },
+        {
+          kind: 'interior',
+          replicaVersion: '02',
+          start: '03',
+          watermark: '05',
+          part: 2,
+        },
+        {
+          kind: 'segment',
+          replicaVersion: '02',
+          start: '03',
+          end: '05',
+          parts: 2,
+        },
+      ];
+      const items: SegmentMessage[] = [];
+      for (let i = 0; i < 3; i++) {
+        for await (const item of decodeSegmentFile(partPaths[i], roles[i])) {
+          items.push(item);
+        }
+      }
+      expect(items.map(i => i.message)).toEqual(spanning.parsed);
+      expect(items.every(i => i.watermark === '05')).toBe(true);
+
+      // The in-memory decoder refuses chain members.
+      expect(() => decodeSegment(readFileSync(partPaths[0]))).toThrow(
+        'requires the streaming decoder',
+      );
+    });
+
+    test('rejects chain files that lie about their position', async () => {
+      const spanning = tx('05', 2);
+      // An interior part containing a commit.
+      await sealRaw(interiorHeader('03', '05', 2), spanning.messages.slice(2));
+      await expect(
+        collectFile({
+          kind: 'interior',
+          replicaVersion: '02',
+          start: '03',
+          watermark: '05',
+          part: 2,
+        }),
+      ).rejects.toThrow('commit in interior part 2');
+
+      // An interior part that ends outside its transaction (a foreign
+      // begin/commit pair inside a chain).
+      await sealRaw(interiorHeader('03', '07', 1), tx('05').messages);
+      await expect(
+        collectFile({
+          kind: 'interior',
+          replicaVersion: '02',
+          start: '03',
+          watermark: '07',
+          part: 1,
+        }),
+      ).rejects.toThrow('watermark 05 in a chain part of 07');
+
+      // A final part whose role expects a different chain length.
+      await sealRaw(
+        {
+          replicaVersion: '02',
+          start: '03',
+          end: '05',
+          txCount: 1,
+          firstCommitTimeMs: null,
+          lastCommitTimeMs: null,
+          part: {number: 3, final: true, watermark: '05'},
+        },
+        spanning.messages.slice(2),
+      );
+      await expect(
+        collectFile({
+          kind: 'segment',
+          replicaVersion: '02',
+          start: '03',
+          end: '05',
+          parts: 1, // the listing saw 1 interior part; the header claims 2
+        }),
+      ).rejects.toThrow('does not match its name and listing (chain position)');
+    });
   });
 });
+
+function interiorHeader(
+  start: string,
+  watermark: string,
+  number: number,
+): SegmentHeader {
+  return {
+    replicaVersion: '02',
+    start,
+    end: null,
+    txCount: 0,
+    firstCommitTimeMs: null,
+    lastCommitTimeMs: null,
+    part: {number, final: false, watermark},
+  };
+}
 
 /**
  * Bypasses {@link encodeSegment}'s own validation to produce structurally
@@ -314,13 +486,21 @@ function encodeSegmentRaw(
   txCount: number,
   lines: string[],
 ): {data: Uint8Array} {
-  const header = JSON.stringify({replicaVersion, start, end, txCount});
+  const header = JSON.stringify({
+    replicaVersion,
+    start,
+    end,
+    txCount,
+    firstCommitTimeMs: null,
+    lastCommitTimeMs: null,
+    part: null,
+  } satisfies SegmentHeader);
   const payload = zstdCompressSync(
     Buffer.from([header, ...lines].join('\n'), 'utf8'),
   );
   const data = new Uint8Array(4 + 1 + 32 + payload.length);
   data.set([0x5a, 0x41, 0x52, 0x43], 0);
-  data[4] = 1;
+  data[4] = 2;
   data.set(createHash('sha256').update(payload).digest(), 5);
   data.set(payload, 37);
   return {data};

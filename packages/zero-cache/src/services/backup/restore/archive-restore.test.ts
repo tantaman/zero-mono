@@ -385,6 +385,7 @@ class SourceReplica {
       replicaVersion: '02',
       spoolDir: `${file}-archive-spool`,
       segmentTargetBytes: 1, // seal every transaction
+      partTargetBytes: 1024 * 1024, // without part chains
       sealIntervalMs: 60_000,
     });
   }
