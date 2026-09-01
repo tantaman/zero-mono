@@ -20,6 +20,8 @@ export type CeilingSample = {
   readonly cpuSeconds: Readonly<Record<string, number>>;
   readonly workerCpuSeconds: Readonly<Record<string, number>>;
   readonly rssMiB: Readonly<Record<string, number>>;
+  readonly writeBytes: Readonly<Record<string, number>>;
+  readonly diskBusyMs: number;
   readonly retainedWalBytes?: number | undefined;
   readonly archiveBytes?: number | undefined;
   readonly archiveSegments?: number | undefined;
@@ -64,6 +66,9 @@ export type CeilingResult = {
     readonly archiveSegments: number | undefined;
     readonly cpuCores: Readonly<Record<string, number>>;
     readonly workerCpuCores: Readonly<Record<string, number>>;
+    readonly writeMiBPerSec: Readonly<Record<string, number>>;
+    /** Device busy time per second of wall clock: the classic %util, as 0-1. */
+    readonly diskUtil: number;
     readonly rssPeakMiB: Readonly<Record<string, number>>;
     readonly probeP95Ms: number;
     readonly sustained: boolean;
@@ -105,6 +110,11 @@ export function summarize(args: {
 
   const cpuCores = ratesPerRole(window, s => s.cpuSeconds);
   const workerCpuCores = ratesPerRole(window, s => s.workerCpuSeconds);
+  const writeBytesPerSec = ratesPerRole(window, s => s.writeBytes);
+  const writeMiBPerSec: Record<string, number> = {};
+  for (const [role, bytes] of Object.entries(writeBytesPerSec)) {
+    writeMiBPerSec[role] = bytes / (1024 * 1024);
+  }
   const rssPeakMiB: Record<string, number> = {};
   for (const s of window) {
     for (const [role, mib] of Object.entries(s.rssMiB)) {
@@ -192,6 +202,8 @@ export function summarize(args: {
       archiveSegments: window.at(-1)?.archiveSegments,
       cpuCores,
       workerCpuCores,
+      writeMiBPerSec,
+      diskUtil: slope(window, s => s.diskBusyMs) / 1000,
       rssPeakMiB,
       probeP95Ms: percentile(
         window.map(s => s.probeMs),

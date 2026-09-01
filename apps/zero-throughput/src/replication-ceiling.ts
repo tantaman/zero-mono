@@ -166,6 +166,8 @@ async function main(): Promise<void> {
         cpuSeconds: lastProc.cpuSeconds,
         workerCpuSeconds: lastProc.workerCpuSeconds,
         rssMiB: lastProc.rssMiB,
+        writeBytes: lastProc.writeBytes,
+        diskBusyMs: lastProc.diskBusyMs,
         retainedWalBytes: slotState?.retainedBytes,
         archiveBytes: archiveState?.bytes,
         archiveSegments: archiveState?.segments,
@@ -369,6 +371,10 @@ function printSummary(
   }
   log(`CPU (cores, steady):    ${formatCpu(s.cpuCores)}`);
   log(`  by worker:            ${formatCpu(s.workerCpuCores)}`);
+  log(
+    `Disk writes (MiB/s):    ${formatCpu(s.writeMiBPerSec)} ` +
+      `[device util ${(s.diskUtil * 100).toFixed(0)}%]`,
+  );
   log(`Verdict:                ${s.sustained ? 'SUSTAINED' : 'FELL BEHIND'}`);
   log(`details: ${outputPath}`);
 }

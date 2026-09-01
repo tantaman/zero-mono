@@ -192,6 +192,7 @@ What the runner reports, and why each number is there:
 | retained WAL         | What upstream ACK gating is holding; in `archive` mode, gated on the archive |
 | archive MiB/s        | Compressed segment bytes the archive is absorbing                            |
 | CPU by worker        | `rm/change-streamer`, `rm/base-producer`, `vs-0/replicator`, and the harness |
+| disk + device util   | Bytes each role sent to storage, and whole-device busy time (%util)          |
 
 The write shape matters as much as the rate: `--rows-per-statement` widens
 the INSERTs (amortizing the generator's round trips) and
@@ -201,6 +202,14 @@ flow through segments and the replica, transaction boundaries cost commits
 -- so a rows/s ceiling is only meaningful next to the shape that produced
 it. Payloads are cut from a random pool, so nothing on the path gets to
 compress data a real workload would not.
+
+`--num-view-syncers 2` is how the litestream world's replication-manager is
+reproduced without a litestream binary: the second view-syncer stands in for
+the backup-replicator, so two subscribers gate the change-streamer's flow
+control exactly as they do in that world. Comparing it against a
+one-subscriber archive gateway is what measures the archive world's
+structural advantage -- its applier reads sealed segments from the object
+store rather than the live subscription, so it cannot gate the stream.
 
 Archive-mode runs need no object store: `--archive-dir` (default
 `results/archive`) is a `file://` store, cleared at the start of each run
