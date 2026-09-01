@@ -47,6 +47,32 @@ const options = {
   profileRM: v.boolean().default(false),
   profileVS: v.boolean().default(false),
 
+  // The backup world the topology is started in (--backup-mode on
+  // zero-cache). In `archive` the replication-manager is a gateway with no
+  // replica of its own, the base producer runs in its process tree, and
+  // every view-syncer restores from the archive rather than from a copy of
+  // the manager's file.
+  backupMode: v.literalUnion('litestream', 'archive').default('litestream'),
+  archiveDir: v.string().default('results/archive'),
+  // The producer's re-evaluation beat, which also bounds how long a cold
+  // start waits to notice the gateway's genesis offer, and the archive log's
+  // seal interval, which bounds how long ACKs are held back. Both are turned
+  // down from their production defaults so a benchmark is not mostly sleep.
+  baseCheckIntervalSeconds: v.number().default(1),
+  segmentSealIntervalSeconds: v.number().default(1),
+
+  // The bulk writer used by the replication-ceiling runner: multi-row
+  // INSERTs, `statementsPerTx` of them per transaction. The row shape is
+  // feed-append's. Raising rowsPerStatement amortizes round trips (the
+  // load generator must not be the bottleneck when measuring a ceiling);
+  // raising statementsPerTx makes bigger transactions without making the
+  // statements wider.
+  rowsPerStatement: v.number().default(50),
+  statementsPerTx: v.number().default(1),
+  // How long the ceiling runner waits, after the writers stop, for the
+  // view-syncer to apply everything that was committed.
+  drainMs: v.number().default(120_000),
+
   pg: {
     url: v.string().optional(),
     stopAfterRun: v.boolean().default(true),
@@ -69,6 +95,7 @@ const options = {
 export type BenchmarkProfile = 'feed-append' | 'email' | 'forum' | 'relational';
 export type BenchmarkModel = 'hot' | 'realistic';
 export type BenchmarkTopology = 'single' | 'distributed';
+export type BenchmarkBackupMode = 'litestream' | 'archive';
 
 export type BenchmarkConfig = {
   readonly runID: string;
@@ -77,6 +104,13 @@ export type BenchmarkConfig = {
   readonly topology: BenchmarkTopology;
   readonly numViewSyncers: number;
   readonly numSyncWorkers: number;
+  readonly backupMode: BenchmarkBackupMode;
+  readonly archiveDir: string;
+  readonly baseCheckIntervalSeconds: number;
+  readonly segmentSealIntervalSeconds: number;
+  readonly rowsPerStatement: number;
+  readonly statementsPerTx: number;
+  readonly drainMs: number;
   readonly users: number;
   readonly queriesPerUser: number;
   readonly rowsPerQuery: number;
@@ -133,10 +167,16 @@ export function loadConfig(): BenchmarkConfig {
     argv: argv[0] === '--' ? argv.slice(1) : argv,
     envNamePrefix: 'ZERO_THROUGHPUT_',
   });
-  assertPositiveInteger('users', parsed.users);
+  // 0 users is a legitimate run: no client connects, so the view-syncers
+  // run no pipelines and what is left is the replication path itself.
+  assertNonNegativeInteger('users', parsed.users);
   assertPositiveInteger('queriesPerUser', parsed.queriesPerUser);
   assertPositiveInteger('rowsPerQuery', parsed.rowsPerQuery);
-  assertPositiveNumber('writeRate', parsed.writeRate);
+  // 0 means unthrottled: the writers push as hard as Postgres accepts.
+  assertNonNegativeNumber('writeRate', parsed.writeRate);
+  assertPositiveInteger('rowsPerStatement', parsed.rowsPerStatement);
+  assertPositiveInteger('statementsPerTx', parsed.statementsPerTx);
+  assertNonNegativeInteger('drainMs', parsed.drainMs);
   assertPositiveInteger('batchSize', parsed.batchSize);
   assertPositiveInteger('rowsPerTx', parsed.rowsPerTx);
   assertPositiveInteger('writeConcurrency', parsed.writeConcurrency);
@@ -183,6 +223,13 @@ export function loadConfig(): BenchmarkConfig {
     topology: parsed.topology,
     numViewSyncers: parsed.numViewSyncers,
     numSyncWorkers,
+    backupMode: parsed.backupMode,
+    archiveDir: parsed.archiveDir,
+    baseCheckIntervalSeconds: parsed.baseCheckIntervalSeconds,
+    segmentSealIntervalSeconds: parsed.segmentSealIntervalSeconds,
+    rowsPerStatement: parsed.rowsPerStatement,
+    statementsPerTx: parsed.statementsPerTx,
+    drainMs: parsed.drainMs,
     users: parsed.users,
     queriesPerUser: parsed.queriesPerUser,
     rowsPerQuery: parsed.rowsPerQuery,
@@ -228,6 +275,12 @@ export function appPath(path: string): string {
 function assertPositiveNumber(name: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${name} must be a positive number`);
+  }
+}
+
+function assertNonNegativeNumber(name: string, value: number): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative number`);
   }
 }
 
