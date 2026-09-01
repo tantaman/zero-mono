@@ -271,6 +271,22 @@ Exit criteria: the gateway-boot tests from the design's Testing section
    per-table count + order-independent hash maintained inside each
    Postgres transaction; a self-consistency checker runnable against any
    replica at any watermark.
+
+   *Landed on this branch* behind `--ledger` (off by default: the ledger
+   row serializes each table's writers, so it is for chaos/correctness
+   runs, not throughput measurement). `ledger.ts` is the single spec both
+   sides derive from: per-table triggers maintain
+   `zero_throughput_ledger` (count + sum of 56-bit md5 row hashes mod
+   2^64, stored as text so it replicates byte-identically) inside every
+   transaction, hashing exactly the columns whose pg→lite mapping is
+   canonical (text/int/bool — every logical write bumps `seq`, so stale
+   row versions still show); `ledger-check.ts` (`pnpm run ledger-check
+   --replica <file>`, plain `node:sqlite`) recomputes the aggregates over
+   any replica and exits non-zero on divergence. The JS spec and checker
+   are validated end to end (match, stale row, missing row, absent
+   table); the generated trigger SQL needs its first run against real
+   Postgres on a scratch stack — this environment has none — before the
+   chaos drills lean on it.
 3. **Chaos harness** (L): fault-injecting `ObjectStore` wrapper
    (productionize the test `beforePut` hook into error/latency/outage
    schedules), process-kill orchestration for the design's kill matrix on

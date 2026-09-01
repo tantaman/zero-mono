@@ -1,5 +1,6 @@
 import postgres from 'postgres';
 import type {BenchmarkConfig} from './config.ts';
+import {dropLedgerSQL, ledgerSchemaSQL} from './ledger.ts';
 import {
   EMAIL_THREAD_COUNT,
   FORUM_CATEGORY_ID,
@@ -100,6 +101,9 @@ export async function resetBenchmarkDatabase(
   await sql`DROP TABLE IF EXISTS zero_throughput_rel_contact CASCADE`;
   await sql`DROP TABLE IF EXISTS zero_throughput_rel_account CASCADE`;
   await sql`DROP TABLE IF EXISTS zero_throughput_rel_org CASCADE`;
+  for (const statement of dropLedgerSQL()) {
+    await sql.unsafe(statement);
+  }
 
   await sql`
     CREATE TABLE zero_throughput_event (
@@ -284,6 +288,15 @@ export async function resetBenchmarkDatabase(
     CREATE INDEX zero_throughput_rel_activity_contact_seq_idx
     ON zero_throughput_rel_activity (contact_id, seq DESC, id ASC)
   `;
+
+  if (config.ledger) {
+    // Installed before seeding so the seed rows are ledgered too. The
+    // triggers serialize concurrent writers on each table's ledger row, so
+    // the ledger is for chaos/correctness runs, not throughput measurement.
+    for (const statement of ledgerSchemaSQL()) {
+      await sql.unsafe(statement);
+    }
+  }
 
   if (config.model === 'hot') {
     await seedEmail(sql);

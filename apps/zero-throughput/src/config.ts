@@ -37,6 +37,7 @@ const options = {
   profileDir: v.string().default('results/profiles'),
   processLogMode: v.literalUnion('file', 'inherit', 'ignore').default('file'),
   reset: v.boolean().default(true),
+  ledger: v.boolean().default(false),
   cacheURL: v.string().optional(),
   cacheURLs: v.string().optional(),
 
@@ -97,6 +98,13 @@ export type BenchmarkConfig = {
   readonly profileVS: boolean;
   readonly processLogMode: 'file' | 'inherit' | 'ignore';
   readonly reset: boolean;
+  /**
+   * Maintain the ledger oracle (a per-table row count and order-independent
+   * content hash updated by triggers inside every transaction; see
+   * ledger.ts). For chaos/correctness runs: the ledger row serializes each
+   * table's writers, so leave it off when measuring throughput.
+   */
+  readonly ledger: boolean;
   readonly cacheURL: string;
   readonly cacheURLs: readonly string[];
   readonly pg: {
@@ -196,6 +204,7 @@ export function loadConfig(): BenchmarkConfig {
     profileVS: parsed.profileVS,
     processLogMode: parsed.processLogMode,
     reset: parsed.reset,
+    ledger: parsed.ledger,
     cacheURL: cacheURLs[0],
     cacheURLs,
     pg: {
