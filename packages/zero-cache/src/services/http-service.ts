@@ -70,7 +70,11 @@ export class HttpService implements Service {
     });
     await this.#init(this.#fastify);
     const address = await this.#fastify.listen({
-      host: '::',
+      // The dual-stack wildcard, which is what every deployment wants. A
+      // host without IPv6 support (some sandboxes and CI containers) cannot
+      // bind it at all -- `listen` fails with EAFNOSUPPORT -- so
+      // ZERO_LISTEN_HOST is the escape hatch for those, e.g. `0.0.0.0`.
+      host: process.env.ZERO_LISTEN_HOST ?? '::',
       port: this.#port,
     });
     this._lc.info?.(`${this.id} listening at ${address}`);
