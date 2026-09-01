@@ -1,6 +1,17 @@
+import {createWriteStream} from 'node:fs';
+import {rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {Readable} from 'node:stream';
+import {pipeline} from 'node:stream/promises';
+import type {ReadableStream as NodeReadableStream} from 'node:stream/web';
 import type {ObjectStore} from '../object-store/object-store.ts';
 import {logPrefix, parseSegmentKey, type SegmentRef} from './layout.ts';
-import {decodeSegment, type SegmentTransaction} from './segment-format.ts';
+import {
+  decodeSegment,
+  decodeSegmentFile,
+  type SegmentMessage,
+  type SegmentTransaction,
+} from './segment-format.ts';
 
 /**
  * Read-side of the archive log: segment listing, continuity verification,
@@ -76,11 +87,65 @@ export function selectCoveringSegments(
 }
 
 /**
+ * The streaming replay path: iterates the messages of the committed
+ * transactions in `(after, upTo]` in stream order, tagged with their commit
+ * watermarks. Each covering segment is downloaded to a local temp file in
+ * `tempDir` (the bounded buffer that preserves verify-then-use: its size is
+ * the segment's, never resident), checksum-verified in a streaming pass, and
+ * then decoded one message line at a time — see
+ * {@link decodeSegmentFile}, which also pins each segment's header to the
+ * range its object name claims. Transactions outside the range (a segment
+ * can straddle either bound) are filtered by commit watermark, which is
+ * where replay dedup lives for the stream's other consumers too.
+ */
+export async function* iterateMessages(
+  store: ObjectStore,
+  replicaVersion: string,
+  after: string,
+  upTo: string,
+  tempDir: string,
+): AsyncGenerator<SegmentMessage> {
+  const segments = await listLogSegments(store, replicaVersion);
+  for (const ref of selectCoveringSegments(segments, after, upTo)) {
+    const tempFile = join(tempDir, `${crypto.randomUUID()}.seg`);
+    try {
+      await pipeline(
+        // The DOM and node:stream/web ReadableStream types disagree on BYOB
+        // reader details; the runtime objects are interchangeable.
+        Readable.fromWeb(
+          (await store.getStream(
+            ref.key,
+          )) as unknown as NodeReadableStream<Uint8Array>,
+        ),
+        createWriteStream(tempFile),
+      );
+      for await (const item of decodeSegmentFile(tempFile, {
+        replicaVersion,
+        start: ref.start,
+        end: ref.end,
+      })) {
+        if (item.watermark <= after) {
+          continue;
+        }
+        if (item.watermark > upTo) {
+          return;
+        }
+        yield item;
+      }
+    } finally {
+      await rm(tempFile, {force: true});
+    }
+  }
+}
+
+/**
  * Iterates the committed transactions in `(after, upTo]` in stream order,
- * downloading, verifying, and decoding each covering segment. Transactions
- * outside the range (a segment can straddle either bound) are filtered by
- * commit watermark, which is where replay dedup lives for the stream's other
- * consumers too.
+ * downloading, verifying, and decoding each covering segment **in memory**.
+ * For tooling and small-segment tests; the replay path is
+ * {@link iterateMessages}, which never holds a whole segment or transaction
+ * resident. Transactions outside the range (a segment can straddle either
+ * bound) are filtered by commit watermark, which is where replay dedup lives
+ * for the stream's other consumers too.
  */
 export async function* iterateTransactions(
   store: ObjectStore,

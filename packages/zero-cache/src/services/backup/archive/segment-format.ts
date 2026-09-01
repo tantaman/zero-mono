@@ -1,9 +1,17 @@
 import {createHash} from 'node:crypto';
-import {closeSync, createWriteStream, openSync, writeSync} from 'node:fs';
+import {
+  closeSync,
+  createReadStream,
+  createWriteStream,
+  openSync,
+  writeSync,
+} from 'node:fs';
+import {open} from 'node:fs/promises';
 import {Transform, type Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import {
   createZstdCompress,
+  createZstdDecompress,
   zstdCompressSync,
   zstdDecompressSync,
 } from 'node:zlib';
@@ -274,6 +282,219 @@ export function decodeSegment(data: Uint8Array): DecodedSegment {
     end: header.end,
     transactions,
   };
+}
+
+/** One stream message, tagged with its transaction's commit watermark. */
+export type SegmentMessage = {
+  watermark: string;
+  message: ChangeStreamData;
+};
+
+/**
+ * Verifies a downloaded segment file's framing and checksum in a streaming
+ * pass, throwing {@link SegmentFormatError} on any mismatch. This is the
+ * verify-then-use half of the streaming decode: the local file is the
+ * bounded buffer that lets verification complete before anything is parsed,
+ * without ever holding the segment in memory.
+ */
+export async function verifySegmentFile(path: string): Promise<void> {
+  const file = await open(path, 'r');
+  try {
+    const preamble = Buffer.alloc(HEADER_BYTES);
+    const {bytesRead} = await file.read(preamble, 0, HEADER_BYTES, 0);
+    if (bytesRead < HEADER_BYTES) {
+      throw new SegmentFormatError(
+        `segment is truncated: ${bytesRead} bytes is smaller than the header`,
+      );
+    }
+    for (let i = 0; i < MAGIC.length; i++) {
+      if (preamble[i] !== MAGIC[i]) {
+        throw new SegmentFormatError(
+          'segment does not start with the ZARC magic',
+        );
+      }
+    }
+    const version = preamble[MAGIC.length];
+    if (version !== FORMAT_VERSION) {
+      throw new SegmentFormatError(
+        `unsupported segment format version ${version}`,
+      );
+    }
+    const hash = createHash('sha256');
+    for await (const chunk of file.createReadStream({
+      start: HEADER_BYTES,
+      autoClose: false,
+    })) {
+      hash.update(chunk as Buffer);
+    }
+    if (!hash.digest().equals(preamble.subarray(MAGIC.length + 1))) {
+      throw new SegmentFormatError('segment checksum mismatch');
+    }
+  } finally {
+    await file.close();
+  }
+}
+
+/**
+ * The streaming counterpart of {@link decodeSegment}: verifies a segment
+ * file ({@link verifySegmentFile}), then decompresses and parses it one
+ * message line at a time, yielding each message tagged with its
+ * transaction's commit watermark. Memory is O(largest single message) — the
+ * unit the applier consumes anyway — never O(transaction) or O(segment).
+ *
+ * Structural validation matches {@link decodeSegment} exactly; checks that
+ * need the whole segment (txCount, the header's `end`) throw at the end of
+ * iteration, after the checksum has already vouched that the content is the
+ * sealed bytes. `expected` additionally pins the header to the range the
+ * object's name claims, so a renamed or misplaced object cannot smuggle the
+ * wrong range into a replay.
+ */
+export async function* decodeSegmentFile(
+  path: string,
+  expected?: {replicaVersion: string; start: string; end: string},
+): AsyncGenerator<SegmentMessage> {
+  await verifySegmentFile(path);
+
+  const unzip = createZstdDecompress();
+  const source = createReadStream(path, {start: HEADER_BYTES});
+  source.on('error', e => unzip.destroy(e));
+  // A consumer that stops early destroys `unzip` (async-iterator cleanup);
+  // the source must not outlive it holding an open fd.
+  unzip.on('close', () => source.destroy());
+  source.pipe(unzip);
+
+  let header: SegmentHeader | undefined;
+  let current: string | undefined;
+  let last: string | undefined;
+  let txCount = 0;
+  let i = 0;
+  for await (const line of decompressedLines(unzip)) {
+    if (header === undefined) {
+      header = parseLine(line, segmentHeaderSchema, 'header');
+      if (
+        expected !== undefined &&
+        (header.replicaVersion !== expected.replicaVersion ||
+          header.start !== expected.start ||
+          header.end !== expected.end)
+      ) {
+        throw new SegmentFormatError(
+          `segment contains ${header.replicaVersion}/${header.start}-` +
+            `${header.end}; expected ${expected.replicaVersion}/` +
+            `${expected.start}-${expected.end}`,
+        );
+      }
+      last = header.start;
+      continue;
+    }
+    i++;
+    const message = parseLine(line, changeStreamDataSchema, `message ${i}`);
+    const [type] = message;
+    if (type === 'begin') {
+      if (current !== undefined) {
+        throw new SegmentFormatError(
+          `message ${i}: begin inside a transaction`,
+        );
+      }
+      const watermark = message[2].commitWatermark;
+      if (last !== undefined && watermark <= last) {
+        throw new SegmentFormatError(
+          `message ${i}: watermark ${watermark} is not after ${last}`,
+        );
+      }
+      current = watermark;
+      yield {watermark, message};
+    } else if (current === undefined) {
+      throw new SegmentFormatError(
+        `message ${i}: ${type} outside of a transaction`,
+      );
+    } else if (type === 'commit') {
+      if (message[2].watermark !== current) {
+        throw new SegmentFormatError(
+          `message ${i}: commit watermark ${message[2].watermark} does not ` +
+            `match begin watermark ${current}`,
+        );
+      }
+      yield {watermark: current, message};
+      last = current;
+      txCount++;
+      current = undefined;
+    } else if (type === 'rollback') {
+      // Sealing only ever includes committed transactions.
+      throw new SegmentFormatError(
+        `message ${i}: rollback in a sealed segment`,
+      );
+    } else {
+      yield {watermark: current, message};
+    }
+  }
+  if (header === undefined) {
+    throw new SegmentFormatError('segment header is not JSON: empty payload');
+  }
+  if (current !== undefined) {
+    throw new SegmentFormatError(`segment ends inside transaction ${current}`);
+  }
+  if (txCount !== header.txCount) {
+    throw new SegmentFormatError(
+      `header txCount ${header.txCount} does not match ${txCount} transactions`,
+    );
+  }
+  if (txCount === 0) {
+    throw new SegmentFormatError('segment contains no transactions');
+  }
+  if (last !== header.end) {
+    throw new SegmentFormatError(
+      `header end ${header.end} does not match last commit watermark ${last}`,
+    );
+  }
+}
+
+/**
+ * {@link linesOf} with zstd failures rewrapped: a checksum-verified payload
+ * that does not decompress is still reported as a {@link SegmentFormatError}.
+ */
+async function* decompressedLines(
+  source: AsyncIterable<Buffer>,
+): AsyncGenerator<string> {
+  try {
+    yield* linesOf(source);
+  } catch (e) {
+    if (e instanceof SegmentFormatError) {
+      throw e;
+    }
+    throw new SegmentFormatError(`segment payload does not decompress: ${e}`);
+  }
+}
+
+/**
+ * Splits a byte stream into `\n`-separated UTF-8 lines without ever decoding
+ * a partial multi-byte sequence; only the current (partial) line is buffered.
+ */
+async function* linesOf(source: AsyncIterable<Buffer>): AsyncGenerator<string> {
+  const pending: Buffer[] = [];
+  for await (const chunk of source) {
+    let start = 0;
+    for (;;) {
+      const newline = chunk.indexOf(0x0a, start);
+      if (newline < 0) {
+        break;
+      }
+      const head = chunk.subarray(start, newline);
+      if (pending.length > 0) {
+        pending.push(head);
+        yield Buffer.concat(pending).toString('utf8');
+        pending.length = 0;
+      } else {
+        yield head.toString('utf8');
+      }
+      start = newline + 1;
+    }
+    if (start < chunk.length) {
+      pending.push(chunk.subarray(start));
+    }
+  }
+  if (pending.length > 0) {
+    yield Buffer.concat(pending).toString('utf8');
+  }
 }
 
 function parseLine<T>(

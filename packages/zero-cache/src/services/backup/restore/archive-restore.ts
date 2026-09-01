@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {existsSync} from 'node:fs';
-import {open, rename, rm} from 'node:fs/promises';
+import {mkdir, open, rename, rm} from 'node:fs/promises';
 import type {LogContext} from '@rocicorp/logger';
 import {Database} from '../../../../../zqlite/src/db.ts';
 import {deleteLiteDB} from '../../../db/delete-lite-db.ts';
@@ -12,10 +12,7 @@ import type {
 import {deleteChangeLogDB} from '../../replicator/change-log-db.ts';
 import {ChangeProcessor} from '../../replicator/change-processor.ts';
 import {getSubscriptionState} from '../../replicator/schema/replication-state.ts';
-import {
-  iterateTransactions,
-  listLogSegments,
-} from '../archive/archive-reader.ts';
+import {iterateMessages, listLogSegments} from '../archive/archive-reader.ts';
 import {
   ARCHIVE_ROOT,
   baseChunkKey,
@@ -291,18 +288,26 @@ async function replayTail(
       mode,
       (_, err) => (failure = err),
     );
-    for await (const transaction of iterateTransactions(
-      store,
-      replicaVersion,
-      cursor,
-      target,
-    )) {
-      for (const message of transaction.messages) {
+    // Segments stream through a local temp file (verify-then-use with
+    // bounded memory) and decode one message line at a time; see
+    // iterateMessages.
+    const tempDir = `${replicaFile}-restore-segments`;
+    await mkdir(tempDir, {recursive: true});
+    try {
+      for await (const {message} of iterateMessages(
+        store,
+        replicaVersion,
+        cursor,
+        target,
+        tempDir,
+      )) {
         processor.processMessage(lc, message);
         if (failure !== undefined) {
           throw failure;
         }
       }
+    } finally {
+      await rm(tempDir, {recursive: true, force: true});
     }
 
     const {watermark} = getSubscriptionState(new StatementRunner(db));
