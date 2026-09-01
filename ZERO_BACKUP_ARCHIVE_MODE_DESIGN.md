@@ -659,21 +659,77 @@ collapse that difference back into **one value in the stack's values file**
 that a flip — in either direction — is a single git commit that Flux
 reconciles.
 
-**What the overlay renders per mode.** In `litestream`, today's shape,
-untouched. In `archive`: `ZERO_BACKUP_MODE=archive` and
-`ZERO_BACKUP_ARCHIVE_URL` on every zero-cache workload; the producer
-Deployment; a spool volume (ephemeral/emptyDir is sufficient — the spool is
-re-derivable from the slot) on the gateway and per-xid spool space sized per
-the streaming discipline; litestream containers, env, and the
-backup-replicator absent. One value, one template conditional — never two
-flags that can disagree.
+### The Kubernetes resource model
 
-**Pre-provisioned, inert infrastructure.** The archive bucket/prefix and its
-IAM role (IRSA) are provisioned for every stack **in both worlds**, ahead of
-any flip: an idle bucket costs nothing, and keeping provisioning off the
+What each world is, as resources (the fleet repo owns the manifests; this is
+their spec):
+
+| Workload            | `litestream` world                                                               | `archive` world                                                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| replication-manager | today's shape: zero-cache + backup-replicator child + litestream, replica volume | **gateway**: same image, `ZERO_BACKUP_MODE=archive` + `ZERO_BACKUP_ARCHIVE_URL`; a spool `emptyDir`; no replica volume, no litestream |
+| backup-producer     | —                                                                                | `StatefulSet`, `replicas: 1`, working replica on a `volumeClaimTemplates` PVC                                                         |
+| view-syncers        | Deployment, restores from litestream                                             | same Deployment, restores from S3 (follows the RM's advertised `backupFormat` — no manifest change beyond env)                        |
+| GC                  | —                                                                                | inside the producer; no CronJob                                                                                                       |
+
+The load-bearing choices:
+
+- **The producer is a single-replica StatefulSet, not a Deployment.** A
+  StatefulSet gives at-most-one pod semantics across reschedules (base
+  publication is `putIfAbsent`-safe against a race, but two producers are
+  waste and noise), and its PVC makes a reschedule a resume instead of a
+  rebuild. Set `persistentVolumeClaimRetentionPolicy: {whenDeleted: Delete}`:
+  the working file is re-derivable from the producer's own bases, and a
+  rollback that prunes the StatefulSet must not orphan PVCs across repeated
+  flips.
+- **The gateway carries no PVC.** Its spool is an `emptyDir` (or generic
+  ephemeral volume) with a `sizeLimit` per the streaming discipline's disk
+  budget — the spool is re-derivable from the slot, so losing the node loses
+  nothing. This is the visible payoff of the no-replica design: the RM
+  becomes a stateless-disk workload.
+- **Readiness is the flip's completion signal.** The gateway's existing
+  readiness endpoint gates on the first durable segment + first complete
+  base, so during a forward flip the rollout simply reports not-ready until
+  the new world can actually serve — Kubernetes and Flux health checks see
+  the truth without any bespoke orchestration.
+
+**IAM (IRSA), split by role and pre-provisioned.** Three ServiceAccounts,
+three policies on the archive bucket: the gateway writes and lists the log
+prefix (`PutObject` conditional writes, `ListBucket`, `GetObject`); the
+producer has full CRUD (it publishes bases and runs GC's deletes); the
+view-syncers are read-only. All three exist **in both worlds**, ahead of any
+flip: an idle role and bucket cost nothing, and keeping provisioning off the
 flip's critical path is what makes the flip a config change rather than an
-infrastructure project. Likewise the litestream bucket remains provisioned
-while a stack is in the archive world; rollback does not wait on Terraform.
+infrastructure project. Likewise the litestream bucket and roles remain
+provisioned while a stack is in the archive world; rollback does not wait on
+Terraform.
+
+### Expressing the flip in Flux
+
+Flux's `postBuild` variable substitution alone cannot express this flip: the
+two worlds differ in which **resources exist** (the producer StatefulSet,
+litestream sidecars), not just in env values. So the flip is a resource-set
+selection — either idiom works, and the fleet's existing convention wins:
+
+- **Kustomize components**: the stack's `kustomization.yaml` includes exactly
+  one of `components/backup-litestream` or `components/backup-archive`; each
+  component carries its workload patches, extra resources, and its
+  `PrometheusRule`. The flip is a one-line change:
+
+  ```yaml
+  # stacks/acme-prod/kustomization.yaml
+  components:
+    - ../../components/backup-archive # was: ../../components/backup-litestream
+  ```
+
+- **Helm**: a single `backupMode` value in the `HelmRelease`, with the chart
+  templating the conditional resources off that one value.
+
+Either way, one value/line — never two knobs that can disagree — and the
+Flux `Kustomization` that applies it needs `prune: true` (so a rollback
+actually removes the producer and its resources, rather than leaving both
+worlds' workloads standing) and `wait: true` with `healthChecks` on the
+gateway and producer, so the flip commit reports reconciled-and-healthy only
+when the new world is serving.
 
 **Reconcile-window tolerance.** Flux applies manifests in no useful order,
 and pods of both shapes can briefly coexist during a flip. The application
@@ -683,7 +739,10 @@ litestream-mode process ignores archive resources entirely, and
 `assertNormalized` rejects internally inconsistent env combinations so a
 half-templated overlay fails loudly at pod start instead of running in a
 mixed state. Only one process can hold the replication slot, so the two
-worlds cannot both stream regardless of pod overlap.
+worlds cannot both stream regardless of pod overlap. No `dependsOn`
+choreography between app Kustomizations is needed — the one hard dependency
+(bucket + IAM before first archive write) is satisfied by pre-provisioning,
+not by ordering.
 
 **Forward runbook.** Commit `backupMode: archive` for the stack → Flux
 reconciles → gateway starts a new lineage and the producer performs genesis →
@@ -699,10 +758,12 @@ auto-reset path (see "Flipping forward, flipping back"). The abandoned
 archive lineage is left in place and reclaimed out of band once the stack is
 confirmed healthy — never deleted as part of the rollback itself.
 
-**Mode-aware observability.** Alerts follow the value: litestream stall
-alerts apply in one world, archive cursor-lag / base-staleness / GC alerts in
-the other, and the flip commit flips the alert set with it — a stack must
-never sit in a world whose backup alerts are watching the other one.
+**Mode-aware observability.** Alerts follow the value because each world's
+`PrometheusRule` ships inside its component/conditional: litestream stall
+alerts in one world; archive cursor-lag, base-staleness, gap-count, and
+GC-failure alerts in the other. The flip commit therefore flips the alert
+set atomically with the workloads — a stack must never sit in a world whose
+backup alerts are watching the other one.
 
 ## Open implementation questions
 
