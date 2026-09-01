@@ -42,8 +42,21 @@ describe('backfillCursor', () => {
   });
 
   test('boolean and numeric key values', () => {
-    expect(backfillCursor(spec(), ['flag', 'id'], [false, 2.5]).where).toBe(
+    expect(backfillCursor(spec(), ['flag', 'id'], [false, 2.5])?.where).toBe(
       `("flag","id") > (false,2.5)`,
+    );
+  });
+
+  test('a table with no row key has no cursor', () => {
+    // e.g. no PRIMARY KEY and no replica identity index. Such a table is not
+    // synced; the download falls back to its unordered form rather than
+    // emitting an empty `ORDER BY`.
+    expect(backfillCursor(spec(), [])).toBeUndefined();
+  });
+
+  test('resuming a table with no row key is unsupported', () => {
+    expect(() => backfillCursor(spec(), [], [])).toThrow(
+      BackfillResumeUnsupportedError,
     );
   });
 

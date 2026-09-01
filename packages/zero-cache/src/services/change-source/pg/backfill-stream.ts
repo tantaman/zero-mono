@@ -94,12 +94,25 @@ const COLLATABLE_TYPE_RE =
  * the table's row key (so that the last row durably applied downstream is a
  * meaningful resumption point) and, when `resumeAfter` is given, restricted
  * to rows strictly after that key.
+ *
+ * Returns `undefined` for a table with no row key columns (i.e. no PRIMARY KEY
+ * and no replica identity index), which has neither an order to emit in nor a
+ * resumption point; such a table is not synced anyway, and its download falls
+ * back to the unordered form.
  */
 export function backfillCursor(
   table: PublishedTableSpec,
   keyColumns: readonly string[],
   resumeAfter?: readonly JSONValue[] | undefined,
-): DownloadCursor {
+): DownloadCursor | undefined {
+  if (keyColumns.length === 0) {
+    if (resumeAfter !== undefined) {
+      throw new BackfillResumeUnsupportedError(
+        'table has no row key columns to resume from',
+      );
+    }
+    return undefined;
+  }
   const keyExprs = keyColumns.map(col =>
     COLLATABLE_TYPE_RE.test(table.columns[col].dataType)
       ? /*sql*/ `${id(col)} COLLATE "C"`
@@ -187,10 +200,10 @@ export async function* streamBackfill(
     const {relation, columns} = backfill;
     const cols = [...relation.rowKey.columns, ...columns];
 
-    // Rows are always emitted in row-key order so that an interrupted
-    // backfill can be resumed strictly after the last row that was durably
-    // applied downstream.
-    let cursor: DownloadCursor;
+    // Rows are emitted in row-key order (for tables that have one) so that an
+    // interrupted backfill can be resumed strictly after the last row that was
+    // durably applied downstream.
+    let cursor: DownloadCursor | undefined;
     try {
       cursor = backfillCursor(
         tableSpec,

@@ -196,7 +196,12 @@ stable across locale/ICU changes), `backfillRequestSchema` gained an
 optional `resumeAfter` key, and `streamBackfill` restricts a resumed copy
 to rows strictly after that key (reported totals reflect the remaining
 rows; unsupported key values fall back to a full restart, which is always
-correct since backfills are idempotent). The remaining piece — the
+correct since backfills are idempotent). Two consequences worth knowing:
+backfilled rows now reach the replica in row-key order rather than
+upstream heap order (which is what makes the last applied row a valid
+resumption point), and a table with no row key at all — no primary key
+and no replica identity index, so it is not synced anyway — gets no
+cursor and keeps the unordered download. The remaining piece — the
 durable last-emitted-PK progress mark in the cookie state and
 `backfillRequestsFrom` resuming from it — requires a coordinated
 `cookieOps` fold change across all three stores (PG `cdc.backfilling`,
@@ -253,7 +258,7 @@ Exit criteria: the gateway-boot tests from the design's Testing section
    replica (mirror `sqlite-change-log-comparator`); scheduled in the
    archive world.
 
-   *Landed on this branch* as `zero-archive-drill`. Alignment is
+   _Landed on this branch_ as `zero-archive-drill`. Alignment is
    pin-then-restore: a read transaction freezes the live replica at its
    watermark W, the drill briefly waits for the archive's durable head to
    reach W (bounded; a stall reports `archive-behind`), then restores a
@@ -267,12 +272,13 @@ Exit criteria: the gateway-boot tests from the design's Testing section
    `_zero.runtimeEvents`, wall-clock'd config/state rows) is excluded by
    default; identity and watermark are checked exactly instead. Exit code
    0 only on `match`, so scheduling it is a cron job.
+
 2. **Ledger workload** (M): oracle layer 2 in `apps/zero-throughput` —
    per-table count + order-independent hash maintained inside each
    Postgres transaction; a self-consistency checker runnable against any
    replica at any watermark.
 
-   *Landed on this branch* behind `--ledger` (off by default: the ledger
+   _Landed on this branch_ behind `--ledger` (off by default: the ledger
    row serializes each table's writers, so it is for chaos/correctness
    runs, not throughput measurement). `ledger.ts` is the single spec both
    sides derive from: per-table triggers maintain
@@ -280,20 +286,22 @@ Exit criteria: the gateway-boot tests from the design's Testing section
    2^64, stored as text so it replicates byte-identically) inside every
    transaction, hashing exactly the columns whose pg→lite mapping is
    canonical (text/int/bool — every logical write bumps `seq`, so stale
-   row versions still show); `ledger-check.ts` (`pnpm run ledger-check
-   --replica <file>`, plain `node:sqlite`) recomputes the aggregates over
-   any replica and exits non-zero on divergence. The JS spec and checker
-   are validated end to end (match, stale row, missing row, absent
-   table); the generated trigger SQL needs its first run against real
-   Postgres on a scratch stack — this environment has none — before the
-   chaos drills lean on it.
+   row versions still show); `ledger-check.ts` (`pnpm run ledger-check`,
+   plain `node:sqlite`) recomputes the aggregates over any replica and
+   exits non-zero on divergence. The JS spec and checker are validated
+   end to end (match, stale row, missing row, absent table), and the
+   generated trigger SQL has had its first run against a real Postgres
+   16: the trigger-computed count and hash match the JS encoding exactly
+   over multibyte text, NULLs, booleans, negative and above-2^53
+   integers, and update and delete deltas.
+
 3. **Chaos harness** (L): fault-injecting `ObjectStore` wrapper
    (productionize the test `beforePut` hook into error/latency/outage
    schedules), process-kill orchestration for the design's kill matrix on
    a scratch stack, PG restart/slot-churn injection; the oracle is the
    only judge.
 
-   *The wrapper is landed on this branch*: `ChaosObjectStore` applies a
+   _The wrapper is landed on this branch_: `ChaosObjectStore` applies a
    `ChaosPolicy` (seeded-random error/lost-response/latency rates,
    scripted outage windows, composable) to every operation, with an
    `error-after` decision for the "upload landed, response lost" case the
@@ -302,6 +310,7 @@ Exit criteria: the gateway-boot tests from the design's Testing section
    through 30% upload errors + 20% lost responses. The process-kill
    orchestration and PG restart injection on a scratch stack remain (they
    need a running stack, which this environment cannot host).
+
 4. **Flux machinery** (fleet repo): the mode component/values conditional,
    pre-provisioned bucket + three-way IRSA, PrometheusRules per world,
    `prune`/`wait`/healthChecks, and the forward/rollback runbooks.
@@ -333,9 +342,19 @@ Everything this repository can carry is landed on this branch: M1, M2,
 M3, and M5 in full (with the deltas noted in each milestone's status
 block), plus M4's in-repo pieces — the drill tool (M4.1), the ledger
 workload and checker (M4.2), and the chaos `ObjectStore` wrapper
-(M4.3's wrapper). What remains needs infrastructure this environment
-does not have: the `.pg.test.ts` validation runs (CI has containers),
-the scratch-stack chaos orchestration and its first trigger-SQL run,
-the Flux machinery (fleet repo, M4.4), the flip drills (M4.5), and the
-follow-ups called out inline (the durable backfill progress mark, the
-fs-store CI drill, oracle layer 1 over producer bases).
+(M4.3's wrapper).
+
+The suites have been run against a real Postgres 16 (`wal_level=logical`,
+`TEST_PG_16=...`, which is the same escape hatch the dev container uses):
+`zero-cache/pg-16` and `zero-cache/no-pg` pass apart from tests that need
+IPv6, which the sandbox they ran in does not have. That run is what caught
+the two backfill regressions fixed above (the empty `ORDER BY` for a table
+with no row key, and the emission-order expectation in
+`change-source.backfill.pg.test.ts`), so ordered emission and resume are
+now validated against Postgres rather than only in unit tests.
+
+What remains needs infrastructure this environment does not have: the
+scratch-stack chaos orchestration, the Flux machinery (fleet repo, M4.4),
+the flip drills (M4.5), and the follow-ups called out inline (the durable
+backfill progress mark, the fs-store CI drill, oracle layer 1 over
+producer bases).

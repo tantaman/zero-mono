@@ -804,7 +804,10 @@ describe.each([
       ALTER TABLE published.late_pk ADD PRIMARY KEY (id);
       `,
       {
-        ['published.late_pk']: [{id: 'foo'}, {id: 'bar'}],
+        // Backfilled rows arrive in row-key order (rather than the order they
+        // were inserted upstream), which is what makes the last applied row a
+        // valid resumption point.
+        ['published.late_pk']: [{id: 'bar'}, {id: 'foo'}],
       },
       [
         {
