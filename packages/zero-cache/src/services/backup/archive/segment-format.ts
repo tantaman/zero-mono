@@ -59,6 +59,20 @@ const FORMAT_VERSION = 2;
 /** The current log segment format version, recorded in base manifests. */
 export const SEGMENT_FORMAT_VERSION = FORMAT_VERSION;
 const CHECKSUM_BYTES = 32;
+
+/**
+ * Change-stream messages are archived exactly as they arrive, and a change
+ * source may put more on the wire than the protocol schema names — the
+ * Postgres source's `begin`/`commit` carry `commitLsn`, `commitTime` and
+ * `xid`, which the applier reads. The wire parses downstream messages in
+ * `passthrough` mode (see `types/streams.ts`) for exactly that reason, and
+ * a replay is the same message reaching the same applier, so it must parse
+ * them the same way. Strict parsing here would reject every segment
+ * produced by a real Postgres upstream while accepting the synthetic
+ * messages tests construct. The segment's own header stays strict: that
+ * one is the archive's format, not the change source's.
+ */
+const MESSAGE_PARSE_MODE = 'passthrough' as const;
 const HEADER_BYTES = MAGIC.length + 1 + CHECKSUM_BYTES;
 
 const segmentHeaderSchema = v.object({
@@ -276,7 +290,12 @@ export function decodeSegment(data: Uint8Array): DecodedSegment {
   let current: SegmentTransaction | undefined;
   let last = header.start;
   for (let i = 1; i < lines.length; i++) {
-    const message = parseLine(lines[i], changeStreamDataSchema, `message ${i}`);
+    const message = parseLine(
+      lines[i],
+      changeStreamDataSchema,
+      `message ${i}`,
+      MESSAGE_PARSE_MODE,
+    );
     const [type] = message;
     if (type === 'begin') {
       if (current !== undefined) {
@@ -476,7 +495,12 @@ export async function* decodeSegmentFile(
       continue;
     }
     i++;
-    const message = parseLine(line, changeStreamDataSchema, `message ${i}`);
+    const message = parseLine(
+      line,
+      changeStreamDataSchema,
+      `message ${i}`,
+      MESSAGE_PARSE_MODE,
+    );
     const [type] = message;
     if (type === 'begin') {
       if (current !== undefined) {
@@ -681,6 +705,7 @@ function parseLine<T>(
   line: string | undefined,
   schema: v.Type<T>,
   what: string,
+  mode?: 'passthrough',
 ): T {
   let value: unknown;
   try {
@@ -689,7 +714,7 @@ function parseLine<T>(
     throw new SegmentFormatError(`segment ${what} is not JSON: ${e}`);
   }
   try {
-    return v.parse(value, schema);
+    return v.parse(value, schema, mode);
   } catch (e) {
     throw new SegmentFormatError(`invalid segment ${what}: ${e}`);
   }

@@ -40,6 +40,58 @@ describe('backup/archive/segment-format', () => {
     );
   });
 
+  // The Postgres change source puts more on the wire than the protocol
+  // schema names -- `commitLsn`, `commitTime` and `xid` on begin/commit --
+  // and the wire parses downstream messages in `passthrough` mode for that
+  // reason. A replay is the same message reaching the same applier, so the
+  // decoders must accept (and preserve) those fields. Strict parsing here
+  // rejected every segment a real Postgres upstream produced while happily
+  // accepting the synthetic messages the other tests construct, which is
+  // exactly why this one builds the wire shape by hand.
+  test('decodes a transaction carrying change-source fields the protocol schema does not name', () => {
+    const lines = [
+      JSON.stringify([
+        'begin',
+        {
+          tag: 'begin',
+          commitLsn: '00000000/01C1C250',
+          commitTime: 1788273980565832,
+          xid: 914,
+          json: 's',
+        },
+        {commitWatermark: '03'},
+      ]),
+      JSON.stringify([
+        'commit',
+        {
+          tag: 'commit',
+          flags: 0,
+          commitLsn: '00000000/01C1C250',
+          commitEndLsn: '00000000/01C1F280',
+          commitTime: 1788273980565832,
+          commitTimeMs: 1788273980565,
+        },
+        {watermark: '03'},
+      ]),
+    ];
+    const {data} = encodeSegmentRaw('02', '02', '03', 1, lines);
+
+    const decoded = decodeSegment(data);
+    expect(decoded.transactions).toHaveLength(1);
+    expect(decoded.transactions[0].watermark).toBe('03');
+    // The extra fields survive the round trip; the applier reads them.
+    expect(decoded.transactions[0].messages[0][1]).toMatchObject({
+      tag: 'begin',
+      commitLsn: '00000000/01C1C250',
+      xid: 914,
+    });
+    expect(decoded.transactions[0].messages[1][1]).toMatchObject({
+      tag: 'commit',
+      commitEndLsn: '00000000/01C1F280',
+      commitTimeMs: 1788273980565,
+    });
+  });
+
   test('rejects an empty segment', () => {
     expect(() =>
       encodeSegment({replicaVersion: '02', start: '02', transactions: []}),
@@ -226,6 +278,57 @@ describe('backup/archive/segment-format', () => {
       }
       return items;
     }
+
+    test('streams a transaction carrying unnamed change-source fields', async () => {
+      // The streaming decoder is the one tail replay runs on; see the
+      // in-memory counterpart above for why this shape is built by hand.
+      const lines = [
+        JSON.stringify([
+          'begin',
+          {
+            tag: 'begin',
+            commitLsn: '00000000/01C1C250',
+            commitTime: 1788273980565832,
+            xid: 914,
+            json: 's',
+          },
+          {commitWatermark: '03'},
+        ]),
+        JSON.stringify([
+          'commit',
+          {
+            tag: 'commit',
+            flags: 0,
+            commitLsn: '00000000/01C1C250',
+            commitEndLsn: '00000000/01C1F280',
+            commitTime: 1788273980565832,
+            commitTimeMs: 1788273980565,
+          },
+          {watermark: '03'},
+        ]),
+      ];
+      await sealRaw(
+        {
+          replicaVersion: '02',
+          start: '02',
+          end: '03',
+          txCount: 1,
+          firstCommitTimeMs: null,
+          lastCommitTimeMs: null,
+          part: null,
+        },
+        lines,
+      );
+
+      const items = await collectFile();
+      expect(items).toHaveLength(2);
+      expect(items.map(i => i.watermark)).toEqual(['03', '03']);
+      expect(items[0].message[1]).toMatchObject({tag: 'begin', xid: 914});
+      expect(items[1].message[1]).toMatchObject({
+        tag: 'commit',
+        commitEndLsn: '00000000/01C1F280',
+      });
+    });
 
     test('round-trips against the in-memory decoder and the streaming decoder', async () => {
       const txs = [tx('03'), tx('05', 3), tx('07', 0)];
