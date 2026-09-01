@@ -217,6 +217,20 @@ that resets. `--base-check-interval-seconds` and
 `--segment-seal-interval-seconds` are turned down from their production
 defaults (30s) so that a benchmark is not mostly sleep.
 
+### Decomposing a ceiling number
+
+```bash
+pnpm --filter zero-throughput run pipeline-cost
+```
+
+Micro-benchmarks for the per-change costs the path pays, so a rows/s number
+can be decomposed rather than guessed at: what a row costs going into a
+serving-shaped replica with nothing in the way, what one change costs on the
+wire (a framed message down plus the ack `consumed()` sends back, per
+change), and what the write worker's postMessage round trip costs -- one per
+change, strictly serialized -- against the same 20 changes sent as one
+message.
+
 ## Process Topologies: Single-Node vs. Distributed
 
 ### 1. Default Topology (`--topology single`)

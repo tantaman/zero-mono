@@ -22,7 +22,8 @@
     "fmt": "oxfmt .",
     "check-fmt": "oxfmt --check .",
     "ceiling": "node src/replication-ceiling.ts",
-    "ceiling:report": "node src/ceiling-report.ts"
+    "ceiling:report": "node src/ceiling-report.ts",
+    "pipeline-cost": "node src/pipeline-cost.ts"
   },
   "dependencies": {
     "@dotenvx/dotenvx": "^1.39.0",

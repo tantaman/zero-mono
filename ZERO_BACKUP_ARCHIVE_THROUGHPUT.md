@@ -234,8 +234,45 @@ The view-syncer's two threads each sit at ~0.42 cores and ping-pong:
 only one is in flight (`assert(this.#pending === null)`), so a 20-row
 transaction costs 22 round trips through structured clone. Only ~46% of one
 of those two threads is SQLite; the rest is the handoff and the stream
-plumbing. That is the biggest remaining lever on this path, and it is not
-archive-specific -- it is what a view-syncer costs in either world.
+plumbing. Because the two threads alternate, their per-row costs **add** to
+wall-clock time rather than overlapping -- which is why the process tops out
+at 0.89 cores with neither thread above ~0.45.
+
+### The per-row budget
+
+5290-5349 rows/s to one view-syncer is **187-189us per row**. Where it goes,
+from the profile shares above converted to us/row and cross-checked against
+direct micro-benchmarks (`pnpm --filter zero-throughput run pipeline-cost`):
+
+| per row                                            | us    | share | measured how                                              |
+| -------------------------------------------------- | ----- | ----- | --------------------------------------------------------- |
+| write-worker postMessage round trip                | 45-49 | ~25%  | direct probe; profile agrees (26 main + 21 worker)        |
+| SQLite statement execution                         | ~38   | ~20%  | 45.7% of the write-worker thread                          |
+| WS frame in + `consumed()` ack out, **per change** | 13-21 | ~9%   | direct probe (21.6us both ends); profile `consumed` 24.8% |
+| `BigIntJSON.parse` + valita validation             | ~14   | ~7%   | profile, 11.8% + 4.8% of the main thread                  |
+| change-processor bookkeeping, subscription, GC     | ~50   | ~27%  | remainder                                                 |
+
+And the floor underneath all of it: prepared inserts of the same rows into a
+table shaped like a replicated one, with `getPragmaConfig('serving')`
+pragmas, run at **10.5us per row -- 95,000 rows/s**. The applier's own SQLite
+work is 38us/row, 3.5x that, because it runs more statements per row than a
+bare insert (upsert plus the replica's change log), which is legitimate. But
+the pipeline as a whole delivers **1/18th of what the storage can absorb**,
+and only a fifth of its budget is spent in SQLite.
+
+**Flow control is not what is costing here.** With one subscriber the
+change-streamer's majority is one, and it only awaits subscriber progress
+every `getDefaultHighWaterMark(false)` = 64 KiB of change JSON -- about every
+190 changes, ~28 times a second at this rate. Everything in between is
+pipelined. Flow control was the story in the two-subscriber comparison, where
+the majority is two; at one subscriber the path simply runs at the
+consumer's speed, and the consumer's speed is the table above.
+
+**The unit of work is one change, everywhere.** One WebSocket frame down and
+one ack frame back per change (`streams.ts`), one structured-clone round trip
+to the write worker per change, one parse and one schema validation per
+change. A 20-row transaction pays all of that 22 times. That is what a 189us
+row is made of, and it is the same in either backup world.
 
 ## What the archive buys and costs
 
@@ -292,11 +329,14 @@ See `apps/zero-throughput/README.md` for the full option list.
 In the order the profiles rank them:
 
 1. **Batch the replicator's write-worker calls.** One strictly-serialized
-   postMessage round trip per change is ~31% of the replicator thread and
-   ~25% of the write-worker thread -- and once the archive gateway removes
-   the second subscriber, that replicator is the thing that saturates.
-   Passing a transaction's changes as one message would take most of it
-   back. Not archive-specific.
+   postMessage round trip per change is ~25% of the per-row budget, and once
+   the archive gateway removes the second subscriber, that replicator is the
+   thing that saturates. The same probe measures the alternative: 20 changes
+   in one message costs **6.7us per row against 48.8us**, so batching per
+   transaction is worth **~42us/row** -- around 6.8k rows/s from 5.3k, before
+   counting the pipelining it also unlocks (the main thread could parse the
+   next transaction while the worker writes this one, instead of the two
+   alternating). Not archive-specific.
 2. **The manager's per-transaction cost** (~0.6-1.2 ms) bounds
    transaction-bound workloads at ~1250 tx/s, with the change-streamer the
    busiest worker at 0.72 cores -- bound by serialized round trips, not
@@ -305,8 +345,14 @@ In the order the profiles rank them:
    timestamp conversion (it runs through `@google-cloud/precise-date`).
 4. **Per-change valita validation on the view-syncer** (4.8%) is paid on a
    stream the gateway already validated.
-5. **The segment append (7.7% of the gateway loop)** is the only
-   archive-specific item, and it is last for a reason.
+5. **Then the manager becomes the co-limiter.** Its change-streamer costs
+   0.69 cores at 5.3k rows/s -- ~130us/row, the same order as the applier --
+   and its own profile is the same story: framing, stringifying and
+   timestamp-converting one change at a time. Getting the path to
+   _vastly_ faster means making the wire unit a transaction on both ends,
+   not just on the view-syncer's thread hop.
+6. **The segment append (7.7% of the gateway loop)** is the only
+   archive-specific item on this list, and it is last for a reason.
 
 ## Caveats
 
