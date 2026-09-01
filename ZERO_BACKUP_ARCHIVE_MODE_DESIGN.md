@@ -213,7 +213,7 @@ backup: {
   base: {
     maxIntervalHours,          // primary cadence: one base per day (default 24)
     maxReplaySeconds,          // early trigger when tail replay would exceed budget
-    chunkBytes,
+    chunkBytes,                // default 64 MiB; deliberately NOT segmentTargetBytes
     integrityCheck: v.literalUnion('full', 'quick'),
   },
 
@@ -225,6 +225,19 @@ backup: {
   },
 }
 ```
+
+The two object sizes are independent knobs on purpose, because they are
+sized by different forces. **Log segments** (`segmentTargetBytes`, 16 MiB)
+are sized by latency: the durable cursor — and with it PG feedback — advances
+only when a segment uploads, so the seal size bounds archive lag, ACK lag,
+and WAL retention, and segments are also the streaming-replay read unit.
+**Base chunks** (`base.chunkBytes`, 64 MiB) sit on a path where no cursor
+waits on any single object: they are sized for bulk-transfer throughput on
+files that can reach hundreds of GiB — large enough to amortize per-request
+overhead and keep object counts sane (a 100 GiB base is ~1,600 chunks at
+64 MiB), small enough for retry granularity, pipelined download-during-upload
+on the accelerated path, and the O(chunkBytes × concurrency) memory bound on
+both sides. Tuning one must never drag the other along.
 
 ### Mode semantics
 

@@ -1250,7 +1250,9 @@ export const zeroOptions = {
       type: v.number().default(16 * 1024 * 1024),
       desc: [
         `The target (uncompressed) size at which an archive log segment is sealed`,
-        `and uploaded.`,
+        `and uploaded. Sized by latency — upstream ACKs advance only when a`,
+        `segment uploads — and deliberately independent of`,
+        `{bold --backup-base-chunk-bytes}, which is sized for bulk transfer.`,
       ],
       hidden: true,
     },
@@ -1288,7 +1290,10 @@ export const zeroOptions = {
       type: v.number().default(64 * 1024 * 1024),
       desc: [
         `The size of the chunks in which a SQLite base is uploaded to and`,
-        `downloaded from the archive.`,
+        `downloaded from the archive. Sized for bulk-transfer throughput on`,
+        `multi-GiB files (no cursor waits on any single chunk), and deliberately`,
+        `independent of {bold --backup-segment-target-bytes}, which is sized by`,
+        `ACK latency.`,
       ],
       hidden: true,
     },
