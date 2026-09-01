@@ -1,4 +1,4 @@
-import {existsSync, mkdtempSync, rmSync} from 'node:fs';
+import {existsSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {beforeEach, afterEach, describe, expect, test} from 'vitest';
@@ -12,9 +12,11 @@ import {
   getSubscriptionState,
   initReplicationState,
 } from '../../replicator/schema/replication-state.ts';
+import {iterateTransactions} from '../archive/archive-reader.ts';
 import {ArchiveWriter} from '../archive/archive-writer.ts';
-import {segmentKey} from '../archive/layout.ts';
+import {baseChunkKey, baseCompleteKey, segmentKey} from '../archive/layout.ts';
 import {publishBase} from '../base/base-publisher.ts';
+import {decodeBaseManifest} from '../base/manifest.ts';
 import {InMemoryObjectStore, WIRE_RELATION} from '../test-utils.ts';
 import {archiveRestore} from './archive-restore.ts';
 
@@ -75,12 +77,31 @@ describe('backup/restore/archive-restore', () => {
     key: {issueID},
   });
 
+  function historyTransactions(): {
+    watermark: string;
+    messages: ChangeStreamData[];
+  }[] {
+    return [
+      {
+        watermark: '03',
+        messages: transaction('03', insert('a', 'one'), insert('b', 'two')),
+      },
+      {watermark: '05', messages: transaction('05', insert('c', 'three'))},
+      {
+        watermark: '07',
+        messages: transaction('07', update('a', 'one-updated'), del('b')),
+      },
+      {watermark: '09', messages: transaction('09', insert('d', 'four'))},
+    ];
+  }
+
   async function streamHistoryThroughBase(): Promise<void> {
-    source.apply(transaction('03', insert('a', 'one'), insert('b', 'two')));
-    source.apply(transaction('05', insert('c', 'three')));
+    const [t03, t05, t07, t09] = historyTransactions();
+    source.apply(t03.messages);
+    source.apply(t05.messages);
     await source.publishBase(); // base at cursor '05'
-    source.apply(transaction('07', update('a', 'one-updated'), del('b')));
-    source.apply(transaction('09', insert('d', 'four')));
+    source.apply(t07.messages);
+    source.apply(t09.messages);
     await source.flushArchive();
   }
 
@@ -251,6 +272,78 @@ describe('backup/restore/archive-restore', () => {
       }),
     ).toBe('invalid_replica');
     expect(existsSync(restoreFile)).toBe(false);
+  });
+
+  /**
+   * The cursor-aligned determinism layer of the oracle (see "Testing" in
+   * ZERO_BACKUP_ARCHIVE_MODE_DESIGN.md): a published base plus the archived
+   * tail replayed to a commit watermark must be logically identical to an
+   * independent application of the same history through that watermark —
+   * at EVERY transaction boundary, not just the end state.
+   */
+  test('oracle: base + tail matches independent application at every transaction boundary', async () => {
+    await streamHistoryThroughBase(); // base at '05'; tail '07', '09'
+    const manifest = decodeBaseManifest(
+      await store.get(baseCompleteKey('02', '05')),
+    );
+
+    for (const upTo of ['05', '07', '09']) {
+      // Subject: reassemble the published base's chunks, then replay the
+      // archived tail through the real applier, stopping at the boundary.
+      const subjectFile = join(dir, `oracle-subject-${upTo}.db`);
+      const chunks: Buffer[] = [];
+      for (let i = 0; i < manifest.chunks.length; i++) {
+        chunks.push(Buffer.from(await store.get(baseChunkKey('02', '05', i))));
+      }
+      writeFileSync(subjectFile, Buffer.concat(chunks));
+      const subject = new Database(lc, subjectFile);
+      const referenceFile = join(dir, `oracle-reference-${upTo}.db`);
+      const reference = new Database(lc, referenceFile);
+      try {
+        const processor = new ChangeProcessor(
+          new StatementRunner(subject),
+          'backup',
+          (_, err) => {
+            throw err;
+          },
+        );
+        for await (const tx of iterateTransactions(store, '02', '05', upTo)) {
+          for (const message of tx.messages) {
+            processor.processMessage(lc, message);
+          }
+        }
+
+        // Reference: a fresh replica applying the same history through the
+        // same boundary, never having seen the archive.
+        initReplicationState(reference, ['zero_data'], '02');
+        reference.exec(
+          `CREATE TABLE issues(issueID TEXT PRIMARY KEY, val TEXT, _0_version TEXT)`,
+        );
+        const referenceProcessor = new ChangeProcessor(
+          new StatementRunner(reference),
+          'backup',
+          (_, err) => {
+            throw err;
+          },
+        );
+        for (const tx of historyTransactions()) {
+          if (tx.watermark > upTo) {
+            break;
+          }
+          for (const message of tx.messages) {
+            referenceProcessor.processMessage(lc, message);
+          }
+        }
+
+        expect(getSubscriptionState(new StatementRunner(subject))).toEqual(
+          getSubscriptionState(new StatementRunner(reference)),
+        );
+        expect(rows(subject)).toEqual(rows(reference));
+      } finally {
+        subject.close();
+        reference.close();
+      }
+    }
   });
 
   test('without constraints, restores the newest lineage', async () => {

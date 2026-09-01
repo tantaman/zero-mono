@@ -560,10 +560,11 @@ for all of it.
 2. **Archive writer.** Wired into the change-streamer as a fail-stall
    consumer, with the health metrics: contiguous durable archive cursor,
    cursor lag, buffered/spooled bytes.
-3. **Archive reader + restore + drill tooling.** `ArchiveChangeSource`,
-   `archiveRestore`, and a drill/compare tool that restores into a scratch
-   path and diffs logical content against a reference replica — mirror the
-   `sqlite-change-log-comparator` pattern.
+3. **Archive reader + restore + oracle tooling.** `ArchiveChangeSource`,
+   `archiveRestore`, and the oracle (see Testing): the cursor-aligned
+   determinism layer as vitest, and the drill/compare tool that restores
+   into a scratch path and runs the convergence layer against a reference
+   replica — mirror the `sqlite-change-log-comparator` pattern.
 4. **Streaming retrofit.** Replace the writer's in-memory open segment and
    upload queue with the disk spool (truncate-on-rollback, streaming
    checksum, streaming/multipart upload), add `getStream`/`putStream` to the
@@ -579,10 +580,12 @@ for all of it.
    advertising, the view-syncer restore selection, purge-floor rekeying, and
    the archive-mode process tree (no backup-replicator, no litestream, plus
    the producer worker). This completes mode `archive` as a whole world.
-7. **Flux machinery + flip runbook.** The one-value overlay, pre-provisioned
-   bucket/IAM, mode-aware alerts, and the forward/rollback runbooks,
-   exercised end to end on a scratch stack (flip forward, flip back) before
-   any real stack flips.
+7. **Chaos harness + Flux machinery + flip runbook.** The ledger workload
+   and kill matrix (see Testing) run against a scratch stack with the oracle
+   as judge; then the one-value overlay, pre-provisioned bucket/IAM,
+   mode-aware alerts, and the forward/rollback runbooks, exercised end to
+   end on that same stack (flip forward, flip back, under chaos) before any
+   real stack flips.
 8. **Convergence metrics** (`zero_apply_*`). Orthogonal to the mode flag and
    valuable on their own; the replicator already threads
    `upstreamCommitTimeMs` through version-ready notifications for lag
@@ -663,6 +666,67 @@ committed stream is already correct.
 
 ## Testing
 
+### The oracle: replicas match Postgres at transaction boundaries
+
+The correctness claim of the whole design is that every materialization —
+the producer's working file, a published base, a base + tail restore, a
+serving follower — is the deterministic image of Postgres **at a commit
+boundary**. The oracle makes that claim executable, in three layers that
+need progressively more infrastructure:
+
+1. **Cursor-aligned determinism (no Postgres needed).** Any two
+   materializations at the same commit watermark must be logically
+   identical: a reassembled base at cursor C, a base + tail replay stopped
+   at C, a follower paused at C, an independent application of the same
+   envelope history through C. This checks the applier/archive path —
+   transaction atomicity at every boundary, no partial or duplicated
+   application — and runs as a plain vitest over the fs store.
+2. **In-transaction ledger invariants (checkable at any boundary, no
+   historical Postgres snapshots).** The chaos workload maintains, inside
+   each Postgres transaction, a ledger row per table (row count and an
+   order-independent content hash). Postgres cannot be queried "as of" an
+   old commit, but any replica at any commit watermark must be
+   self-consistent: the ledger rows it carries must match aggregates
+   recomputed over its own data. A torn transaction, a skipped envelope,
+   or a mis-ordered apply shows up at the exact boundary it happened.
+3. **End-state convergence against Postgres.** At quiesce points the
+   workload stops, everything drains to one watermark, and normalized
+   logical dumps (ordered rows, pg→lite type mapping applied, replica-only
+   columns such as `_0_version` excluded) are diffed between Postgres and
+   every replica. This is the drill tool's comparator, in the mold of
+   `sqlite-change-log-comparator`.
+
+`apps/zero-throughput` is the natural home for the workload driver; the
+drill/compare tool from delivery step 3 is the oracle's first consumer.
+
+### Chaos: flex recovery and reconnect with the oracle as judge
+
+Chaos runs are the oracle under fault injection: a continuous workload, a
+fault schedule, and the oracle's three layers as the only pass/fail
+criterion. The kill matrix, each entry exercised repeatedly at randomized
+timing:
+
+- **Gateway**: mid-transaction (the abort/rollback path), mid-segment-seal,
+  between upload and ACK (the deterministic-name idempotent-retry path),
+  during reconcile; plus repeated stream interrupts to flex replay
+  filtering.
+- **Producer**: at every publication boundary (intent, chunk, manifest),
+  mid-apply with the journal-off file (must discard-and-rebuild, never
+  resume in place), and during an accelerated live-base upload with a
+  restorer mid-download (restorer must fall back to the last complete base).
+- **Consumers**: mid-restore (chunk downloads in flight), mid-tail-replay,
+  mid-catchup — restart must converge with no operator input.
+- **S3**: error injection, latency injection, sustained outage — fail-stall
+  must hold (ACKs stop, WAL-retention alerts fire, spool stays bounded on
+  disk), and recovery must resume with zero gaps.
+- **Postgres**: restarts and slot disconnects — reconnect resumes from the
+  ACK floor and the replay filter dedups; the ledger oracle proves nothing
+  was double- or half-applied.
+- **The flip**: forward and rollback under load, ending in a quiesce +
+  layer-3 convergence check in the target world.
+
+### The rest of the pyramid
+
 - Unit: segment format round-trip, corruption/gap/overlap rejection, manifest
   discipline, GC cutoff computation.
 - Integration (fs object store): full loop — apply-and-archive a stream
@@ -672,8 +736,8 @@ committed stream is already correct.
   pointer), unclean builder shutdown, and restore fallback with the live
   producer failed mid-upload, per the exit criteria.
 - Restore drills on a schedule in the archive world: the drill tool from
-  step 3 restoring into a scratch path and diffing against a live consumer —
-  this replaces the confidence a dual run would have provided.
+  step 3 restoring into a scratch path and running the oracle against a live
+  consumer — this replaces the confidence a dual run would have provided.
 - Gateway boot: cold-start the RM with no replica file against a populated
   archive and change DB, and against an empty bucket (producer genesis),
   asserting identical streaming behavior in both.
@@ -687,7 +751,8 @@ committed stream is already correct.
   discipline, and the regression guard that keeps a transaction-sized buffer
   from ever creeping back in.
 - The existing `.pg.test.ts` multi-config vitest setup covers the
-  PG-integration variants; no new test infrastructure is needed.
+  PG-integration variants; the chaos harness is the one genuinely new piece
+  of test infrastructure.
 
 ## Rollout: one value per stack, reconciled by Flux
 
