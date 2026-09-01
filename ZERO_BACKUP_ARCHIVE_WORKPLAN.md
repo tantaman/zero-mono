@@ -446,9 +446,21 @@ process startup order. All four defects were on the happy path:
   post-handoff bookkeeping had no test, which is where the `replicas` bug
   was. Closed by `change-source.archive-genesis.pg.test.ts`.
 
+- **Nothing compared the two appliers.** Every check was structural (does a
+  segment decode) or one-sided (does the restored replica hold the expected
+  rows); no test asserted that a replica rebuilt from base + log agrees with
+  one the applier built from the change stream. That is the only shape that
+  catches a *silently wrong value*, which is what the bigint rounding was.
+  Closed by the second test in `archive-round-trip.pg.test.ts`, which drives
+  both sides from one real stream and uses `runArchiveDrill` as the
+  comparator — giving the drill its first run over anything but synthetic
+  fixtures.
+
 The generalizable lesson is fixture fidelity: a suite built from
 schema-declared fields cannot see anything that depends on what the change
-source actually emits, and it stays green while doing so.
+source actually emits, and it stays green while doing so. The corollary is
+that structural tests cannot catch value corruption; only a comparison
+against an independently-built replica can.
 
 ### Still outstanding
 
@@ -457,3 +469,10 @@ scratch-stack chaos orchestration, the Flux machinery (fleet repo, M4.4),
 the flip drills (M4.5), and the follow-ups called out inline (the fs-store
 CI drill, oracle layer 1 over producer bases). The zbugs run above is
 single-node and hand-driven; it is not a substitute for the CI drill.
+
+Note also that archive-mode genesis costs up to
+`--backup-base-check-interval-seconds` (default 30) of dead wait on a cold
+boot: the producer checks for a lineage, finds the archive empty because the
+gateway has not posted its offer yet, and sleeps a full interval before
+looking again. The flag makes that tunable; whether the default should drop,
+or the pre-genesis case should poll faster, is still open.
