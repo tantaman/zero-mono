@@ -37,7 +37,15 @@ import {
 } from '../../../../zql/src/ivm/source.ts';
 import type {Stream} from '../../../../zql/src/ivm/stream.ts';
 import type {ConnectionCostModel} from '../../../../zql/src/planner/planner-connection.ts';
+import type {
+  PlanWarning,
+  PlanWarningThresholds,
+} from '../../../../zql/src/planner/planner-warnings.ts';
 import {MeasurePushOperator} from '../../../../zql/src/query/measure-push-operator.ts';
+import type {
+  MetricMap,
+  MetricsDelegate,
+} from '../../../../zql/src/query/metrics-delegate.ts';
 import type {ClientGroupStorage} from '../../../../zqlite/src/database-storage.ts';
 import type {Database} from '../../../../zqlite/src/db.ts';
 import {
@@ -54,6 +62,7 @@ import {
 import type {LogConfig, ZeroConfig} from '../../config/zero-config.ts';
 import {computeZqlSpecs, mustGetTableSpec} from '../../db/lite-tables.ts';
 import type {LiteAndZqlSpec, LiteTableSpec} from '../../db/specs.ts';
+import {LogThrottle} from '../../observability/log-throttle.ts';
 import {
   getOrCreateCounter,
   getOrCreateLatencyHistogram,
@@ -66,6 +75,8 @@ import {
   ZERO_VERSION_COLUMN_NAME,
 } from '../replicator/schema/replication-state.ts';
 import {checkClientSchema} from './client-schema.ts';
+import {planWarningMessage} from './plan-warnings.ts';
+import {queryShape} from './query-shape.ts';
 import {rowIDSignatureUnit} from './row-set-signature.ts';
 import type {Snapshotter} from './snapshotter.ts';
 import {ResetPipelinesSignal, type SnapshotDiff} from './snapshotter.ts';
@@ -96,6 +107,8 @@ type Pipeline = {
   readonly input: Input;
   readonly hydrationTimeMs: number;
   readonly hydrationRowCount: number;
+  readonly hydrationRowsRead: number;
+  readonly planWarnings: readonly PlanWarning[];
   readonly hydrationReason: PipelineHydrationReason;
   readonly pipelineRunID: string;
   readonly pipelineReadyAtMs: number;
@@ -111,6 +124,20 @@ export type QueryInfo = {
   readonly originalAst?: AST | undefined;
   readonly transformationHash: string;
   readonly queryName?: string | undefined;
+};
+
+export type HydrationStats = {
+  /** The rows the hydration output. */
+  readonly rowCount: number;
+  /**
+   * The rows the hydration read from the replica, including rows that were
+   * then filtered out, e.g. by a filter that could not be pushed to SQLite or
+   * by an EXISTS that did not match. Much greater than {@link rowCount} means
+   * the query does a lot of work for the rows it returns.
+   */
+  readonly rowsRead: number;
+  /** What the planner warned about the plan it chose for the query. */
+  readonly planWarnings: readonly PlanWarning[];
 };
 
 type QueryLogInfo = {
@@ -146,6 +173,7 @@ type QueryPipelineLifecycleLog = {
   readonly stopReason?: PipelineStopReason | undefined;
   readonly hydrationTimeMs?: number | undefined;
   readonly hydrationRowCount?: number | undefined;
+  readonly hydrationRowsRead?: number | undefined;
   readonly pipelineLifetimeMs?: number | undefined;
 };
 
@@ -155,7 +183,25 @@ type AdvanceContext = {
   readonly numChanges: number;
   currentChangeStartMs: number | undefined;
   pos: number;
+  /** The table of the change being pushed. */
+  currentTable: string | undefined;
+  /** The processing time of each query's pushes, by query ID. */
+  readonly queryStats: Map<string, QueryAdvanceStats>;
 };
+
+type QueryAdvanceStats = {
+  /** The time spent processing pushes to the query. */
+  timeMs: number;
+  /** The number of changes pushed to the query. */
+  changes: number;
+  /** The position of the last change pushed to the query. */
+  lastPos: number;
+  /** {@link timeMs} by the table of the change pushed. */
+  readonly timeMsByTable: Map<string, number>;
+};
+
+/** The most queries a log of an advancement timeout lists. */
+const ADVANCE_TIMEOUT_LOG_MAX_QUERIES = 3;
 
 type HydrateContext = {
   readonly timer: Timer;
@@ -178,6 +224,30 @@ const MIN_PROJECTED_ADVANCEMENT_SAMPLE_MS = 5;
 const MIN_PROJECTED_ADVANCEMENT_CHANGES = 16;
 const PROJECTED_ADVANCEMENT_RESET_MULTIPLIER = 1.5;
 const LATE_ADVANCEMENT_FINISH_PROGRESS = 0.8;
+
+/**
+ * The planner warns about a query each time it is planned, i.e. for every
+ * client group that hydrates it, and the warnings only change when the data
+ * does. So they are logged at most once per query shape per this window,
+ * per process.
+ */
+const PLAN_WARNING_LOG_WINDOW_MS = 60 * 60_000;
+
+// Shared by all PipelineDrivers in the process, so that a query shape is
+// throttled across client groups.
+const planWarningLogThrottle = new LogThrottle({
+  windowMs: PLAN_WARNING_LOG_WINDOW_MS,
+});
+
+/**
+ * Slow advancements of a query shape, and advancement timeouts led by it,
+ * are logged at most once per this window per process.
+ */
+const SLOW_ADVANCE_LOG_WINDOW_MS = 5 * 60_000;
+
+const slowAdvanceLogThrottle = new LogThrottle({
+  windowMs: SLOW_ADVANCE_LOG_WINDOW_MS,
+});
 
 function randomID() {
   return randInt(1, Number.MAX_SAFE_INTEGER).toString(36);
@@ -277,6 +347,7 @@ export class PipelineDriver {
   readonly #tableSpecs = new Map<string, LiteAndZqlSpec>();
   readonly #allTableNames = new Set<string>();
   readonly #costModels: WeakMap<Database, ConnectionCostModel> | undefined;
+  readonly #planWarningThresholds: PlanWarningThresholds | undefined;
   readonly #yieldThresholdMs: () => number;
   #streamer: Streamer | null = null;
   #hydrateContext: HydrateContext | null = null;
@@ -299,6 +370,23 @@ export class PipelineDriver {
 
   readonly #inspectorDelegate: InspectorDelegate;
 
+  /**
+   * Passes the pipelines' metrics on to the inspector, and accounts the time
+   * spent pushing to each query to the advancement in progress.
+   */
+  readonly #metricsDelegate: MetricsDelegate = {
+    addMetric: <K extends keyof MetricMap>(
+      metric: K,
+      value: number,
+      ...args: MetricMap[K]
+    ) => {
+      this.#inspectorDelegate.addMetric(metric, value, ...args);
+      if (metric === 'query-update-server') {
+        this.#recordAdvancePush(args[0], value);
+      }
+    },
+  };
+
   constructor(
     lc: LogContext,
     logConfig: LogConfig,
@@ -319,6 +407,14 @@ export class PipelineDriver {
     this.#config = config;
     this.#inspectorDelegate = inspectorDelegate;
     this.#costModels = enablePlanner ? new WeakMap() : undefined;
+    const planWarningThresholds = {
+      rows: logConfig.planWarningRowThreshold,
+      cost: logConfig.planWarningCostThreshold,
+    };
+    this.#planWarningThresholds =
+      planWarningThresholds.rows > 0 || planWarningThresholds.cost > 0
+        ? planWarningThresholds
+        : undefined;
     this.#yieldThresholdMs = yieldThresholdMs;
   }
 
@@ -484,6 +580,65 @@ export class PipelineDriver {
     return this.#pipelines;
   }
 
+  /**
+   * Stats from the hydration of the pipeline for `queryID`, or `undefined` if
+   * the query has no pipeline.
+   */
+  hydrationStats(queryID: string): HydrationStats | undefined {
+    const pipeline = this.#pipelines.get(queryID);
+    return pipeline
+      ? {
+          rowCount: pipeline.hydrationRowCount,
+          rowsRead: pipeline.hydrationRowsRead,
+          planWarnings: pipeline.planWarnings,
+        }
+      : undefined;
+  }
+
+  /**
+   * Logs what the planner warned about the plan it chose for `query`, at
+   * most once per query shape per {@link PLAN_WARNING_LOG_WINDOW_MS}.
+   */
+  #logPlanWarnings(
+    query: AST,
+    {queryHash, transformationHash, queryName}: QueryLogInfo,
+    warnings: readonly PlanWarning[],
+  ): void {
+    if (!this.#lc.warn) {
+      return;
+    }
+    const shape = queryShape(query);
+    const suppressed = planWarningLogThrottle.admit(
+      `${queryName ?? ''}:${shape.hash}`,
+    );
+    if (suppressed === undefined) {
+      return;
+    }
+    const messages = warnings.map(planWarningMessage);
+    this.#lc.warn(
+      `Query plan warning${queryName === undefined ? '' : ` for ${queryName}`}: ` +
+        messages.join(' '),
+      {
+        zeroEvent: 'query-plan-warning',
+        queryHash,
+        transformationHash,
+        ...(queryName !== undefined && {queryName}),
+        queryShape: shape.hash,
+        warnings,
+        ...(suppressed > 0 && {suppressedSinceLastLog: suppressed}),
+        zql: shape.zql,
+      },
+    );
+  }
+
+  #totalRowsRead(): number {
+    let total = 0;
+    for (const table of this.#tables.values()) {
+      total += table.rowsRead;
+    }
+    return total;
+  }
+
   totalHydrationTimeMs(): number {
     let total = 0;
     for (const pipeline of this.#pipelines.values()) {
@@ -502,6 +657,7 @@ export class PipelineDriver {
     stopReason,
     hydrationTimeMs,
     hydrationRowCount,
+    hydrationRowsRead,
     pipelineLifetimeMs,
   }: QueryPipelineLifecycleLog): void {
     let lc = this.#lc
@@ -523,6 +679,9 @@ export class PipelineDriver {
     }
     if (hydrationRowCount !== undefined) {
       lc = lc.withContext('hydrationRowCount', hydrationRowCount);
+    }
+    if (hydrationRowsRead !== undefined) {
+      lc = lc.withContext('hydrationRowsRead', hydrationRowsRead);
     }
     if (pipelineLifetimeMs !== undefined) {
       lc = lc.withContext('pipelineLifetimeMs', pipelineLifetimeMs);
@@ -696,9 +855,15 @@ export class PipelineDriver {
     this.#hydrateContext = {
       timer,
     };
+    // Hydration has the driver to itself, so the rows read by all of its
+    // tables in the meantime are the rows read by this hydration. Tables
+    // added by the hydration start from zero, which this also accounts for.
+    const rowsReadAtStart = this.#totalRowsRead();
     let hydrationFinished = false;
     let hydrationFailed = false;
     let hydrationRowCount = 0;
+    let planWarnings: readonly PlanWarning[] = [];
+    const planWarningThresholds = this.#planWarningThresholds;
     // The inputs built so far, held outside the try so that a hydration that
     // does not finish (aborted by the consumer or failed) can tear them down.
     // Only a finished hydration hands them over to #pipelines.
@@ -736,17 +901,30 @@ export class PipelineDriver {
                 queryName,
               ),
               queryID,
-              this.#inspectorDelegate,
+              this.#metricsDelegate,
               'query-update-server',
             ),
           decorateInput: input => input,
           addEdge() {},
           decorateFilterInput: input => input,
+          planWarnings: planWarningThresholds && {
+            thresholds: planWarningThresholds,
+            report: warnings => {
+              planWarnings = warnings;
+            },
+          },
         },
         queryID,
         costModel,
       );
       builtInputs.push(input);
+      if (planWarnings.length > 0) {
+        this.#logPlanWarnings(
+          query,
+          {queryHash: queryID, transformationHash, queryName},
+          planWarnings,
+        );
+      }
       const schema = input.getSchema();
       input.setOutput({
         push: change => this.#streamPushed(queryID, schema, change),
@@ -777,6 +955,7 @@ export class PipelineDriver {
       }
 
       const hydrationTimeMs = timer.totalElapsed();
+      const hydrationRowsRead = this.#totalRowsRead() - rowsReadAtStart;
       if (runtimeDebugFlags.trackRowCountsVended) {
         if (hydrationTimeMs > this.#logConfig.slowHydrateThreshold) {
           let totalRowsConsidered = 0;
@@ -842,6 +1021,8 @@ export class PipelineDriver {
         input,
         hydrationTimeMs,
         hydrationRowCount,
+        hydrationRowsRead,
+        planWarnings,
         hydrationReason,
         pipelineRunID,
         pipelineReadyAtMs,
@@ -861,6 +1042,7 @@ export class PipelineDriver {
         hydrationReason,
         hydrationTimeMs,
         hydrationRowCount,
+        hydrationRowsRead,
       });
     } catch (e) {
       hydrationFailed = true;
@@ -1049,13 +1231,16 @@ export class PipelineDriver {
       'Cannot advance while hydration is in progress',
     );
     const totalHydrationTimeMs = this.totalHydrationTimeMs();
-    this.#advanceContext = {
+    const advanceContext: AdvanceContext = {
       timer,
       totalHydrationTimeMs,
       numChanges,
       currentChangeStartMs: undefined,
       pos: 0,
+      currentTable: undefined,
+      queryStats: new Map(),
     };
+    this.#advanceContext = advanceContext;
     this.#lc.debug?.(
       `starting pipeline advancement of ${numChanges} changes with an ` +
         `advancement time limited based on total hydration time of ` +
@@ -1071,8 +1256,8 @@ export class PipelineDriver {
           yield 'yield';
         }
         const start = timer.totalElapsed();
-        const advanceContext = must(this.#advanceContext);
         advanceContext.currentChangeStartMs = start;
+        advanceContext.currentTable = table;
 
         try {
           try {
@@ -1137,9 +1322,159 @@ export class PipelineDriver {
       }
       this.#ensureCostModelExistsIfEnabled(curr.db.db);
       this.#lc.debug?.(`Advanced to ${curr.version}`);
+      this.#logSlowAdvances(advanceContext);
+    } catch (e) {
+      if (
+        e instanceof ResetPipelinesSignal &&
+        e.reason === 'advancement-timeout'
+      ) {
+        this.#logAdvanceTimeout(advanceContext, e);
+      }
+      throw e;
     } finally {
       this.#advanceContext = null;
     }
+  }
+
+  #recordAdvancePush(queryID: string, timeMs: number): void {
+    const advance = this.#advanceContext;
+    if (advance === null) {
+      return;
+    }
+    const stats = getOrInsertComputed(advance.queryStats, queryID, () => ({
+      timeMs: 0,
+      changes: 0,
+      lastPos: -1,
+      timeMsByTable: new Map(),
+    }));
+    stats.timeMs += timeMs;
+    if (stats.lastPos !== advance.pos) {
+      stats.lastPos = advance.pos;
+      stats.changes++;
+    }
+    const table = advance.currentTable;
+    if (table !== undefined) {
+      stats.timeMsByTable.set(
+        table,
+        (stats.timeMsByTable.get(table) ?? 0) + timeMs,
+      );
+    }
+  }
+
+  /**
+   * The identity of the query of the pipeline for `queryID` and its
+   * {@link queryShape}, for logging.
+   */
+  #queryForLog(queryID: string) {
+    const pipeline = this.#pipelines.get(queryID);
+    if (pipeline === undefined) {
+      return undefined;
+    }
+    const {transformationHash, queryName, originalAst} = pipeline;
+    const shape = queryShape(originalAst);
+    return {
+      queryName,
+      shape,
+      fields: {
+        queryHash: queryID,
+        transformationHash,
+        ...(queryName !== undefined && {queryName}),
+        queryShape: shape.hash,
+      },
+    };
+  }
+
+  /**
+   * Logs each query whose pushes took longer than the slow advance
+   * threshold, at most once per query shape per
+   * {@link SLOW_ADVANCE_LOG_WINDOW_MS}.
+   */
+  #logSlowAdvances({queryStats, numChanges}: AdvanceContext): void {
+    if (!this.#lc.warn) {
+      return;
+    }
+    for (const [queryID, stats] of queryStats) {
+      if (stats.timeMs <= this.#logConfig.slowAdvanceThreshold) {
+        continue;
+      }
+      const query = this.#queryForLog(queryID);
+      if (query === undefined) {
+        continue;
+      }
+      const suppressed = slowAdvanceLogThrottle.admit(
+        `${query.queryName ?? ''}:${query.shape.hash}`,
+      );
+      if (suppressed === undefined) {
+        continue;
+      }
+      this.#lc.warn(
+        `Slow query advancement${query.queryName === undefined ? '' : ` for ${query.queryName}`}: ` +
+          `${Math.round(stats.timeMs)} ms for ${stats.changes} of ${numChanges} changes`,
+        {
+          zeroEvent: 'query-slow-advance',
+          ...query.fields,
+          advanceTimeMs: stats.timeMs,
+          changes: stats.changes,
+          advancementChanges: numChanges,
+          timeMsByTable: Object.fromEntries(stats.timeMsByTable),
+          ...(suppressed > 0 && {suppressedSinceLastLog: suppressed}),
+          zql: query.shape.zql,
+        },
+      );
+    }
+  }
+
+  /**
+   * Logs the queries that took the most time in an advancement that timed
+   * out, since the reset that follows would otherwise not say what was slow.
+   * Throttled per query shape of the slowest query.
+   */
+  #logAdvanceTimeout(
+    {queryStats, numChanges}: AdvanceContext,
+    reset: ResetPipelinesSignal,
+  ): void {
+    if (!this.#lc.warn) {
+      return;
+    }
+    const slowest = [...queryStats]
+      .toSorted(([, a], [, b]) => b.timeMs - a.timeMs)
+      .slice(0, ADVANCE_TIMEOUT_LOG_MAX_QUERIES)
+      .flatMap(([queryID, stats]) => {
+        const query = this.#queryForLog(queryID);
+        return query ? [{query, stats}] : [];
+      });
+    if (slowest.length === 0) {
+      return;
+    }
+    const suppressed = slowAdvanceLogThrottle.admit(
+      `timeout:${slowest[0].query.queryName ?? ''}:${slowest[0].query.shape.hash}`,
+    );
+    if (suppressed === undefined) {
+      return;
+    }
+    const summary = slowest
+      .map(
+        ({query, stats}) =>
+          `${query.queryName ?? query.fields.queryHash} (${Math.round(stats.timeMs)} ms)`,
+      )
+      .join(', ');
+    this.#lc.warn(
+      `Advancement of ${numChanges} changes timed out. ` +
+        `The queries that took the most time: ${summary}`,
+      {
+        zeroEvent: 'query-advance-timeout',
+        // Says where the advancement was when it timed out.
+        reason: reset.message,
+        advancementChanges: numChanges,
+        queries: slowest.map(({query, stats}) => ({
+          ...query.fields,
+          advanceTimeMs: stats.timeMs,
+          changes: stats.changes,
+          zql: query.shape.zql,
+        })),
+        ...(suppressed > 0 && {suppressedSinceLastLog: suppressed}),
+      },
+    );
   }
 
   /** Implements `BuilderDelegate.getSource()` */
