@@ -109,6 +109,15 @@ export interface BuilderDelegate {
    */
   createStorage(name: string): Storage;
 
+  /**
+   * When true, Join and FlippedJoin keep their index of output parent rows in
+   * heap maps instead of in {@link createStorage} storage. Set this when that
+   * storage is in memory anyway (e.g. `MemoryStorage`): the maps use about the
+   * same memory and are several times cheaper to update than a sorted
+   * Storage, which hydration pays for on every parent row.
+   */
+  readonly heapJoinIndex?: boolean | undefined;
+
   decorateInput(input: Input, name: string): Input;
 
   addEdge(source: InputBase, dest: InputBase): void;
@@ -603,7 +612,9 @@ function applyFilterWithFlips(
         system: sq.system ?? 'client',
         parentPartitionKey,
         boundProvider,
-        storage: delegate.createStorage(flippedJoinName),
+        storage: delegate.heapJoinIndex
+          ? undefined
+          : delegate.createStorage(flippedJoinName),
       });
       delegate.addEdge(end, flippedJoin);
       delegate.addEdge(child, flippedJoin);
@@ -779,7 +790,9 @@ function applyCorrelatedSubQuery(
     system: sq.system ?? 'client',
     parentPartitionKey: fromCondition ? undefined : parentPartitionKey,
     boundProvider,
-    storage: delegate.createStorage(joinName),
+    storage: delegate.heapJoinIndex
+      ? undefined
+      : delegate.createStorage(joinName),
   });
   delegate.addEdge(end, join);
   delegate.addEdge(child, join);

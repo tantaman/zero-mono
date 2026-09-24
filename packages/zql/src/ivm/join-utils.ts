@@ -5,6 +5,7 @@ import {ChangeIndex} from './change-index.ts';
 import {ChangeType} from './change-type.ts';
 import type {Change} from './change.ts';
 import {compareValues, valuesEqual, type Node} from './data.ts';
+import type {Storage} from './operator.ts';
 import type {SourceSchema} from './schema.ts';
 import type {Stream} from './stream.ts';
 
@@ -410,6 +411,180 @@ export type MatchingParentEntry = {
   pks: Set<string>;
   partitionConstraint?: Record<string, Value | undefined> | undefined;
 };
+
+/**
+ * The parent rows a join has output, indexed by join key (and partition), so
+ * that a child change which joins to none of them can be dropped without
+ * fetching parents.
+ */
+export interface JoinIndex {
+  add(parentRow: Row): void;
+  remove(parentRow: Row): void;
+  /**
+   * The indexed parents that join to `childRow`, grouped by partition, or
+   * `undefined` if there are none.
+   */
+  getMatchingParentEntries(childRow: Row): MatchingParentEntry[] | undefined;
+}
+
+/**
+ * Creates the index for a join. With `storage` the index lives in operator
+ * storage, which keeps it off the JS heap on the server. Without it the index
+ * is kept in heap maps, which is several times cheaper to update than a sorted
+ * in-memory Storage and uses about the same memory.
+ */
+export function makeJoinIndex(
+  storage: Storage | undefined,
+  parentKey: CompoundKey,
+  childKey: CompoundKey,
+  primaryKey: CompoundKey,
+  parentPartitionKey: CompoundKey | undefined,
+): JoinIndex {
+  return storage
+    ? new StorageJoinIndex(
+        storage as unknown as JoinStorage,
+        parentKey,
+        childKey,
+        primaryKey,
+        parentPartitionKey,
+      )
+    : new MemoryJoinIndex(parentKey, childKey, primaryKey, parentPartitionKey);
+}
+
+class StorageJoinIndex implements JoinIndex {
+  readonly #storage: JoinStorage;
+  readonly #parentKey: CompoundKey;
+  readonly #childKey: CompoundKey;
+  readonly #primaryKey: CompoundKey;
+  readonly #parentPartitionKey: CompoundKey | undefined;
+
+  constructor(
+    storage: JoinStorage,
+    parentKey: CompoundKey,
+    childKey: CompoundKey,
+    primaryKey: CompoundKey,
+    parentPartitionKey: CompoundKey | undefined,
+  ) {
+    this.#storage = storage;
+    this.#parentKey = parentKey;
+    this.#childKey = childKey;
+    this.#primaryKey = primaryKey;
+    this.#parentPartitionKey = parentPartitionKey;
+  }
+
+  add(parentRow: Row): void {
+    indexParentInStorage(
+      this.#storage,
+      parentRow,
+      this.#parentKey,
+      this.#primaryKey,
+      this.#parentPartitionKey,
+    );
+  }
+
+  remove(parentRow: Row): void {
+    unindexParentInStorage(
+      this.#storage,
+      parentRow,
+      this.#parentKey,
+      this.#primaryKey,
+      this.#parentPartitionKey,
+    );
+  }
+
+  getMatchingParentEntries(childRow: Row): MatchingParentEntry[] | undefined {
+    return getMatchingParentEntries(
+      this.#storage,
+      childRow,
+      this.#childKey,
+      this.#parentPartitionKey,
+    );
+  }
+}
+
+class MemoryJoinIndex implements JoinIndex {
+  readonly #parentKey: CompoundKey;
+  readonly #childKey: CompoundKey;
+  readonly #primaryKey: CompoundKey;
+  readonly #parentPartitionKey: CompoundKey | undefined;
+  // joinKey -> partitionKey ('' when unpartitioned) -> entry
+  readonly #entries = new Map<string, Map<string, MatchingParentEntry>>();
+
+  constructor(
+    parentKey: CompoundKey,
+    childKey: CompoundKey,
+    primaryKey: CompoundKey,
+    parentPartitionKey: CompoundKey | undefined,
+  ) {
+    this.#parentKey = parentKey;
+    this.#childKey = childKey;
+    this.#primaryKey = primaryKey;
+    this.#parentPartitionKey = parentPartitionKey;
+  }
+
+  add(parentRow: Row): void {
+    if (this.#parentKey.some(k => parentRow[k] === null)) {
+      return;
+    }
+    const joinKey = canonicalKey(parentRow, this.#parentKey);
+    let partitions = this.#entries.get(joinKey);
+    if (!partitions) {
+      partitions = new Map();
+      this.#entries.set(joinKey, partitions);
+    }
+    const partitionKey = this.#parentPartitionKey
+      ? canonicalKey(parentRow, this.#parentPartitionKey)
+      : '';
+    let entry = partitions.get(partitionKey);
+    if (!entry) {
+      entry = {
+        pks: new Set(),
+        partitionConstraint: this.#parentPartitionKey
+          ? Object.fromEntries(
+              this.#parentPartitionKey.map(k => [k, parentRow[k]]),
+            )
+          : undefined,
+      };
+      partitions.set(partitionKey, entry);
+    }
+    entry.pks.add(canonicalKey(parentRow, this.#primaryKey));
+  }
+
+  remove(parentRow: Row): void {
+    if (this.#parentKey.some(k => parentRow[k] === null)) {
+      return;
+    }
+    const joinKey = canonicalKey(parentRow, this.#parentKey);
+    const partitions = this.#entries.get(joinKey);
+    if (!partitions) {
+      return;
+    }
+    const partitionKey = this.#parentPartitionKey
+      ? canonicalKey(parentRow, this.#parentPartitionKey)
+      : '';
+    const entry = partitions.get(partitionKey);
+    if (!entry) {
+      return;
+    }
+    entry.pks.delete(canonicalKey(parentRow, this.#primaryKey));
+    if (entry.pks.size === 0) {
+      partitions.delete(partitionKey);
+      if (partitions.size === 0) {
+        this.#entries.delete(joinKey);
+      }
+    }
+  }
+
+  getMatchingParentEntries(childRow: Row): MatchingParentEntry[] | undefined {
+    if (this.#childKey.some(k => childRow[k] === null)) {
+      return undefined;
+    }
+    const partitions = this.#entries.get(
+      canonicalKey(childRow, this.#childKey),
+    );
+    return partitions && [...partitions.values()];
+  }
+}
 
 export function getMatchingParentEntries(
   storage: JoinStorage,

@@ -16,11 +16,13 @@ import {
   getMatchingParentEntries,
   indexParentInStorage,
   isJoinMatch,
+  makeJoinIndex,
   makePartitionStorageKey,
   makeUnpartitionedStorageKey,
   rowEqualsForCompoundKey,
   splitPartitionAndPk,
   unindexParentInStorage,
+  type MatchingParentEntry,
 } from './join-utils.ts';
 import {MemoryStorage} from './memory-storage.ts';
 import type {SourceSchema} from './schema.ts';
@@ -507,5 +509,99 @@ describe('join storage index and matching', () => {
       ['region'],
     );
     expect(matchingAfter?.[0].pks).toEqual(new Set(['sp2']));
+  });
+});
+
+const joinIndexStorages: [name: string, () => MemoryStorage | undefined][] = [
+  ['storage', () => new MemoryStorage()],
+  ['heap', () => undefined],
+];
+
+describe.each(joinIndexStorages)('JoinIndex (%s)', (_name, makeStorage) => {
+  test('unpartitioned', () => {
+    const index = makeJoinIndex(
+      makeStorage(),
+      ['orgId'],
+      ['org'],
+      ['id'],
+      undefined,
+    );
+    expect(index.getMatchingParentEntries({org: 'orgA'})).toBeUndefined();
+
+    index.add({id: 'p1', orgId: 'orgA'});
+    // Adding the same parent twice (e.g. it is fetched again) is a no-op.
+    index.add({id: 'p1', orgId: 'orgA'});
+    index.add({id: 'p2', orgId: 'orgA'});
+    index.add({id: 'p3', orgId: 'orgB'});
+    expect(index.getMatchingParentEntries({org: 'orgA'})).toEqual([
+      {pks: new Set(['sp1', 'sp2'])},
+    ]);
+    expect(index.getMatchingParentEntries({org: 'orgC'})).toBeUndefined();
+
+    index.remove({id: 'p1', orgId: 'orgA'});
+    expect(index.getMatchingParentEntries({org: 'orgA'})).toEqual([
+      {pks: new Set(['sp2'])},
+    ]);
+    index.remove({id: 'p2', orgId: 'orgA'});
+    expect(index.getMatchingParentEntries({org: 'orgA'})).toBeUndefined();
+    expect(index.getMatchingParentEntries({org: 'orgB'})).toEqual([
+      {pks: new Set(['sp3'])},
+    ]);
+
+    // Removing a parent that is not indexed is a no-op.
+    index.remove({id: 'p9', orgId: 'orgB'});
+    index.remove({id: 'p9', orgId: 'orgZ'});
+    expect(index.getMatchingParentEntries({org: 'orgB'})).toEqual([
+      {pks: new Set(['sp3'])},
+    ]);
+  });
+
+  test('null join key', () => {
+    const index = makeJoinIndex(
+      makeStorage(),
+      ['orgId'],
+      ['org'],
+      ['id'],
+      undefined,
+    );
+    index.add({id: 'p1', orgId: null});
+    expect(index.getMatchingParentEntries({org: null})).toBeUndefined();
+    index.remove({id: 'p1', orgId: null});
+  });
+
+  test('partitioned', () => {
+    const index = makeJoinIndex(
+      makeStorage(),
+      ['orgId'],
+      ['org'],
+      ['id'],
+      ['region', 'zone'],
+    );
+    index.add({id: 'p1', orgId: 'orgA', region: 'east', zone: 1});
+    index.add({id: 'p2', orgId: 'orgA', region: 'east', zone: 1});
+    index.add({id: 'p3', orgId: 'orgA', region: 'west', zone: 2});
+    index.add({id: 'p4', orgId: 'orgB', region: 'west', zone: 2});
+
+    const byRegion = (entries: MatchingParentEntry[] | undefined) =>
+      entries?.toSorted((a, b) =>
+        String(a.partitionConstraint?.region).localeCompare(
+          String(b.partitionConstraint?.region),
+        ),
+      );
+    expect(byRegion(index.getMatchingParentEntries({org: 'orgA'}))).toEqual([
+      {
+        pks: new Set(['sp1', 'sp2']),
+        partitionConstraint: {region: 'east', zone: 1},
+      },
+      {pks: new Set(['sp3']), partitionConstraint: {region: 'west', zone: 2}},
+    ]);
+
+    index.remove({id: 'p3', orgId: 'orgA', region: 'west', zone: 2});
+    expect(index.getMatchingParentEntries({org: 'orgA'})).toEqual([
+      {
+        pks: new Set(['sp1', 'sp2']),
+        partitionConstraint: {region: 'east', zone: 1},
+      },
+    ]);
   });
 });

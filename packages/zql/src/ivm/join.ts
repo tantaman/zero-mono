@@ -16,12 +16,10 @@ import {
   canonicalKey,
   generateWithOverlay,
   generateWithOverlayUnordered,
-  getMatchingParentEntries,
-  indexParentInStorage,
   isJoinMatch,
+  makeJoinIndex,
   rowEqualsForCompoundKey,
-  unindexParentInStorage,
-  type JoinStorage,
+  type JoinIndex,
 } from './join-utils.ts';
 import {mergeSortedStreams} from './memory-source.ts';
 import {
@@ -51,7 +49,11 @@ type Args = {
   system: System;
   parentPartitionKey?: CompoundKey | undefined;
   boundProvider?: TakeBoundProvider | undefined;
-  storage: Storage;
+  /**
+   * Where the index of output parents is kept. Omit to keep it in heap maps
+   * (see {@link makeJoinIndex}).
+   */
+  storage?: Storage | undefined;
 };
 
 /**
@@ -71,8 +73,7 @@ export class Join implements Input {
   readonly #childKey: CompoundKey;
   readonly #relationshipName: string;
   readonly #schema: SourceSchema;
-  readonly #parentPartitionKey: CompoundKey | undefined;
-  readonly #storage: JoinStorage;
+  readonly #index: JoinIndex;
   readonly #boundProvider: TakeBoundProvider | undefined;
 
   #output: Output = throwOutput;
@@ -111,8 +112,13 @@ export class Join implements Input {
     this.#parentKey = parentKey;
     this.#childKey = childKey;
     this.#relationshipName = relationshipName;
-    this.#parentPartitionKey = parentPartitionKey;
-    this.#storage = storage as unknown as JoinStorage;
+    this.#index = makeJoinIndex(
+      storage,
+      parentKey,
+      childKey,
+      parent.getSchema().primaryKey,
+      parentPartitionKey,
+    );
     this.#boundProvider = boundProvider;
 
     const parentSchema = parent.getSchema();
@@ -164,7 +170,7 @@ export class Join implements Input {
         yield parentNode;
         continue;
       }
-      this.#indexParentRow(parentNode.row);
+      this.#index.add(parentNode.row);
       yield this.#processParentNode(parentNode.row, parentNode.relationships);
     }
   }
@@ -172,7 +178,7 @@ export class Join implements Input {
   *#pushParent(change: Change): Stream<'yield'> {
     switch (change[ChangeIndex.TYPE]) {
       case ChangeType.ADD:
-        this.#indexParentRow(change[ChangeIndex.NODE].row);
+        this.#index.add(change[ChangeIndex.NODE].row);
         yield* this.#output.push(
           makeAddChange(
             this.#processParentNode(
@@ -184,7 +190,7 @@ export class Join implements Input {
         );
         break;
       case ChangeType.REMOVE:
-        this.#unindexParentRow(change[ChangeIndex.NODE].row);
+        this.#index.remove(change[ChangeIndex.NODE].row);
         yield* this.#output.push(
           makeRemoveChange(
             this.#processParentNode(
@@ -217,8 +223,8 @@ export class Join implements Input {
           ),
           `Parent edit must not change relationship.`,
         );
-        this.#unindexParentRow(change[ChangeIndex.OLD_NODE].row);
-        this.#indexParentRow(change[ChangeIndex.NODE].row);
+        this.#index.remove(change[ChangeIndex.OLD_NODE].row);
+        this.#index.add(change[ChangeIndex.NODE].row);
         yield* this.#output.push(
           makeEditChange(
             this.#processParentNode(
@@ -277,12 +283,7 @@ export class Join implements Input {
         this.#parentKey,
       );
       if (constraint) {
-        const matching = getMatchingParentEntries(
-          this.#storage,
-          childRow,
-          this.#childKey,
-          this.#parentPartitionKey,
-        );
+        const matching = this.#index.getMatchingParentEntries(childRow);
         if (!matching) {
           return;
         }
@@ -359,26 +360,6 @@ export class Join implements Input {
         parentNodeRow,
         this.#inprogressChildChangePosition,
       ) > 0
-    );
-  }
-
-  #indexParentRow(row: Row): void {
-    indexParentInStorage(
-      this.#storage,
-      row,
-      this.#parentKey,
-      this.#parent.getSchema().primaryKey,
-      this.#parentPartitionKey,
-    );
-  }
-
-  #unindexParentRow(row: Row): void {
-    unindexParentInStorage(
-      this.#storage,
-      row,
-      this.#parentKey,
-      this.#parent.getSchema().primaryKey,
-      this.#parentPartitionKey,
     );
   }
 

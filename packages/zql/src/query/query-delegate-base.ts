@@ -55,6 +55,13 @@ export abstract class QueryDelegateBase implements QueryDelegate {
   }
 
   /**
+   * `createStorage()` is in memory, so joins keep their parent index in heap
+   * maps, which are cheaper to update. Override (to `false`) along with
+   * `createStorage()` if the storage is not on the heap.
+   */
+  readonly heapJoinIndex: boolean = true;
+
+  /**
    * Default implementation calls materializeImpl.
    * Override if you need custom materialization behavior.
    */
