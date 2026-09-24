@@ -95,6 +95,8 @@ export function mapResultToClientNames<T, S extends Schema>(
 class SourceFactoryQueryDelegate extends QueryDelegateBase {
   readonly defaultQueryComplete = true;
   readonly enableNotExists = true;
+  // Keep the join index in DatabaseStorage, as zero-cache does.
+  override readonly heapJoinIndex = false;
 
   readonly #sources = new Map<string, Source>();
   readonly #clientToServerMapper: ReturnType<typeof clientToServer>;

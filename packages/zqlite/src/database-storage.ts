@@ -15,7 +15,7 @@ export interface ClientGroupStorage {
 
 type Statements = {
   get: Statement;
-  set: Statement;
+  setMany: Statement;
   del: Statement;
   scan: Statement;
   clear: Statement;
@@ -37,6 +37,17 @@ export const CREATE_STORAGE_TABLE = `
 const defaultOptions = {
   commitInterval: 5_000,
   compactionThresholdBytes: 50 * 1024 * 1024,
+  flushThreshold: 1_000,
+};
+
+/**
+ * The writes to one operator's storage that are not yet in the DB, as
+ * key => JSON-encoded value.
+ */
+type PendingWrites = {
+  readonly cgID: string;
+  readonly opID: number;
+  readonly writes: Map<string, string>;
 };
 
 export class DatabaseStorage {
@@ -68,17 +79,29 @@ export class DatabaseStorage {
   readonly #db: Database;
   #numWrites = 0;
 
+  /**
+   * Writes are buffered and inserted in bulk, since one INSERT per write is
+   * dominated by per-statement overhead. Operators such as Join write a key
+   * for every row they hydrate. Reads see buffered writes: `get` checks the
+   * buffer and `scan` flushes the operator's writes first. (That flush is a
+   * write, so a scan must not start while another scan is being iterated.)
+   */
+  readonly #pending = new Set<PendingWrites>();
+  #numPending = 0;
+
   constructor(db: Database, options = defaultOptions) {
     this.#stmts = {
       get: db.prepare(`
         SELECT val FROM storage WHERE
           clientGroupID = ? AND op = ? AND key = ?
       `),
-      set: db.prepare(`
+      // Takes a JSON array of [key, val] pairs. (`WHERE true` resolves the
+      // parsing ambiguity between the SELECT and the upsert's ON clause.)
+      setMany: db.prepare(`
         INSERT INTO storage (clientGroupID, op, key, val)
-          VALUES(?, ?, ?, ?)
-        ON CONFLICT(clientGroupID, op, key) 
-        DO 
+          SELECT ?, ?, value->>0, value->>1 FROM json_each(?) WHERE true
+        ON CONFLICT(clientGroupID, op, key)
+        DO
           UPDATE SET val = excluded.val
       `),
       del: db.prepare(`
@@ -105,25 +128,72 @@ export class DatabaseStorage {
     this.#db.close();
   }
 
+  /** Writes all buffered writes to the DB. */
+  flush() {
+    for (const pending of this.#pending) {
+      this.#flushOp(pending);
+    }
+  }
+
+  #flushOp(pending: PendingWrites) {
+    const {cgID, opID, writes} = pending;
+    if (writes.size > 0) {
+      this.#stmts.setMany.run(cgID, opID, JSON.stringify([...writes]));
+      this.#numPending -= writes.size;
+      this.#numWrites += writes.size;
+      writes.clear();
+    }
+    this.#pending.delete(pending);
+  }
+
   #get(
-    cgID: string,
-    opID: number,
+    pending: PendingWrites,
     key: string,
     def?: JSONValue,
   ): JSONValue | undefined {
+    const buffered = pending.writes.get(key);
+    if (buffered !== undefined) {
+      return JSON.parse(buffered);
+    }
     this.#maybeCheckpoint();
-    const row = this.#stmts.get.get<{val: string}>(cgID, opID, key);
+    const row = this.#stmts.get.get<{val: string}>(
+      pending.cgID,
+      pending.opID,
+      key,
+    );
     return row ? JSON.parse(row.val) : def;
   }
 
-  #set(cgID: string, opID: number, key: string, val: JSONValue) {
-    this.#maybeCheckpoint();
-    this.#stmts.set.run(cgID, opID, key, JSON.stringify(val));
+  #set(pending: PendingWrites, key: string, val: JSONValue) {
+    const {writes} = pending;
+    const size = writes.size;
+    writes.set(key, JSON.stringify(val));
+    if (writes.size > size) {
+      this.#pending.add(pending);
+      if (++this.#numPending >= this.#options.flushThreshold) {
+        this.flush();
+        this.#maybeCheckpoint();
+      }
+    }
   }
 
-  #del(cgID: string, opID: number, key: string) {
+  #del(pending: PendingWrites, key: string) {
+    if (pending.writes.delete(key)) {
+      this.#numPending--;
+    }
     this.#maybeCheckpoint();
-    this.#stmts.del.run(cgID, opID, key);
+    // The key may have been flushed before it was buffered again.
+    this.#stmts.del.run(pending.cgID, pending.opID, key);
+  }
+
+  #dropPending(cgID: string) {
+    for (const pending of this.#pending) {
+      if (pending.cgID === cgID) {
+        this.#numPending -= pending.writes.size;
+        pending.writes.clear();
+        this.#pending.delete(pending);
+      }
+    }
   }
 
   /**
@@ -139,21 +209,22 @@ export class DatabaseStorage {
   }
 
   #checkpoint() {
+    this.flush();
     this.#stmts.commit.run();
     this.#stmts.begin.run();
     this.#numWrites = 0;
   }
 
   *#scan(
-    cgID: string,
-    opID: number,
+    pending: PendingWrites,
     opts: {prefix: string} = {prefix: ''},
   ): Stream<[string, JSONValue]> {
     const {prefix} = opts;
+    this.#flushOp(pending);
     for (const {key, val} of this.#stmts.scan.iterate<{
       key: string;
       val: string;
-    }>(cgID, opID, prefix)) {
+    }>(pending.cgID, pending.opID, prefix)) {
       if (!key.startsWith(prefix)) {
         return;
       }
@@ -163,21 +234,27 @@ export class DatabaseStorage {
 
   createClientGroupStorage(cgID: string): ClientGroupStorage {
     const destroy = () => {
+      this.#dropPending(cgID);
       this.#stmts.clear.run(cgID);
       this.#checkpoint();
       this.#db.compact(this.#options.compactionThresholdBytes);
     };
+    this.#dropPending(cgID);
     this.#stmts.clear.run(cgID);
 
     let nextOpID = 1;
     return {
       createStorage: () => {
-        const opID = nextOpID++;
+        const pending: PendingWrites = {
+          cgID,
+          opID: nextOpID++,
+          writes: new Map(),
+        };
         return {
-          get: (key, def?) => this.#get(cgID, opID, key, def),
-          set: (key, val) => this.#set(cgID, opID, key, val),
-          del: key => this.#del(cgID, opID, key),
-          scan: opts => this.#scan(cgID, opID, opts),
+          get: (key, def?) => this.#get(pending, key, def),
+          set: (key, val) => this.#set(pending, key, val),
+          del: key => this.#del(pending, key),
+          scan: opts => this.#scan(pending, opts),
         };
       },
 

@@ -22,6 +22,7 @@ describe('view-syncer/database-storage', () => {
   });
 
   function dumpDB() {
+    storage.flush();
     return db.prepare('SELECT * FROM storage').all();
   }
 
@@ -208,5 +209,112 @@ describe('view-syncer/database-storage', () => {
         },
       ]
     `);
+  });
+
+  describe('buffered writes', () => {
+    function countRows() {
+      return db.prepare('SELECT COUNT(*) AS n FROM storage').get<{n: number}>()
+        .n;
+    }
+
+    test('reads see writes that are not yet in the DB', () => {
+      const store = storage.createClientGroupStorage('cg').createStorage();
+      store.set('a', 1);
+      store.set('b', {x: [1, 2]});
+      expect(countRows()).toBe(0);
+
+      expect(store.get('a')).toBe(1);
+      expect(store.get('b')).toEqual({x: [1, 2]});
+      expect(store.get('c', 'default')).toBe('default');
+
+      // scan flushes the operator's writes first.
+      expect([...store.scan()]).toEqual([
+        ['a', 1],
+        ['b', {x: [1, 2]}],
+      ]);
+      expect(countRows()).toBe(2);
+    });
+
+    test('set after flush and del of buffered and flushed keys', () => {
+      const store = storage.createClientGroupStorage('cg').createStorage();
+      store.set('a', 1);
+      store.set('b', 2);
+      storage.flush();
+      store.set('a', 3); // buffered over a flushed value
+      store.set('c', 4); // only buffered
+      expect(store.get('a')).toBe(3);
+
+      store.del('a');
+      store.del('c');
+      store.del('b');
+      expect(store.get('a')).toBeUndefined();
+      expect(store.get('c')).toBeUndefined();
+      expect([...store.scan()]).toEqual([]);
+      expect(dumpDB()).toEqual([]);
+    });
+
+    test('flushes when the buffer is full', () => {
+      const db2 = new Database(createSilentLogContext(), ':memory:');
+      db2.prepare(CREATE_STORAGE_TABLE).run();
+      const count = () =>
+        db2.prepare('SELECT COUNT(*) AS n FROM storage').get<{n: number}>().n;
+      const s = new DatabaseStorage(db2, {
+        commitInterval: 5_000,
+        compactionThresholdBytes: 50 * 1024 * 1024,
+        flushThreshold: 3,
+      });
+      const cg = s.createClientGroupStorage('cg');
+      const [s1, s2] = [cg.createStorage(), cg.createStorage()];
+      s1.set('a', 1);
+      s2.set('a', 2);
+      s1.set('a', 3); // same key, does not grow the buffer
+      expect(count()).toBe(0);
+      s2.set('b', 4);
+      expect(count()).toBe(3);
+      expect(s1.get('a')).toBe(3);
+      expect(s2.get('a')).toBe(2);
+      expect(s2.get('b')).toBe(4);
+      db2.close();
+    });
+
+    test('destroy and re-creating a client group drop buffered writes', () => {
+      const cg1 = storage.createClientGroupStorage('cg1');
+      const cg2 = storage.createClientGroupStorage('cg2');
+      const s1 = cg1.createStorage();
+      const s2 = cg2.createStorage();
+      s1.set('a', 1);
+      s2.set('a', 2);
+      cg2.destroy();
+      expect(dumpDB()).toEqual([
+        {clientGroupID: 'cg1', op: 1, key: 'a', val: '1'},
+      ]);
+
+      s1.set('b', 3);
+      // A new incarnation of the client group reuses operator IDs, so
+      // buffered writes of the old one must not land in its storage.
+      const cg1Again = storage.createClientGroupStorage('cg1');
+      expect(dumpDB()).toEqual([]);
+      expect(cg1Again.createStorage().get('b')).toBeUndefined();
+    });
+
+    test('keys with NUL and non-ASCII characters', () => {
+      const store = storage.createClientGroupStorage('cg').createStorage();
+      const keys = [
+        'j\x00sa\x00sp1',
+        'j\x00s\u00e9\x00s\u{1f600}',
+        'j\x00sa\x00',
+      ];
+      for (const [i, key] of keys.entries()) {
+        store.set(key, i);
+      }
+      storage.flush();
+      for (const [i, key] of keys.entries()) {
+        expect(store.get(key)).toBe(i);
+      }
+      expect([...store.scan({prefix: 'j\x00sa\x00'})]).toEqual([
+        ['j\x00sa\x00', 2],
+        ['j\x00sa\x00sp1', 0],
+      ]);
+    });
   });
 });
