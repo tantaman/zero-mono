@@ -58,8 +58,13 @@ import {DrainCoordinator} from './drain-coordinator.ts';
 import type {MonotonicClock} from './hydration-budget.ts';
 import {PipelineDriver} from './pipeline-driver.ts';
 import {initViewSyncerSchema} from './schema/init.ts';
+import {SharedSnapshot} from './shared-snapshot.ts';
 import {Snapshotter} from './snapshotter.ts';
-import {type SyncContext, ViewSyncerService} from './view-syncer.ts';
+import {
+  type SyncContext,
+  TimeSliceTimer,
+  ViewSyncerService,
+} from './view-syncer.ts';
 
 export const APP_ID = 'this_app';
 export const SHARD_NUM = 2;
@@ -815,6 +820,12 @@ export async function setup(
         config.push?.forwardCookies ?? config.mutate?.forwardCookies ?? false,
     },
   );
+  // Selected by ZERO_TEST_SHARED_IVM_SNAPSHOT.
+  const {snapshot, notifications} = testSnapshot(
+    lc,
+    replicaDbFile.path,
+    stateChanges,
+  );
   const vs = new ViewSyncerService(
     config,
     lc,
@@ -825,7 +836,7 @@ export async function setup(
     new PipelineDriver(
       lc.withContext('component', 'pipeline-driver'),
       testLogConfig,
-      new Snapshotter(lc, replicaDbFile.path, SHARD),
+      snapshot,
       SHARD,
       operatorStorage,
       'view-syncer.pg.test.ts',
@@ -836,7 +847,7 @@ export async function setup(
       // Selected by ZERO_TEST_DEFER_IVM_WRITES.
       testDeferredWritesBudget(),
     ),
-    stateChanges,
+    notifications,
     drainCoordinator,
     100,
     inspectorDelegate,
@@ -955,6 +966,11 @@ export async function setup(
  * original but gets its own pipelines, snapshotter, operator storage,
  * state-change subscription, drain coordinator, and connection-context
  * manager.
+ *
+ * It can also build the view-syncer of another client group
+ * (`clientGroupID`), e.g. to share a `sharedSnapshot` with others, in which
+ * case it receives the notifications of the shared snapshot rather than of
+ * the returned `stateChanges`.
  */
 export function restartViewSyncer(params: {
   databaseStorage: DatabaseStorage;
@@ -964,6 +980,8 @@ export function restartViewSyncer(params: {
   customQueryTransformer: CustomQueryTransformer | undefined;
   setTimeoutFn: Awaited<ReturnType<typeof setup>>['setTimeoutFn'];
   monotonicClock?: MonotonicClock | undefined;
+  clientGroupID?: string | undefined;
+  sharedSnapshot?: SharedSnapshot | undefined;
 }) {
   const {
     databaseStorage,
@@ -973,12 +991,15 @@ export function restartViewSyncer(params: {
     customQueryTransformer,
     setTimeoutFn,
     monotonicClock,
+    clientGroupID = serviceID,
+    sharedSnapshot,
   } = params;
   const lc = createSilentLogContext();
 
   const stateChanges: Subscription<ReplicaState> = Subscription.create();
   const drainCoordinator = new DrainCoordinator();
-  const operatorStorage = databaseStorage.createClientGroupStorage(serviceID);
+  const operatorStorage =
+    databaseStorage.createClientGroupStorage(clientGroupID);
   const inspectorDelegate = new InspectorDelegate(customQueryTransformer);
 
   const {query} = config;
@@ -1007,20 +1028,24 @@ export function restartViewSyncer(params: {
     },
   );
 
+  // Selected by ZERO_TEST_SHARED_IVM_SNAPSHOT, unless given.
+  const {snapshot, notifications} = sharedSnapshot
+    ? {snapshot: sharedSnapshot, notifications: sharedSnapshot.subscribe()}
+    : testSnapshot(lc, replicaDbFile.path, stateChanges);
   const vs = new ViewSyncerService(
     config,
     lc,
     SHARD,
     TASK_ID,
-    serviceID,
+    clientGroupID,
     cvrDB,
     new PipelineDriver(
       lc.withContext('component', 'pipeline-driver'),
       testLogConfig,
-      new Snapshotter(lc, replicaDbFile.path, SHARD),
+      snapshot,
       SHARD,
       operatorStorage,
-      'view-syncer-restart',
+      clientGroupID,
       inspectorDelegate,
       () => YIELD_THRESHOLD_MS,
       undefined,
@@ -1028,7 +1053,7 @@ export function restartViewSyncer(params: {
       // Selected by ZERO_TEST_DEFER_IVM_WRITES.
       testDeferredWritesBudget(),
     ),
-    stateChanges,
+    notifications,
     drainCoordinator,
     100,
     inspectorDelegate,
@@ -1053,7 +1078,7 @@ export function restartViewSyncer(params: {
       {
         protocolVersion: ctx.protocolVersion,
         clientID: ctx.clientID,
-        clientGroupID: serviceID,
+        clientGroupID,
         profileID: ctx.profileID,
         baseCookie: ctx.baseCookie,
         timestamp: Date.now(),
@@ -1102,6 +1127,43 @@ export function restartViewSyncer(params: {
     inspectorDelegate,
     connect,
   };
+}
+
+/**
+ * The snapshot of the replica for a view-syncer under test, and the
+ * notifications of changes to it that the view-syncer receives, as selected
+ * by `ZERO_TEST_SHARED_IVM_SNAPSHOT`:
+ *
+ * - unset or `0`: a Snapshotter of the view-syncer's own, which receives
+ *   `stateChanges` directly.
+ * - `1`: a {@link SharedSnapshot} (of which the view-syncer is the only client
+ *   group), which relays `stateChanges` to the view-syncer, one per round.
+ */
+function testSnapshot(
+  lc: LogContext,
+  replicaFile: string,
+  stateChanges: Subscription<ReplicaState>,
+): {
+  snapshot: Snapshotter | SharedSnapshot;
+  notifications: Subscription<ReplicaState>;
+} {
+  if (process.env['ZERO_TEST_SHARED_IVM_SNAPSHOT'] !== '1') {
+    return {
+      snapshot: new Snapshotter(lc, replicaFile, SHARD),
+      notifications: stateChanges,
+    };
+  }
+  const shared = new SharedSnapshot(
+    lc,
+    testLogConfig,
+    new Snapshotter(lc, replicaFile, SHARD),
+    () => YIELD_THRESHOLD_MS,
+    () => new TimeSliceTimer(lc),
+  );
+  void shared.relay(stateChanges);
+  const notifications = shared.subscribe();
+  stateChanges.addCloseHandler(() => notifications.cancel());
+  return {snapshot: shared, notifications};
 }
 
 /**

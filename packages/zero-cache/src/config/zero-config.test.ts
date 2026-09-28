@@ -1115,6 +1115,18 @@ test('deferred IVM writes are on by default and can be turned off', () => {
   expect(parse({ZERO_DEFER_IVM_WRITES: 'false'})).toBe(false);
 });
 
+test('the shared IVM snapshot is off by default and can be turned on', () => {
+  const parse = (env: Record<string, string>) =>
+    parseOptionsAdvanced(zeroOptions, {
+      envNamePrefix: 'ZERO_',
+      allowUnknown: false,
+      allowPartial: true,
+      env,
+    }).config.sharedIvmSnapshot;
+  expect(parse({})).toBe(false);
+  expect(parse({ZERO_SHARED_IVM_SNAPSHOT: 'true'})).toBe(true);
+});
+
 test.each(['0', '-0.1', '2'])(
   'deferred IVM writes heap proportion rejects %s',
   proportion => {

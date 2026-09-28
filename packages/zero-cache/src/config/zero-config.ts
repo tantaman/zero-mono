@@ -699,6 +699,24 @@ export const zeroOptions = {
     hidden: true,
   },
 
+  sharedIvmSnapshot: {
+    type: v.boolean().default(false),
+    desc: [
+      `Experimental. Advance the client groups of a sync worker together, from`,
+      `one snapshot of the replica that they share, instead of each from a`,
+      `snapshot of its own. Each replicated change is then read from the`,
+      `change log, written to the snapshot, and pushed to the query pipelines`,
+      `once per sync worker, rather than once per client group.`,
+      ``,
+      `The cost is head-of-line blocking: the client groups of a sync worker`,
+      `advance at the pace of the slowest, and one that is busy (e.g.`,
+      `hydrating a query) holds up the others. The client groups of a sync`,
+      `worker must agree on the primary key of each table they query. Neither`,
+      `{bold deferIvmWrites} nor {bold snapshotRowCacheSize} applies.`,
+    ],
+    hidden: true,
+  },
+
   yieldThresholdMs: {
     type: v.number().default(10),
     desc: [

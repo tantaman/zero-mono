@@ -30,9 +30,13 @@ import {DeferredWritesBudget} from '../services/view-syncer/deferred-writes-budg
 import type {DrainCoordinator} from '../services/view-syncer/drain-coordinator.ts';
 import {PipelineDriver} from '../services/view-syncer/pipeline-driver.ts';
 import {QueryStats} from '../services/view-syncer/query-stats.ts';
+import {SharedSnapshot} from '../services/view-syncer/shared-snapshot.ts';
 import {SnapshotRowCache} from '../services/view-syncer/snapshot-row-cache.ts';
 import {Snapshotter} from '../services/view-syncer/snapshotter.ts';
-import {ViewSyncerService} from '../services/view-syncer/view-syncer.ts';
+import {
+  TimeSliceTimer,
+  ViewSyncerService,
+} from '../services/view-syncer/view-syncer.ts';
 import {ProtocolErrorWithLevel} from '../types/error-with-level.ts';
 import {connectPgClient} from '../types/pg.ts';
 import {
@@ -184,19 +188,21 @@ export default async function runWorker(
 
   // Shared by all of the view-syncers on this worker so that the row reads
   // performed when advancing their pipelines are done once per worker rather
-  // than once per client group.
+  // than once per client group. (A shared IVM snapshot reads each row once.)
   const snapshotRowCache =
-    config.snapshotRowCacheSize > 0
+    config.snapshotRowCacheSize > 0 && !config.sharedIvmSnapshot
       ? new SnapshotRowCache(config.snapshotRowCacheSize)
       : undefined;
 
   // Shared by all of the view-syncers on this worker, which each hold their
-  // own copy of the changes they are advancing through.
-  const deferredWritesBudget = config.deferIvmWrites
-    ? DeferredWritesBudget.forHeapProportion(
-        config.deferIvmWritesHeapProportion,
-      )
-    : undefined;
+  // own copy of the changes they are advancing through. (The sources of a
+  // shared IVM snapshot write through to it.)
+  const deferredWritesBudget =
+    config.deferIvmWrites && !config.sharedIvmSnapshot
+      ? DeferredWritesBudget.forHeapProportion(
+          config.deferIvmWritesHeapProportion,
+        )
+      : undefined;
   if (deferredWritesBudget) {
     lc.info?.(
       `Deferred IVM writes may hold up to ${deferredWritesBudget.maxRows} ` +
@@ -215,6 +221,32 @@ export default async function runWorker(
         'worker hold in memory (deferIvmWrites)',
       unit: 'By',
     }).addCallback(o => o.observe(deferredWritesBudget.heldBytes));
+  }
+
+  const priorityOpRunningYieldThresholdMs = Math.max(
+    config.yieldThresholdMs / 4,
+    2,
+  );
+  const normalYieldThresholdMs = Math.max(config.yieldThresholdMs, 2);
+  const yieldThresholdMs = () =>
+    isPriorityOpRunning()
+      ? priorityOpRunningYieldThresholdMs
+      : normalYieldThresholdMs;
+
+  // Experimental: one snapshot of the replica (and one source per table) for
+  // all of the view-syncers on this worker, which then advance together, in
+  // lockstep, rather than each from a snapshot of its own.
+  const sharedSnapshot = config.sharedIvmSnapshot
+    ? new SharedSnapshot(
+        lc.withContext('taskID', config.taskID),
+        config.log,
+        new Snapshotter(lc, replicaFile, shard),
+        yieldThresholdMs,
+        () => new TimeSliceTimer(lc),
+      )
+    : undefined;
+  if (sharedSnapshot) {
+    lc.info?.(`client groups advance together from a shared IVM snapshot`);
   }
 
   // Shared by all of the view-syncers on this worker, so that the work done
@@ -258,12 +290,6 @@ export default async function runWorker(
 
     const inspectorDelegate = new InspectorDelegate(customQueryTransformer);
 
-    const priorityOpRunningYieldThresholdMs = Math.max(
-      config.yieldThresholdMs / 4,
-      2,
-    );
-    const normalYieldThresholdMs = Math.max(config.yieldThresholdMs, 2);
-
     return new ViewSyncerService(
       config,
       logger,
@@ -274,21 +300,19 @@ export default async function runWorker(
       new PipelineDriver(
         logger,
         config.log,
-        new Snapshotter(
-          logger,
-          replicaFile,
-          shard,
-          undefined,
-          snapshotRowCache,
-        ),
+        sharedSnapshot ??
+          new Snapshotter(
+            logger,
+            replicaFile,
+            shard,
+            undefined,
+            snapshotRowCache,
+          ),
         shard,
         operatorStorage.createClientGroupStorage(id),
         id,
         inspectorDelegate,
-        () =>
-          isPriorityOpRunning()
-            ? priorityOpRunningYieldThresholdMs
-            : normalYieldThresholdMs,
+        yieldThresholdMs,
         config.enableQueryPlanner,
         config,
         deferredWritesBudget,
@@ -337,6 +361,13 @@ export default async function runWorker(
     pusherFactory,
     parent,
     validateLegacyJWT,
+    sharedSnapshot &&
+      (notifier => {
+        sharedSnapshot
+          .relay(notifier.subscribe())
+          .catch(e => lc.error?.(`shared snapshot stopped relaying`, e));
+        return sharedSnapshot;
+      }),
   );
 
   startAnonymousTelemetry(lc, config);

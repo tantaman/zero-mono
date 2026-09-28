@@ -26,6 +26,7 @@ import {
 } from '../server/anonymous-otel-start.ts';
 import type {Mutagen} from '../services/mutagen/mutagen.ts';
 import type {Pusher} from '../services/mutagen/pusher.ts';
+import type {Notifier} from '../services/replicator/notifier.ts';
 import type {ReplicaState} from '../services/replicator/replicator.ts';
 import {ServiceRunner} from '../services/runner.ts';
 import type {
@@ -43,6 +44,11 @@ import type {ConnectParams} from './connect-params.ts';
 import {Connection, sendError} from './connection.ts';
 import {createNotifierFrom, subscribeTo} from './replicator.ts';
 import {SyncerWsMessageHandler} from './syncer-ws-message-handler.ts';
+
+/** A source of replica notifications for the view-syncers of a worker. */
+export type ReplicaStateSubscriptions = {
+  subscribe(): Subscription<ReplicaState>;
+};
 
 export type SyncerWorkerData = {
   replicatorPort: MessagePort;
@@ -426,14 +432,17 @@ export class Syncer implements SingletonService {
       | undefined,
     parent: Worker,
     validateLegacyJWT: ValidateLegacyJWT | undefined,
+    relayNotifications?: (notifier: Notifier) => ReplicaStateSubscriptions,
   ) {
     this.#config = config;
     this.#validateLegacyJWT = validateLegacyJWT;
     // Relays notifications from the parent thread subscription
-    // to ViewSyncers within this thread.
-    const notifier = createNotifierFrom(lc, parent, state =>
+    // to ViewSyncers within this thread, directly or through
+    // `relayNotifications` (e.g. a SharedSnapshot).
+    const parentNotifier = createNotifierFrom(lc, parent, state =>
       this.#recordReplicaReadyState(state),
     );
+    const notifier = relayNotifications?.(parentNotifier) ?? parentNotifier;
     subscribeTo(lc, parent);
 
     this.#lc = lc;

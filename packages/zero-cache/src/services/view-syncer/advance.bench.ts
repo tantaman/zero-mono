@@ -18,11 +18,14 @@ import {listTables} from '../../db/lite-tables.ts';
 import {InspectorDelegate} from '../../server/inspector-delegate.ts';
 import {DbFile} from '../../test/lite.ts';
 import type {ShardID} from '../../types/shards.ts';
+import {Subscription} from '../../types/subscription.ts';
+import type {ReplicaState} from '../replicator/replicator.ts';
 import {populateFromExistingTables} from '../replicator/schema/column-metadata.ts';
 import {initReplicationState} from '../replicator/schema/replication-state.ts';
 import {fakeReplicator, ReplicationMessages} from '../replicator/test-utils.ts';
 import {BYTES_PER_ROW, DeferredWritesBudget} from './deferred-writes-budget.ts';
 import {PipelineDriver, type Timer} from './pipeline-driver.ts';
+import {SharedSnapshot, type RoundTimer} from './shared-snapshot.ts';
 import {SnapshotRowCache} from './snapshot-row-cache.ts';
 import {Snapshotter} from './snapshotter.ts';
 
@@ -30,8 +33,10 @@ import {Snapshotter} from './snapshotter.ts';
 //
 // The cost of advancing the pipelines of the client groups on one sync worker
 // through a transaction, with IVM derivation written through to (and rolled
-// back out of) each group's replica snapshot, as on main, and with it held in
-// memory (`deferIvmWrites`).
+// back out of) each group's replica snapshot, as on main, with it held in
+// memory (`deferIvmWrites`), and with every group reading one snapshot of the
+// worker's (`sharedIvmSnapshot`), which diffs, writes and pushes each change
+// once for all of the groups.
 //
 // Each client group has a PipelineDriver of its own over a shared replica, row
 // cache and (when deferring) budget, as in a sync worker. Each hydrates one
@@ -53,6 +58,11 @@ const TRANSACTIONS = 60;
 const shardID: ShardID = {appID: 'bench', shardNum: 0};
 const lc = createSilentLogContext();
 const NEVER_ELAPSES: Timer = {elapsedLap: () => 0, totalElapsed: () => 0};
+const NEVER_ELAPSES_ROUND: RoundTimer = {
+  ...NEVER_ELAPSES,
+  start: () => Promise.resolve(),
+  yieldProcess: () => Promise.resolve(),
+};
 
 function cpuMs() {
   const {user, system} = process.threadCpuUsage();
@@ -161,9 +171,9 @@ function rng(seed: number) {
   };
 }
 
-type Mode = 'write-through' | 'deferred';
+type Mode = 'write-through' | 'deferred' | 'shared';
 
-function run(mode: Mode, changesPerTransaction: number) {
+async function run(mode: Mode, changesPerTransaction: number) {
   const dbFile = new DbFile('advance_bench');
   try {
     const replica = fakeReplicator(lc, createReplica(dbFile));
@@ -177,18 +187,31 @@ function run(mode: Mode, changesPerTransaction: number) {
     const storage = new Database(lc, ':memory:');
     storage.prepare(CREATE_STORAGE_TABLE).run();
     const operatorStorage = new DatabaseStorage(storage);
+    const notifications = Subscription.create<ReplicaState>();
+    const shared =
+      mode === 'shared'
+        ? new SharedSnapshot(
+            lc,
+            testLogConfig,
+            new Snapshotter(lc, dbFile.path, {appID: shardID.appID}),
+            () => Number.MAX_SAFE_INTEGER,
+            () => NEVER_ELAPSES_ROUND,
+          )
+        : undefined;
+    void shared?.relay(notifications);
 
     const drivers = Array.from({length: GROUPS}, (_, g) => {
       const driver = new PipelineDriver(
         lc,
         testLogConfig,
-        new Snapshotter(
-          lc,
-          dbFile.path,
-          {appID: shardID.appID},
-          undefined,
-          rowCache,
-        ),
+        shared ??
+          new Snapshotter(
+            lc,
+            dbFile.path,
+            {appID: shardID.appID},
+            undefined,
+            rowCache,
+          ),
         shardID,
         operatorStorage.createClientGroupStorage(`cg${g}`),
         `cg${g}`,
@@ -237,8 +260,18 @@ function run(mode: Mode, changesPerTransaction: number) {
         ...msgs,
       );
     };
-    const advanceAll = () => {
+    const advanceAll = async () => {
       let rows = 0;
+      if (shared) {
+        // A round, which each group takes part in.
+        await notifications.push({state: 'version-ready'}).result;
+        for (const {changes} of await Promise.all(
+          drivers.map(driver => driver.advanceShared()),
+        )) {
+          rows += changes.length;
+        }
+        return rows;
+      }
       for (const driver of drivers) {
         for (const change of driver.advance(NEVER_ELAPSES).changes) {
           if (change !== 'yield') {
@@ -251,16 +284,17 @@ function run(mode: Mode, changesPerTransaction: number) {
 
     for (let t = 0; t < WARMUP_TRANSACTIONS; t++) {
       commit();
-      advanceAll();
+      await advanceAll();
     }
     const samples: number[] = [];
     let rows = 0;
     for (let t = 0; t < TRANSACTIONS; t++) {
       commit();
       const start = cpuMs();
-      rows += advanceAll();
+      rows += await advanceAll();
       samples.push(cpuMs() - start);
     }
+    notifications.cancel();
     for (const driver of drivers) {
       driver.destroy();
     }
@@ -277,18 +311,19 @@ function run(mode: Mode, changesPerTransaction: number) {
 describe(`advancing ${GROUPS} client groups through a transaction`, () => {
   const recorder = createManualBenchmarkRecorder();
   for (const changes of [10, 100]) {
-    test(`${changes} changes per transaction`, {timeout: 300_000}, () => {
+    test(`${changes} changes per transaction`, {timeout: 300_000}, async () => {
       const rows: number[] = [];
-      for (const mode of ['write-through', 'deferred'] as const) {
-        const result = run(mode, changes);
+      for (const mode of ['write-through', 'deferred', 'shared'] as const) {
+        const result = await run(mode, changes);
         recorder.recordLatency(
           `${mode}: ${changes} changes × ${GROUPS} groups`,
           result.samples,
         );
         rows.push(result.rows);
       }
-      // Both modes produce the same row changes.
+      // Every mode produces the same row changes.
       expect(rows[1]).toBe(rows[0]);
+      expect(rows[2]).toBe(rows[0]);
     });
   }
 });

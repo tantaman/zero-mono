@@ -62,6 +62,7 @@ import {
 import type {LogConfig, ZeroConfig} from '../../config/zero-config.ts';
 import {computeZqlSpecs, mustGetTableSpec} from '../../db/lite-tables.ts';
 import type {LiteAndZqlSpec, LiteTableSpec} from '../../db/specs.ts';
+import type {StatementRunner} from '../../db/statements.ts';
 import {LogThrottle} from '../../observability/log-throttle.ts';
 import {
   getOrCreateCounter,
@@ -74,14 +75,23 @@ import {
   getSubscriptionState,
   ZERO_VERSION_COLUMN_NAME,
 } from '../replicator/schema/replication-state.ts';
+import {advancementTimeout} from './advancement-timeout.ts';
 import {checkClientSchema} from './client-schema.ts';
 import type {DeferredWritesBudget} from './deferred-writes-budget.ts';
 import {planWarningMessage} from './plan-warnings.ts';
 import {queryShape, type QueryShape} from './query-shape.ts';
 import type {QueryStats} from './query-stats.ts';
 import {rowIDSignatureUnit} from './row-set-signature.ts';
-import type {Snapshotter} from './snapshotter.ts';
-import {ResetPipelinesSignal, type SnapshotDiff} from './snapshotter.ts';
+import type {
+  RoundProgress,
+  SharedSnapshot,
+  SharedSnapshotMember,
+} from './shared-snapshot.ts';
+import {
+  ResetPipelinesSignal,
+  Snapshotter,
+  type SnapshotDiff,
+} from './snapshotter.ts';
 
 type RowOp<Op extends Omit<ChangeType, ChangeType.CHILD>> = {
   readonly type: Op;
@@ -209,6 +219,24 @@ type AdvanceContext = {
  */
 type HeldRows = 'fits' | 'bytes' | 'rows' | 'row-overrun';
 
+/** What is logged and recorded of the time an advancement took per query. */
+type AdvanceStats = {
+  readonly numChanges: number;
+  /** The processing time of each query's pushes, by query ID. */
+  readonly queryStats: Map<string, QueryAdvanceStats>;
+};
+
+/**
+ * The part a client group takes in a round of its {@link SharedSnapshot}:
+ * the row changes its pipelines output, and the time each query took.
+ */
+type SharedRound = AdvanceStats & {
+  readonly progress: RoundProgress;
+  readonly changes: RowChange[];
+  /** Set if the client group's pipelines failed during the round. */
+  failure: {readonly error: unknown} | undefined;
+};
+
 type QueryAdvanceStats = {
   /** The time spent processing pushes to the query. */
   timeMs: number;
@@ -231,19 +259,6 @@ export type Timer = {
   elapsedLap: () => number;
   totalElapsed: () => number;
 };
-
-/**
- * No matter how fast hydration is, advancement is given at least this long to
- * complete before doing a pipeline reset.
- */
-const MIN_ADVANCEMENT_TIME_LIMIT_MS = 50;
-const MIN_PROJECTED_ADVANCEMENT_SAMPLE_CHANGES = 8;
-const PROJECTED_ADVANCEMENT_SAMPLE_FRACTION = 0.25;
-const MAX_PROJECTED_ADVANCEMENT_SAMPLE_CHANGES = 50;
-const MIN_PROJECTED_ADVANCEMENT_SAMPLE_MS = 5;
-const MIN_PROJECTED_ADVANCEMENT_CHANGES = 16;
-const PROJECTED_ADVANCEMENT_RESET_MULTIPLIER = 1.5;
-const LATE_ADVANCEMENT_FINISH_PROGRESS = 0.8;
 
 /**
  * The planner warns about a query each time it is planned, i.e. for every
@@ -273,76 +288,14 @@ function randomID() {
   return randInt(1, Number.MAX_SAFE_INTEGER).toString(36);
 }
 
-function projectedAdvancementTimeMs(
-  elapsedMs: number,
-  processedChanges: number,
-  numChanges: number,
-): number | undefined {
-  if (processedChanges <= 0 || numChanges <= 0) {
-    return undefined;
-  }
-  return (elapsedMs / processedChanges) * numChanges;
-}
-
-function advancementResetTimeLimitMs(totalHydrationTimeMs: number): number {
-  return Math.max(totalHydrationTimeMs, 1);
-}
-
-function minProjectedAdvancementSampleChanges(numChanges: number): number {
-  return Math.max(
-    MIN_PROJECTED_ADVANCEMENT_SAMPLE_CHANGES,
-    Math.min(
-      MAX_PROJECTED_ADVANCEMENT_SAMPLE_CHANGES,
-      Math.ceil(numChanges * PROJECTED_ADVANCEMENT_SAMPLE_FRACTION),
-    ),
-  );
-}
-
-function shouldResetProjectedAdvancement(
-  elapsedMs: number,
-  projectedTotalTimeMs: number | undefined,
-  processedChanges: number,
-  numChanges: number,
-  totalHydrationTimeMs: number,
-): boolean {
-  if (
-    projectedTotalTimeMs === undefined ||
-    numChanges < MIN_PROJECTED_ADVANCEMENT_CHANGES ||
-    processedChanges < minProjectedAdvancementSampleChanges(numChanges) ||
-    elapsedMs < MIN_PROJECTED_ADVANCEMENT_SAMPLE_MS
-  ) {
-    return false;
-  }
-
-  return (
-    projectedTotalTimeMs >
-    advancementResetTimeLimitMs(totalHydrationTimeMs) *
-      PROJECTED_ADVANCEMENT_RESET_MULTIPLIER
-  );
-}
-
-function shouldFinishLateAdvancement(
-  processedChanges: number,
-  numChanges: number,
-): boolean {
-  return (
-    numChanges > 0 &&
-    processedChanges / numChanges >= LATE_ADVANCEMENT_FINISH_PROGRESS
-  );
-}
-
-function shouldResetSlowCurrentChange(
-  currentChangeElapsedMs: number,
-  totalHydrationTimeMs: number,
-): boolean {
-  return (
-    currentChangeElapsedMs > MIN_ADVANCEMENT_TIME_LIMIT_MS &&
-    currentChangeElapsedMs > advancementResetTimeLimitMs(totalHydrationTimeMs)
-  );
-}
-
 /**
  * Manages the state of IVM pipelines for a given ViewSyncer (i.e. client group).
+ *
+ * The pipelines read either a snapshot of the replica of their own (from a
+ * {@link Snapshotter}), which the driver advances by itself with
+ * {@link advance()}, or the {@link SharedSnapshot} of their sync worker, which
+ * advances every client group of the worker together with
+ * {@link advanceShared()}.
  */
 export class PipelineDriver {
   readonly #tables = new Map<string, TableSource>();
@@ -359,7 +312,19 @@ export class PipelineDriver {
   readonly #rowSetSignatures = new Map<string, bigint>();
 
   readonly #lc: LogContext;
-  readonly #snapshotter: Snapshotter;
+  /** The snapshot of the client group's own. Unset in shared mode. */
+  readonly #snapshotter: Snapshotter | undefined;
+  /** The worker's snapshot, in shared mode. */
+  readonly #shared: SharedSnapshot | undefined;
+  /** Whether the client group has registered with {@link #shared}. */
+  #sharedInitialized = false;
+  /** The {@link SharedSnapshot.specsEpoch} of {@link #tableSpecs}. */
+  #sharedSpecsEpoch = 0;
+  /**
+   * Set when a round of {@link #shared} begins, until the client group has
+   * received its changes.
+   */
+  #round: SharedRound | undefined;
   readonly #storage: ClientGroupStorage;
   readonly #shardID: ShardID;
   readonly #logConfig: LogConfig;
@@ -418,10 +383,15 @@ export class PipelineDriver {
     },
   };
 
+  /**
+   * @param snapshotter The client group's own Snapshotter, or the worker's
+   *        SharedSnapshot, in which case the deferred writes budget is not
+   *        used, as the shared sources write through to the snapshot.
+   */
   constructor(
     lc: LogContext,
     logConfig: LogConfig,
-    snapshotter: Snapshotter,
+    snapshotter: Snapshotter | SharedSnapshot,
     shardID: ShardID,
     storage: ClientGroupStorage,
     clientGroupID: string,
@@ -433,12 +403,16 @@ export class PipelineDriver {
     queryStats?: QueryStats | undefined,
   ) {
     this.#lc = lc.withContext('clientGroupID', clientGroupID);
-    this.#snapshotter = snapshotter;
+    if (snapshotter instanceof Snapshotter) {
+      this.#snapshotter = snapshotter;
+    } else {
+      this.#shared = snapshotter;
+    }
     this.#storage = storage;
     this.#shardID = shardID;
     this.#logConfig = logConfig;
     this.#config = config;
-    this.#deferredWrites = deferredWrites;
+    this.#deferredWrites = this.#shared ? undefined : deferredWrites;
     this.#inspectorDelegate = inspectorDelegate;
     this.#costModels = enablePlanner ? new WeakMap() : undefined;
     const planWarningThresholds = {
@@ -460,8 +434,14 @@ export class PipelineDriver {
    * Must only be called once.
    */
   init(clientSchema: ClientSchema) {
-    assert(!this.#snapshotter.initialized(), 'Already initialized');
-    this.#snapshotter.init();
+    assert(!this.initialized(), 'Already initialized');
+    if (this.#shared) {
+      // Must park() before using the shared snapshot. See SharedSnapshot.
+      this.#shared.register(this.#member);
+      this.#sharedInitialized = true;
+    } else {
+      must(this.#snapshotter).init();
+    }
     this.#initAndResetCommon(clientSchema);
   }
 
@@ -469,7 +449,21 @@ export class PipelineDriver {
    * @returns Whether the PipelineDriver has been initialized.
    */
   initialized(): boolean {
-    return this.#snapshotter.initialized();
+    return this.#shared
+      ? this.#sharedInitialized
+      : must(this.#snapshotter).initialized();
+  }
+
+  /** Whether the pipelines read their sync worker's {@link SharedSnapshot}. */
+  get shared(): boolean {
+    return this.#shared !== undefined;
+  }
+
+  /** The snapshot the pipelines read. */
+  #currentDB(): StatementRunner {
+    return this.#shared
+      ? this.#shared.db
+      : must(this.#snapshotter).current().db;
   }
 
   /**
@@ -483,21 +477,34 @@ export class PipelineDriver {
       this.#destroyPipeline(queryID, pipeline, 'reset');
     }
     this.#tables.clear();
+    this.#shared?.pruneUnusedSources();
     this.#allTableNames.clear();
     this.#rowSetSignatures.clear();
     this.#initAndResetCommon(clientSchema);
   }
 
   #initAndResetCommon(clientSchema: ClientSchema) {
-    const {db} = this.#snapshotter.current();
-    const fullTables = new Map<string, LiteTableSpec>();
-    computeZqlSpecs(
-      this.#lc,
-      db.db,
-      {includeBackfillingColumns: false},
-      this.#tableSpecs,
-      fullTables,
-    );
+    const db = this.#currentDB();
+    let fullTables: ReadonlyMap<string, LiteTableSpec>;
+    if (this.#shared) {
+      // The sources are shared, so the specs must be too.
+      this.#tableSpecs.clear();
+      for (const [table, spec] of this.#shared.tableSpecs) {
+        this.#tableSpecs.set(table, spec);
+      }
+      fullTables = this.#shared.fullTables;
+      this.#sharedSpecsEpoch = this.#shared.specsEpoch;
+    } else {
+      const tables = new Map<string, LiteTableSpec>();
+      computeZqlSpecs(
+        this.#lc,
+        db.db,
+        {includeBackfillingColumns: false},
+        this.#tableSpecs,
+        tables,
+      );
+      fullTables = tables;
+    }
     checkClientSchema(
       this.#shardID,
       clientSchema,
@@ -515,8 +522,9 @@ export class PipelineDriver {
       primaryKeys.set(table, spec.tableSpec.primaryKey);
     }
     buildPrimaryKeys(clientSchema, primaryKeys);
-    const {replicaVersion} = getSubscriptionState(db);
-    this.#replicaVersion = replicaVersion;
+    this.#replicaVersion = this.#shared
+      ? this.#shared.replicaVersion
+      : getSubscriptionState(db).replicaVersion;
   }
 
   /** @returns The replica version. The PipelineDriver must have been initialized. */
@@ -531,7 +539,9 @@ export class PipelineDriver {
    */
   currentVersion(): string {
     assert(this.initialized(), 'Not yet initialized');
-    return this.#snapshotter.current().version;
+    return this.#shared
+      ? this.#shared.version
+      : must(this.#snapshotter).current().version;
   }
 
   /**
@@ -541,7 +551,7 @@ export class PipelineDriver {
     assert(this.initialized(), 'Not yet initialized');
     const res = reloadPermissionsIfChanged(
       this.#lc,
-      this.#snapshotter.current().db,
+      this.#currentDB(),
       this.#shardID.appID,
       this.#permissions,
       this.#config,
@@ -569,7 +579,18 @@ export class PipelineDriver {
    * check explicitly.)
    */
   advanceWithoutDiff(): string {
-    const {prev, curr} = this.#snapshotter.advanceWithoutDiff();
+    if (this.#shared) {
+      // The shared snapshot only advances in rounds (see advanceShared()),
+      // so this just checks that the specs are still those of the snapshot.
+      if (this.#sharedSpecsEpoch !== this.#shared.specsEpoch) {
+        throw new ResetPipelinesSignal(
+          `the table specs of the shared snapshot have been recomputed`,
+          'schema-change',
+        );
+      }
+      return this.#shared.version;
+    }
+    const {prev, curr} = must(this.#snapshotter).advanceWithoutDiff();
     if (curr.schemaChangedSince(prev.version)) {
       throw new ResetPipelinesSignal(
         `schema changed between ${prev.version} and ${curr.version}`,
@@ -607,7 +628,14 @@ export class PipelineDriver {
     this.#tables.clear();
     this.#rowSetSignatures.clear();
     this.#storage.destroy();
-    this.#snapshotter.destroy();
+    if (this.#shared) {
+      if (this.#sharedInitialized) {
+        this.#shared.pruneUnusedSources();
+        this.#shared.unregister(this.#member);
+      }
+    } else {
+      must(this.#snapshotter).destroy();
+    }
   }
 
   /** @return Map from query ID to PipelineInfo for all added queries. */
@@ -667,6 +695,9 @@ export class PipelineDriver {
   }
 
   #totalRowsRead(): number {
+    if (this.#shared) {
+      return this.#shared.rowsRead();
+    }
     let total = 0;
     for (const table of this.#tables.values()) {
       total += table.rowsRead;
@@ -794,7 +825,8 @@ export class PipelineDriver {
             this.#disableCorrelatedPredicatePushdown(),
           getSource: name => this.#getSource(name),
           createStorage: () => this.#createStorage(),
-          decorateSourceInput: (input: SourceInput): Input => input,
+          decorateSourceInput: (input: SourceInput): Input =>
+            this.#guardSharedSource(input),
           decorateInput: input => input,
           addEdge() {},
           decorateFilterInput: input => input,
@@ -866,7 +898,7 @@ export class PipelineDriver {
     queryName?: string,
     hydrationReason: PipelineHydrationReason = 'query-set-sync',
   ): Iterable<RowChange | 'yield'> {
-    return this.#trackRowSetSignatures(
+    const changes = this.#trackRowSetSignatures(
       this.#addQueryImpl(
         transformationHash,
         queryID,
@@ -876,6 +908,31 @@ export class PipelineDriver {
         hydrationReason,
       ),
     );
+    return this.#shared ? this.#runAsMember(this.#shared, changes) : changes;
+  }
+
+  /**
+   * Steps through `changes` on behalf of this client group, so that the
+   * shared sources yield when this client group's hydration says to.
+   */
+  *#runAsMember<T>(shared: SharedSnapshot, changes: Iterable<T>): Iterable<T> {
+    const it = changes[Symbol.iterator]();
+    let done = false;
+    try {
+      for (;;) {
+        const next = shared.runAs(this.#member, () => it.next());
+        if (next.done) {
+          done = true;
+          return;
+        }
+        yield next.value;
+      }
+    } finally {
+      if (!done) {
+        // Tears down an abandoned hydration.
+        shared.runAs(this.#member, () => it.return?.());
+      }
+    }
   }
 
   *#addQueryImpl(
@@ -906,7 +963,7 @@ export class PipelineDriver {
       : undefined;
 
     const costModel = this.#ensureCostModelExistsIfEnabled(
-      this.#snapshotter.current().db.db,
+      this.#currentDB().db,
     );
 
     assert(
@@ -956,7 +1013,7 @@ export class PipelineDriver {
             new MeasurePushOperator(
               new QueryFailureLoggingOperator(
                 this.#lc,
-                input,
+                this.#guardSharedSource(input),
                 queryID,
                 transformationHash,
                 queryName,
@@ -1023,7 +1080,8 @@ export class PipelineDriver {
           const lc = this.#lc
             .withContext('queryID', queryID)
             .withContext('hydrationTimeMs', hydrationTimeMs);
-          for (const tableName of this.#tables.keys()) {
+          for (const tableName of this.#shared?.sourceTables() ??
+            this.#tables.keys()) {
             const entries = Object.entries(
               debugDelegate?.getVendedRowCounts()[tableName] ?? {},
             );
@@ -1188,6 +1246,7 @@ export class PipelineDriver {
   }
 
   #pruneUnusedTables() {
+    this.#shared?.pruneUnusedSources();
     for (const [table, source] of this.#tables.entries()) {
       if (!source.hasConnections()) {
         this.#tables.delete(table);
@@ -1237,16 +1296,22 @@ export class PipelineDriver {
     changes: Iterable<RowChange | 'yield'>,
   ): Iterable<RowChange | 'yield'> {
     for (const change of changes) {
-      if (change !== 'yield' && change.type !== ChangeType.EDIT) {
-        const cur = this.#rowSetSignatures.get(change.queryID) ?? 0n;
-        const unit = rowIDSignatureUnit({
-          schema: '',
-          table: change.table,
-          rowKey: change.rowKey as RowKey,
-        });
-        this.#rowSetSignatures.set(change.queryID, cur ^ unit);
+      if (change !== 'yield') {
+        this.#trackRowSetSignature(change);
       }
       yield change;
+    }
+  }
+
+  #trackRowSetSignature(change: RowChange) {
+    if (change.type !== ChangeType.EDIT) {
+      const cur = this.#rowSetSignatures.get(change.queryID) ?? 0n;
+      const unit = rowIDSignatureUnit({
+        schema: '',
+        table: change.table,
+        rowKey: change.rowKey as RowKey,
+      });
+      this.#rowSetSignatures.set(change.queryID, cur ^ unit);
     }
   }
 
@@ -1257,7 +1322,11 @@ export class PipelineDriver {
    */
   getRow(table: string, pk: RowKey): Row | undefined {
     assert(this.initialized(), 'Not yet initialized');
-    const source = must(this.#tables.get(table));
+    const source = must(
+      this.#shared
+        ? this.#shared.getSourceIfExists(table)
+        : this.#tables.get(table),
+    );
     return source.getRow(pk as Row);
   }
 
@@ -1281,7 +1350,10 @@ export class PipelineDriver {
       this.initialized(),
       'Pipeline driver must be initialized before advancing',
     );
-    const diff = this.#snapshotter.advance(
+    const diff = must(
+      this.#snapshotter,
+      'a shared snapshot is advanced with advanceShared()',
+    ).advance(
       this.#tableSpecs,
       this.#allTableNames,
       this.#tables,
@@ -1301,6 +1373,132 @@ export class PipelineDriver {
       changes: this.#trackRowSetSignatures(this.#advance(diff, timer, changes)),
     };
   }
+
+  /**
+   * Advances every client group of the sync worker to the new head of the
+   * database together (see {@link SharedSnapshot}), once every one of them is
+   * ready to. The caller must hold whatever lock it holds for using the
+   * pipelines, and must call this once per notification from
+   * {@link SharedSnapshot.subscribe()}.
+   *
+   * @return The resulting row changes for all added queries.
+   * @throws ResetPipelinesSignal if the pipelines must be reset, because the
+   *         round was abandoned or they failed during it.
+   */
+  async advanceShared(): Promise<{
+    version: string;
+    numChanges: number;
+    changes: readonly RowChange[];
+  }> {
+    const shared = must(this.#shared, 'not in shared mode');
+    assert(
+      this.initialized(),
+      'Pipeline driver must be initialized before advancing',
+    );
+    const outcome = await shared.park(this.#member);
+    const round = this.#round;
+    this.#round = undefined;
+    const timedOut =
+      outcome.type === 'reset' &&
+      outcome.signal.reason === 'advancement-timeout';
+    if (round) {
+      this.#recordAdvanceStats(round, timedOut);
+    }
+    switch (outcome.type) {
+      case 'failed':
+        if (this.#pipelines.size > 0) {
+          throw outcome.error;
+        }
+        return {version: outcome.version, numChanges: 0, changes: []};
+      case 'reset':
+        if (round && timedOut) {
+          this.#logAdvanceTimeout(round, outcome.signal);
+        }
+        throw outcome.signal;
+      case 'advanced':
+        if (round?.failure) {
+          throw round.failure.error;
+        }
+        if (round) {
+          this.#logSlowAdvances(round);
+        }
+        this.#lc.debug?.(`Advanced to ${outcome.version}`);
+        return {
+          version: outcome.version,
+          numChanges: outcome.numChanges,
+          changes: round?.changes ?? [],
+        };
+      default:
+        unreachable(outcome);
+    }
+  }
+
+  /** How this client group takes part in its {@link SharedSnapshot}. */
+  readonly #member: SharedSnapshotMember = {
+    hasPipelines: () => this.#pipelines.size > 0,
+    totalHydrationTimeMs: () => this.totalHydrationTimeMs(),
+    beginRound: progress => {
+      this.#round = {
+        progress,
+        numChanges: progress.numChanges,
+        queryStats: new Map(),
+        changes: [],
+        failure: undefined,
+      };
+    },
+    drainRound: () => this.#drainRound(),
+    endRound: () => {
+      this.#streamer = null;
+    },
+    shouldYield: () => {
+      const hydration = this.#hydrateContext;
+      return (
+        hydration !== null &&
+        hydration.timer.elapsedLap() > this.#yieldThresholdMs()
+      );
+    },
+  };
+
+  /**
+   * Moves the row changes that the pipelines have output during a round of
+   * the shared snapshot into the round's changes.
+   */
+  #drainRound() {
+    const streamer = this.#streamer;
+    this.#streamer = null;
+    const round = this.#round;
+    if (!streamer || !round || round.failure) {
+      return;
+    }
+    for (const change of streamer.stream()) {
+      if (change !== 'yield') {
+        this.#trackRowSetSignature(change);
+        round.changes.push(change);
+      }
+    }
+  }
+
+  /**
+   * In shared mode, wraps the input of a shared source so that a push that
+   * fails in this client group's pipelines only fails this client group.
+   */
+  #guardSharedSource(input: SourceInput): Input {
+    return this.#shared ? new SharedSourceGuard(input, this.#pushes) : input;
+  }
+
+  readonly #pushes: SharedPushes = {
+    skip: () => this.#round?.failure !== undefined,
+    fail: (e: unknown) => {
+      const round = this.#round;
+      if (!round || must(this.#shared).isRoundAbort(e)) {
+        throw e;
+      }
+      this.#lc.debug?.(`pipelines failed during shared advancement`, e);
+      round.failure ??= {error: e};
+      round.changes.length = 0;
+      this.#streamer = null;
+    },
+  };
 
   *#advance(
     diff: SnapshotDiff,
@@ -1476,7 +1674,7 @@ export class PipelineDriver {
   }
 
   /** Accounts the time each query took in an advancement to its shape. */
-  #recordAdvanceStats({queryStats}: AdvanceContext, timedOut: boolean): void {
+  #recordAdvanceStats({queryStats}: AdvanceStats, timedOut: boolean): void {
     if (this.#queryStats === undefined) {
       return;
     }
@@ -1578,11 +1776,13 @@ export class PipelineDriver {
   }
 
   #recordAdvancePush(queryID: string, timeMs: number): void {
-    const advance = this.#advanceContext;
-    if (advance === null) {
+    const advance = this.#advanceContext ?? this.#round?.progress;
+    const queryStats =
+      this.#advanceContext?.queryStats ?? this.#round?.queryStats;
+    if (!advance || !queryStats) {
       return;
     }
-    const stats = getOrInsertComputed(advance.queryStats, queryID, () => ({
+    const stats = getOrInsertComputed(queryStats, queryID, () => ({
       timeMs: 0,
       changes: 0,
       lastPos: -1,
@@ -1629,7 +1829,7 @@ export class PipelineDriver {
    * threshold, at most once per query shape per
    * {@link SLOW_ADVANCE_LOG_WINDOW_MS}.
    */
-  #logSlowAdvances({queryStats, numChanges}: AdvanceContext): void {
+  #logSlowAdvances({queryStats, numChanges}: AdvanceStats): void {
     if (!this.#lc.warn) {
       return;
     }
@@ -1670,7 +1870,7 @@ export class PipelineDriver {
    * Throttled per query shape of the slowest query.
    */
   #logAdvanceTimeout(
-    {queryStats, numChanges}: AdvanceContext,
+    {queryStats, numChanges}: AdvanceStats,
     reset: ResetPipelinesSignal,
   ): void {
     if (!this.#lc.warn) {
@@ -1719,11 +1919,18 @@ export class PipelineDriver {
 
   /** Implements `BuilderDelegate.getSource()` */
   #getSource(tableName: string): Source {
+    if (this.#shared) {
+      mustGetTableSpec(this.#tableSpecs, tableName);
+      return this.#shared.getSource(
+        tableName,
+        mustGetPrimaryKey(this.#primaryKeys, tableName),
+      );
+    }
     return getOrInsertComputed(this.#tables, tableName, tableName => {
       const tableSpec = mustGetTableSpec(this.#tableSpecs, tableName);
       const primaryKey = mustGetPrimaryKey(this.#primaryKeys, tableName);
 
-      const {db} = this.#snapshotter.current();
+      const {db} = must(this.#snapshotter).current();
       const source = new TableSource(
         this.#lc,
         this.#logConfig,
@@ -1753,10 +1960,8 @@ export class PipelineDriver {
   }
 
   /**
-   * Cancel advancement processing when either the whole batch projects to be
-   * more expensive than hydration, or the current source change alone exceeds
-   * the hydration budget. The late-finish exception only applies to batch-level
-   * checks; a single pathological push always resets.
+   * Cancels advancement processing when it is taking longer than rehydrating
+   * the pipelines would. See {@link advancementTimeout}.
    */
   #shouldAdvanceYieldMaybeAbortAdvance(checkYield = true): boolean {
     const {
@@ -1767,58 +1972,18 @@ export class PipelineDriver {
       totalHydrationTimeMs,
     } = must(this.#advanceContext);
     const elapsed = advanceTimer.totalElapsed();
-    const currentChangeElapsedMs =
-      currentChangeStartMs === undefined
-        ? undefined
-        : elapsed - currentChangeStartMs;
-    if (
-      currentChangeElapsedMs !== undefined &&
-      shouldResetSlowCurrentChange(currentChangeElapsedMs, totalHydrationTimeMs)
-    ) {
-      this.#throwSlowCurrentChangeReset(
-        pos,
-        numChanges,
-        elapsed,
-        currentChangeElapsedMs,
-        totalHydrationTimeMs,
-      );
-    }
-    const projectedTotalTimeMs = projectedAdvancementTimeMs(
-      elapsed,
+    const timeout = advancementTimeout({
+      elapsedMs: elapsed,
+      currentChangeElapsedMs:
+        currentChangeStartMs === undefined
+          ? undefined
+          : elapsed - currentChangeStartMs,
       pos,
       numChanges,
-    );
-    const shouldFinish = shouldFinishLateAdvancement(pos, numChanges);
-    if (
-      !shouldFinish &&
-      shouldResetProjectedAdvancement(
-        elapsed,
-        projectedTotalTimeMs,
-        pos,
-        numChanges,
-        totalHydrationTimeMs,
-      )
-    ) {
-      this.#throwProjectedAdvancementReset(
-        pos,
-        numChanges,
-        elapsed,
-        projectedTotalTimeMs,
-        totalHydrationTimeMs,
-      );
-    }
-    if (
-      !shouldFinish &&
-      elapsed > MIN_ADVANCEMENT_TIME_LIMIT_MS &&
-      (elapsed > totalHydrationTimeMs ||
-        (elapsed > totalHydrationTimeMs / 2 && pos <= numChanges / 2))
-    ) {
-      throw new ResetPipelinesSignal(
-        `Advancement exceeded timeout at ${pos} of ${numChanges} changes ` +
-          `after ${elapsed} ms. Advancement time limited based on total ` +
-          `hydration time of ${totalHydrationTimeMs} ms.`,
-        'advancement-timeout',
-      );
+      totalHydrationTimeMs,
+    });
+    if (timeout) {
+      throw timeout;
     }
     return checkYield && advanceTimer.elapsedLap() > this.#yieldThresholdMs();
   }
@@ -1852,43 +2017,6 @@ export class PipelineDriver {
       return 'row-overrun';
     }
     return bytesFit ? 'fits' : 'bytes';
-  }
-
-  #throwSlowCurrentChangeReset(
-    pos: number,
-    numChanges: number,
-    elapsed: number,
-    currentChangeElapsedMs: number,
-    totalHydrationTimeMs: number,
-  ): never {
-    throw new ResetPipelinesSignal(
-      `Advancement exceeded timeout processing current change at ${pos} of ` +
-        `${numChanges} changes after ${currentChangeElapsedMs} ms ` +
-        `(${elapsed} ms total). Advancement time limited based on total ` +
-        `hydration time of ${totalHydrationTimeMs} ms.`,
-      'advancement-timeout',
-    );
-  }
-
-  #throwProjectedAdvancementReset(
-    pos: number,
-    numChanges: number,
-    elapsed: number,
-    projectedTotalTimeMs: number | undefined,
-    totalHydrationTimeMs: number,
-  ): never {
-    const projection =
-      projectedTotalTimeMs === undefined
-        ? ''
-        : ` Projected total advancement time is ${projectedTotalTimeMs} ms.`;
-    throw new ResetPipelinesSignal(
-      `Advancement projected to exceed hydration time at ${pos} of ` +
-        `${numChanges} changes after ${elapsed} ms.` +
-        projection +
-        ` Advancement time limited based on total hydration time of ` +
-        `${totalHydrationTimeMs} ms.`,
-      'advancement-timeout',
-    );
   }
 
   /** Implements `BuilderDelegate.createStorage()` */
@@ -1932,17 +2060,31 @@ export class PipelineDriver {
     schema: SourceSchema,
     change: Change,
   ): Stream<'yield'> {
-    const streamer = this.#streamer;
-    assert(streamer, 'must #startAccumulating() before pushing changes');
+    const streamer = this.#outputStreamer();
     for (const rowChange of streamer.streamChange(queryID, schema, change)) {
       if (rowChange === 'yield') {
         yield rowChange;
         continue;
       }
-      // #push replaces the streamer after each 'yield', so add to the
-      // current one.
-      must(this.#streamer).add(rowChange);
+      // #push (or the shared snapshot) drains the streamer after each
+      // 'yield', so add to the current one.
+      this.#outputStreamer().add(rowChange);
     }
+  }
+
+  /**
+   * The streamer of the push in progress. In shared mode, the shared
+   * snapshot pushes to the sources, and a streamer is started when the
+   * client group's pipelines first output a change after it was drained.
+   */
+  #outputStreamer(): Streamer {
+    if (this.#streamer === null && this.#shared) {
+      this.#shared.markOutput(this.#member);
+      this.#startAccumulating();
+    }
+    const streamer = this.#streamer;
+    assert(streamer, 'must #startAccumulating() before pushing changes');
+    return streamer;
   }
 
   #startAccumulating() {
@@ -2127,6 +2269,73 @@ class Streamer {
         const childSchema = must(schema.relationships[relationship]);
         yield* this.#streamNodes(queryID, childSchema, op, children);
       }
+    }
+  }
+}
+
+type SharedPushes = {
+  /** Whether pushes to the client group's pipelines are skipped. */
+  skip(): boolean;
+  /**
+   * Records that a push to the client group's pipelines failed, or rethrows
+   * the error if it must abandon the whole push.
+   */
+  fail(e: unknown): void;
+};
+
+/**
+ * Wraps the input of a source shared by the client groups of a sync worker
+ * (see {@link SharedSnapshot}) to confine a push that fails in a client
+ * group's pipeline to that client group: the failure is recorded for the
+ * client group, whose pipelines receive no further pushes in the round, and
+ * the source carries on pushing to the pipelines of the other client groups.
+ */
+class SharedSourceGuard implements Input, Output {
+  readonly #input: Input;
+  readonly #pushes: SharedPushes;
+  #output: Output = throwOutput;
+
+  constructor(input: Input, pushes: SharedPushes) {
+    this.#input = input;
+    this.#pushes = pushes;
+    input.setOutput(this);
+  }
+
+  setOutput(output: Output): void {
+    this.#output = output;
+  }
+
+  getSchema(): SourceSchema {
+    return this.#input.getSchema();
+  }
+
+  destroy(): void {
+    this.#input.destroy();
+  }
+
+  fetch(req: FetchRequest): Iterable<Node | 'yield'> {
+    return this.#input.fetch(req);
+  }
+
+  *push(change: Change): Iterable<'yield'> {
+    if (this.#pushes.skip()) {
+      return;
+    }
+    try {
+      yield* this.#output.push(change, this);
+    } catch (e) {
+      this.#pushes.fail(e);
+    }
+  }
+
+  *reconcile(_pusher: InputBase): Stream<'yield'> {
+    if (this.#pushes.skip() || !this.#output.reconcile) {
+      return;
+    }
+    try {
+      yield* this.#output.reconcile(this);
+    } catch (e) {
+      this.#pushes.fail(e);
     }
   }
 }

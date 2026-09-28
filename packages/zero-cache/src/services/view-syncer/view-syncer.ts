@@ -798,7 +798,11 @@ export class ViewSyncerService implements ViewSyncer, ActivityBasedService {
           }
 
           let previousQueries: ReadonlyMap<string, QueryInfo> | undefined;
-          if (this.#pipelinesHydrated) {
+          if (!this.#pipelinesHydrated && this.#pipelines.shared) {
+            // Every notification of a shared snapshot is for a round, in
+            // which every client group of the worker must take part.
+            await this.#advanceUnhydratedPipelines(lc, clientSchema);
+          } else if (this.#pipelinesHydrated) {
             const result = await this.#advancePipelines(lc, cvr);
             if (result === 'success') {
               return;
@@ -976,6 +980,33 @@ export class ViewSyncerService implements ViewSyncer, ActivityBasedService {
 
     this.#pipelinesHydrated = true;
     this.connContextManager.setSharedRetransformReady(true);
+  }
+
+  /**
+   * Takes part in a round of the worker's shared snapshot (see
+   * `SharedSnapshot`) before the pipelines are hydrated. Pipelines left from
+   * an incomplete hydration are reset, as the CVR does not reflect the changes
+   * they received.
+   *
+   * Must be called from within the #lock.
+   */
+  async #advanceUnhydratedPipelines(
+    lc: LogContext,
+    clientSchema: ClientSchema,
+  ): Promise<void> {
+    let reset = this.#pipelines.queries().size > 0;
+    try {
+      await this.#pipelines.advanceShared();
+    } catch (e) {
+      if (!(e instanceof ResetPipelinesSignal)) {
+        throw e;
+      }
+      reset = true;
+    }
+    if (reset) {
+      lc.debug?.('resetting unhydrated pipelines');
+      this.#pipelines.reset(clientSchema);
+    }
   }
 
   // must be called from within #lock
@@ -3552,7 +3583,9 @@ export class ViewSyncerService implements ViewSyncer, ActivityBasedService {
       let version: string | undefined;
       let numChanges = 0;
       try {
-        const advancement = this.#pipelines.advance(timer);
+        const advancement = this.#pipelines.shared
+          ? await this.#pipelines.advanceShared()
+          : this.#pipelines.advance(timer);
         version = advancement.version;
         numChanges = advancement.numChanges;
         lc = lc.withContext('newVersion', version);

@@ -16,6 +16,7 @@ import type {PostgresDB} from '../../types/pg.ts';
 import type {Subscription} from '../../types/subscription.ts';
 import type {ReplicaState} from '../replicator/replicator.ts';
 import type {FakeReplicator} from '../replicator/test-utils.ts';
+import {YIELD_MESSAGE} from './shared-snapshot.ts';
 import {
   ALL_ISSUES_QUERY,
   ISSUES_QUERY_WITH_OWNER,
@@ -30,6 +31,13 @@ import {
   TimeSliceTimer,
   type ViewSyncerService,
 } from './view-syncer.ts';
+
+// With a shared snapshot (see testSnapshot()), the shared snapshot yields
+// while it pushes the changes, rather than the view-syncer.
+const ADVANCE_YIELD_MESSAGE =
+  process.env['ZERO_TEST_SHARED_IVM_SNAPSHOT'] === '1'
+    ? YIELD_MESSAGE
+    : 'yield in processChanges';
 
 describe('view-syncer/yield-during-advance', () => {
   let replicaDbFile: DbFile;
@@ -207,7 +215,7 @@ describe('view-syncer/yield-during-advance', () => {
     expect(elapsedLapSpy).toHaveBeenCalledTimes(9);
     // once for every 3 elapsedLap calls
     expect(yieldSpy).toHaveBeenCalledTimes(3);
-    expectYieldMessage(yieldSpy, 'yield in processChanges');
+    expectYieldMessage(yieldSpy, ADVANCE_YIELD_MESSAGE);
   });
 
   test('yields during advance when time slice is exceeded when yield come from TableSource row reads', async () => {
@@ -316,6 +324,6 @@ describe('view-syncer/yield-during-advance', () => {
     expect(elapsedLapSpy).toHaveBeenCalledTimes(7);
     // once for every 3 elapsedLap calls
     expect(yieldSpy).toHaveBeenCalledTimes(2);
-    expectYieldMessage(yieldSpy, 'yield in processChanges');
+    expectYieldMessage(yieldSpy, ADVANCE_YIELD_MESSAGE);
   });
 });

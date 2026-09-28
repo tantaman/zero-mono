@@ -16,8 +16,8 @@ import {ZERO_VERSION_COLUMN_NAME} from '../replicator/schema/constants.ts';
 export function checkClientSchema(
   shardID: ShardID,
   clientSchema: ClientSchema,
-  tableSpecs: Map<string, LiteAndZqlSpec>,
-  fullTables: Map<string, LiteTableSpec>,
+  tableSpecs: ReadonlyMap<string, LiteAndZqlSpec>,
+  fullTables: ReadonlyMap<string, LiteTableSpec>,
 ) {
   if (fullTables.size === 0) {
     throw new ProtocolError({

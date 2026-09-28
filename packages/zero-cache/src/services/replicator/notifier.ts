@@ -41,6 +41,27 @@ function oldest(
   return Math.min(curr, prev);
 }
 
+/**
+ * Coalesces a notification that has not been consumed yet (`prev`) into the
+ * next one (`curr`).
+ */
+export function coalesceReplicaStates(
+  curr: ReplicaState,
+  prev: ReplicaState,
+): ReplicaState {
+  return {
+    ...curr,
+    replicaReadyTimeMs: oldest(
+      curr.replicaReadyTimeMs,
+      prev.replicaReadyTimeMs,
+    ),
+    upstreamCommitTimeMs: oldest(
+      curr.upstreamCommitTimeMs,
+      prev.upstreamCommitTimeMs,
+    ),
+  };
+}
+
 export class Notifier implements ReplicaStateNotifier {
   readonly #eventEmitter = new EventEmitter();
   #lastStateReceived: ReplicaState | undefined;
@@ -56,17 +77,7 @@ export class Notifier implements ReplicaStateNotifier {
       // subsumed, so both timestamps keep the *oldest* value: they measure how
       // long work has been outstanding, and the subsumed watermarks are still
       // unserved.
-      coalesce: (curr, prev) => ({
-        ...curr,
-        replicaReadyTimeMs: oldest(
-          curr.replicaReadyTimeMs,
-          prev.replicaReadyTimeMs,
-        ),
-        upstreamCommitTimeMs: oldest(
-          curr.upstreamCommitTimeMs,
-          prev.upstreamCommitTimeMs,
-        ),
-      }),
+      coalesce: coalesceReplicaStates,
       cleanup: () => this.#eventEmitter.off('version', notify),
     });
     return {notify, subscription};

@@ -95,6 +95,32 @@ import {
 import type {ViewSyncerService} from './view-syncer.ts';
 import {type SyncContext} from './view-syncer.ts';
 
+/** Whether the view-syncer reads a SharedSnapshot. See `testSnapshot()`. */
+const SHARED_IVM_SNAPSHOT =
+  process.env['ZERO_TEST_SHARED_IVM_SNAPSHOT'] === '1';
+
+/**
+ * Makes the next advancement of the pipelines end in a reset. A pipeline
+ * driver that reads a SharedSnapshot first takes part in the round, as it
+ * must, and is then reset, as it would be if its pipelines failed in it.
+ */
+function resetNextAdvancement(signal: ResetPipelinesSignal) {
+  if (SHARED_IVM_SNAPSHOT) {
+    const advanceShared = PipelineDriver.prototype.advanceShared;
+    return vi
+      .spyOn(PipelineDriver.prototype, 'advanceShared')
+      .mockImplementationOnce(async function (this: PipelineDriver) {
+        await advanceShared.call(this);
+        throw signal;
+      });
+  }
+  return vi
+    .spyOn(PipelineDriver.prototype, 'advance')
+    .mockImplementationOnce(() => {
+      throw signal;
+    });
+}
+
 describe('view-syncer/service', () => {
   const clientFallback: ConnectionValidation = {kind: 'client-fallback'};
 
@@ -2634,14 +2660,12 @@ describe('view-syncer/service', () => {
       expect(transformSpy).toHaveBeenCalledTimes(1);
 
       // Simulate an advancement-timeout pipeline reset on the next replica advance
-      using advanceSpy = vi
-        .spyOn(PipelineDriver.prototype, 'advance')
-        .mockImplementationOnce(() => {
-          throw new ResetPipelinesSignal(
-            'Advancement exceeded timeout',
-            'advancement-timeout',
-          );
-        });
+      using advanceSpy = resetNextAdvancement(
+        new ResetPipelinesSignal(
+          'Advancement exceeded timeout',
+          'advancement-timeout',
+        ),
+      );
 
       // Mutate a row and trigger advance -> throws ResetPipelinesSignal -> resets pipelines -> rehydrates
       replicator.processTransaction(
@@ -2689,14 +2713,9 @@ describe('view-syncer/service', () => {
       expect(transformSpy).toHaveBeenCalledTimes(1);
 
       // Simulate a permissions-change pipeline reset
-      using advanceSpy = vi
-        .spyOn(PipelineDriver.prototype, 'advance')
-        .mockImplementationOnce(() => {
-          throw new ResetPipelinesSignal(
-            'Permissions changed',
-            'permissions-change',
-          );
-        });
+      using advanceSpy = resetNextAdvancement(
+        new ResetPipelinesSignal('Permissions changed', 'permissions-change'),
+      );
 
       replicator.processTransaction(
         '101',
@@ -2829,11 +2848,9 @@ describe('view-syncer/service', () => {
       expect(transformSpy).toHaveBeenCalledTimes(1);
 
       // Simulate a truncation reset
-      using advanceSpy = vi
-        .spyOn(PipelineDriver.prototype, 'advance')
-        .mockImplementationOnce(() => {
-          throw new ResetPipelinesSignal('Table was truncated', 'truncation');
-        });
+      using advanceSpy = resetNextAdvancement(
+        new ResetPipelinesSignal('Table was truncated', 'truncation'),
+      );
 
       replicator.processTransaction(
         '101',
@@ -2852,7 +2869,12 @@ describe('view-syncer/service', () => {
       expect(transformSpy).toHaveBeenCalledTimes(1);
     });
 
-    test('resets pipelines when a schema change lands before hydration', async () => {
+    test('resets pipelines when a schema change lands before hydration', async ({
+      skip,
+    }) => {
+      // A shared snapshot only moves to the head of the replica in a round,
+      // so hydration does not pick up the schema change; the next round does.
+      skip(SHARED_IVM_SNAPSHOT);
       using transformSpy = vi
         .spyOn(customQueryTransformer!, 'transform')
         .mockResolvedValue(
@@ -2951,14 +2973,12 @@ describe('view-syncer/service', () => {
       expect(transformSpy).toHaveBeenCalledTimes(1);
 
       // Simulate a schema-change reset
-      using advanceSpy = vi
-        .spyOn(PipelineDriver.prototype, 'advance')
-        .mockImplementationOnce(() => {
-          throw new ResetPipelinesSignal(
-            'schema for table issues has changed',
-            'schema-change',
-          );
-        });
+      using advanceSpy = resetNextAdvancement(
+        new ResetPipelinesSignal(
+          'schema for table issues has changed',
+          'schema-change',
+        ),
+      );
 
       replicator.processTransaction(
         '101',
@@ -3002,14 +3022,12 @@ describe('view-syncer/service', () => {
       expect(transformSpy).toHaveBeenCalledTimes(1);
 
       // Simulate an advancement-timeout reset
-      using advanceSpy = vi
-        .spyOn(PipelineDriver.prototype, 'advance')
-        .mockImplementationOnce(() => {
-          throw new ResetPipelinesSignal(
-            'Advancement exceeded timeout',
-            'advancement-timeout',
-          );
-        });
+      using advanceSpy = resetNextAdvancement(
+        new ResetPipelinesSignal(
+          'Advancement exceeded timeout',
+          'advancement-timeout',
+        ),
+      );
 
       replicator.processTransaction(
         '101',
@@ -4609,7 +4627,12 @@ describe('view-syncer/service', () => {
       `);
   });
 
-  test('does not flush the rows of an advancement that is reset', async () => {
+  test('does not flush the rows of an advancement that is reset', async ({
+    skip,
+  }) => {
+    // With a shared snapshot, an advancement is reset before the view-syncer
+    // receives any of its rows.
+    skip(SHARED_IVM_SNAPSHOT);
     const client = connect(SYNC_CONTEXT, [
       {op: 'put', hash: 'query-hash1', ast: ISSUES_QUERY},
     ]);
